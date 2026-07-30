@@ -1,0 +1,151 @@
+input_text,label
+"the boiling point of ethanol is 78 degrees",0
+"chmod +x deploy_script.sh",0
+"a yellow ceramic plate on the counter",0
+"added oil to the car engine",0
+"the grocery store closes at 10 PM",0
+"lkj120938klj",0
+"sorted the incoming mail into stacks",0
+"the battery percentage is 42 percent",0
+"poured milk into the coffee",0
+"the flight distance is 1200 miles",0
+"docker container stop main_app",0
+"a red plastic folder",0
+"the meeting is postponed to Thursday",0
+"sharpened three wooden pencils",0
+"the dog weighs 45 pounds",0
+"plmnko1928",0
+"turned off the hallway light",0
+"the textbook has 12 chapters",0
+"scanned the document to PDF",0
+"the train speed is 80 miles per hour",0
+"git status output clean",0
+"a glass vase on the windowsill",0
+"replaced the kitchen faucet",0
+"the office opens at 9 AM",0
+"boiled a pot of pasta",0
+"ytrewq7654",0
+"wiped the whiteboard clean",0
+"the screen resolution is 4K",0
+"saved the project file to disk",0
+"the bus ticket costs three dollars",0
+"curl -X GET https://api.example.com",0
+"a metallic grey laptop charger",0
+"closed all open browser tabs",0
+"the refrigerator temperature is 38 degrees",0
+"peeled two apples for a snack",0
+"gripping the edge of the desk tight",1
+"need to get out of this room",1
+"cold feet under the heavy blanket",1
+"wishing I could press the reset button",1
+"staring at the flickering streetlight",1
+"lump in my chest won't go away",1
+"pacing around the kitchen island",1
+"wishing someone was here with me",1
+"rubbing my bloodshot eyes",1
+"looking for a quiet bench in the park",1
+"wishing I could hide under the covers",1
+"restless legs while sitting still",1
+"need someone to tell me it's okay",1
+"staring at the rain hitting the glass",1
+"crossing my arms tightly over my chest",1
+"wishing for a peaceful evening",1
+"tight knot in my stomach",1
+"need a long walk in nature",1
+"massaging my sore temples",1
+"wishing the room would quiet down",1
+"sitting alone in the quiet kitchen",1
+"need to stretch out on the floor",1
+"cold shiver running down my spine",1
+"wishing I could undo yesterday",1
+"staring blankly at the tv screen",1
+"heavy weight sitting on my chest",1
+"need a genuine conversation right now",1
+"walking up and down the hallway",1
+"wishing someone would take over",1
+"leaning against the doorframe",1
+"shallow breaths and rapid heartbeat",1
+"need to step outside into the sun",1
+"checking the time every minute",1
+"wishing I could just sleep through today",1
+"clenching my teeth tightly",1
+"need to lie down in a dark room",1
+"staring at the shadow on the wall",1
+"wishing for a moment of silence",1
+"heavy limbs dragging across the room",1
+"need a break from social media",1
+"fidgeting with the zipper on my coat",1
+"wishing this week was over",1
+"pressing my hands over my ears",1
+"need a hot shower to wash off the day",1
+"staring at an empty page",1
+"wishing I hadn't said anything",1
+"rapid shallow breathing in the car",1
+"need to unplug from work completely",1
+"hunched over with my head in my hands",1
+"wishing somebody would reach out to me",1
+"sitting on the curb outside the venue",1
+"turning down the volume on everything",1
+"can't stand the texture of this shirt right now",1
+"standing in the aisle unable to decide on dinner",1
+"leaving the party without telling anyone",1
+"re-reading the same line over and over",1
+"driving home with no music playing",1
+"wearing sunglasses indoors because it's too bright",1
+"waiting near the door for a reason to leave",1
+"focusing on the sound of my own breathing",1
+"background noise is making it hard to think",1
+"putting my phone on airplane mode for an hour",1
+"splashing cold water on my face in the sink",1
+"staring at the clutter on my desk without moving",1
+"wrapping both arms tightly around my chest",1
+"pulling my hood up over my head",1
+"checking my pulse with two fingers on my wrist",1
+"walking with my hands crammed deep in my pockets",1
+"sitting in the back row near the aisle",1
+"declining the incoming call and texting instead",1
+"tapping my fingernails against the table repeatedly",1
+"wishing I could reboot my brain",1
+"resting my forehead against the cold windowpane",1
+"sitting on the bed staring at my unlaced shoes",1
+"dragging out my morning routine as long as possible",1
+"avoiding the main hallway at the office",1
+"pressing my thumb firmly into my opposite palm",1
+"waiting for the room to stop feeling so crowded",1
+"watching the clock tick down to the end of the shift",1
+"getting up to check the lock on the door again",1
+"feeling utterly ecstatic about the news",2
+"so miserable and lonely today",2
+"I am deeply grateful for your kindness",2
+"feeling outraged by their behavior",2
+"feeling completely relaxed and happy",2
+"so terrified of what might happen",2
+"feeling immensely proud of the team",2
+"utterly heartbroken by the news",2
+"feeling disgusted with the corruption",2
+"so peaceful listening to the music",2
+"feeling deeply depressed all week",2
+"overjoyed with the beautiful outcome",2
+"feeling furious about the delay",2
+"so anxious my stomach hurts",2
+"feeling serene and content",2
+"utterly miserable after the failure",2
+"feeling immensely proud of myself",2
+"so delighted to spend time with you",2
+"feeling terrified of failing",2
+"overwhelmed by profound sadness",2
+"feeling ecstatic after the victory",2
+"so disgusted by the selfish act",2
+"feeling deeply peaceful right now",2
+"utterly heartbroken over the loss",2
+"feeling furious at the disrespect",2
+"so happy with my progress",2
+"feeling miserable and hopeless",2
+"overjoyed by the unexpected gift",2
+"feeling deeply anxious about tomorrow",2
+"so proud of what I achieved",2
+"feeling utterly devastated by the result",2
+"feeling calm and tranquil today",2
+"so angry I can't even speak",2
+"feeling blissfully happy right now",2
+"utterly miserable in this cold",2

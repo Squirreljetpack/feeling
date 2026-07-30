@@ -1,0 +1,118 @@
+[moods]
+prefix = "Emotional state: "
+# text anchor subtracted when computing basis ray shift vectors (e.g. "Emotional state").
+neutral_string = "Emotional state"
+
+# Power exponent used for power-weighted centroid blending of basis mood colors.
+blend_steepness = 2.0
+
+# Gate on emotional saliency's control of the produced color's saturation/lightness.
+# Effective saliency `Seff = 1 + P*(S - 1)` for predicted saliency S in [0, 1];
+# P=100 keeps raw saliency, P=0 disables saliency entirely (Seff always 1.0). Default 80.
+effective_saliency_gate = 80
+
+# Neutral baseline Oklab lightness (0-100), default 65.
+baseline_oklab_l = 65
+
+# Minimum contribution percentage (0-100) required for a basis mood to be included in blending.
+# min_contribution = 7
+# top_k = 5
+
+[[moods.pairs]]
+mood = "happy"
+color = "#a5f69c"
+
+[[moods.pairs]]
+mood = "sad"
+color = "#00327f"
+
+[[moods.pairs]]
+mood = "drained"
+color = "#495057"
+
+[[moods.pairs]]
+mood = "charged"
+color = "#FF3D00"
+
+[[moods.pairs]]
+mood = "passive"
+color = "#9370DB"
+
+[[moods.pairs]]
+mood = "purposeful"
+color = "#FFC107"
+
+[tasks]
+colors = ["dark_red", "dark_yellow", "dark_green"]
+default_priority = 5                               # 1..=999
+default_scheduled_priority = 10                    # 1..=999 (scheduled tasks)
+
+[grid]
+week_rolling = false
+month_rolling = true
+year_rolling = true
+week_start = "Monday"
+
+[today_view]
+include_overdue = false
+
+[tasks_view]
+# Start the TUI tasks app with scheduled tasks merged into ! / @ / @done /
+# @due (Ctrl+a toggles live).
+include_scheduled = false
+
+[date]
+# uk | us — chrono-english dialect for date parsing. Only affects ambiguous
+# slash forms like "3/5/2024" (uk = 5 March, us = March 5); ISO dates and
+# relative phrases ("yesterday", "3 days ago") are unaffected.
+dialect = "uk"
+
+[tracker]
+# populatable as: [tracker.<name>]
+# interval = "1 day"
+# kind = "float"      # text | number | float
+# min = 0
+# max = 10
+
+[tracker.sleep]
+interval = "1 day"
+kind = "float"
+min = 0
+max = 10
+
+[tracker.run_times]
+interval = "1 week"
+kind = "float"
+min = 100
+max = 0
+
+# Interval trackers without min/max — binning falls back to last color
+[tracker.water]
+interval = "1 day"
+kind = "float"
+
+# Interval text tracker — entries stored as strings, no numeric binning
+[tracker.notes]
+interval = "1 week"
+kind = "text"
+
+# Non-interval number tracker with only min (no max — bins from min upward).
+[tracker.steps]
+kind = "number"
+min = 0
+
+[tracker.mood_notes]
+kind = "text"
+
+# Tracker with values spanning below min, in range, and above max
+# to exercise the full color binning palette.
+[tracker.temperature]
+interval = "1 day"
+kind = "number"
+min = 10
+max = 30
+[editor]
+# Write the "# additional notes below" hint line as the first line of the
+# body editor (feeling .. / feeling ! name ..). When disabled the temp file
+# starts empty and your first line is kept verbatim.
+hint = true

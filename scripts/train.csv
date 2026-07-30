@@ -1,0 +1,301 @@
+input_text,label
+"add two tablespoons of sugar to the bowl",0
+"the capital city of France is Paris",0
+"turn left at the traffic light",0
+"ate a sandwich",0
+"brushed my teeth and went to bed",0
+"changed the oil filter in the car",0
+"the meeting is scheduled for 3 PM",0
+"git push origin main --force",0
+"null pointer exception at line 42",0
+"blue ceramic coffee mug",0
+"stainless steel refrigerator",0
+"asbdka123",0
+"xjk2918a99",0
+"water freezes at 0 degrees Celsius",0
+"SELECT * FROM users WHERE active = true;",0
+"the library closes at 9 PM on Fridays",0
+"folded the clean laundry",0
+"npm run build --prod",0
+"black ballpoint pen on the desk",0
+"set the thermostat to 72 degrees",0
+"photosynthesis produces oxygen",0
+"walked the dog around the block",0
+"replied to three work emails",0
+"wooden dining room table",0
+"python main.py --config config.yaml",0
+"the store opens at 8 AM tomorrow",0
+"boiled two eggs for breakfast",0
+"repaired the squeaky door hinge",0
+"flight 402 is delayed by twenty minutes",0
+"docker compose up -d",0
+"white cotton t-shirt size medium",0
+"plugged the charger into the wall outlet",0
+"the speed limit is 55 miles per hour",0
+"washed the kitchen floor with warm water",0
+"qwertyuiop12345",0
+"annual revenue increased by 4 percent",0
+"updated the firmware to version 2.1",0
+"red brick fireplace in the living room",0
+"cut the paper into equal strips",0
+"the bus arrives in five minutes",0
+"parked the car in garage slot B4",0
+"purchased a new desk lamp",0
+"the document has 14 pages",0
+"foo_bar_baz_test",0
+"boiled water in the electric kettle",0
+"replaced the AA batteries in the remote",0
+"the sun sets in the west",0
+"scanned the receipt and saved as PDF",0
+"turned off the ceiling fan",0
+"the conference room is on the third floor",0
+"printed twenty copies of the agenda",0
+"unplugged the toaster after use",0
+"the train leaves from platform 3",0
+"cleaned the optical lens with microfiber",0
+"saved the changes to document.docx",0
+"a pair of running shoes",0
+"the oven preheated to 350 degrees",0
+"installed the latest operating system update",0
+"poured a glass of tap water",0
+"the package weighs three pounds",0
+"tightened the bolt with an allen wrench",0
+"checked the mail in the mailbox",0
+"the elevator stops on floor 7",0
+"a green plastic water bottle",0
+"swept the dust off the porch steps",0
+"the battery level is at 85 percent",0
+"system.out.println(""hello world"");",0
+"bought a loaf of sourdough bread",0
+"the lecture hall holds 200 students",0
+"refilled the printer paper tray",0
+"closed the blinds in the bedroom",0
+"the tax rate is 8 percent",0
+"tied my shoelaces before running",0
+"a wooden bookshelf with four shelves",0
+"the restaurant closes in ten minutes",0
+"wiped down the granite countertop",0
+"the movie runtime is two hours",0
+"df -h command output",0
+"turned the doorknob clockwise",0
+"a yellow highlighter on the notepad",0
+"the Wi-Fi network requires a password",0
+"replaced the burned out lightbulb",0
+"the temperature outside is 68 degrees",0
+"sorted the files into folders",0
+"a silver stainless steel fork",0
+"the doctor appointment is Tuesday at 10 AM",0
+"mowed the front lawn",0
+"added a new contact to the phonebook",0
+"the recipe calls for four cloves of garlic",0
+"a cardboard box sealed with tape",0
+"the monitor resolution is 1920x1080",0
+"rinsed the dishes before placing in dishwasher",0
+"the highway exit is in two miles",0
+"zxcvbnm987",0
+"took out the recycling bin",0
+"the battery charges via USB-C",0
+"ordered a black tea with no milk",0
+"the alarm clock rings at 6:30 AM",0
+"a plain glass window pane",0
+"stored the left-overs in a plastic container",0
+"need fresh air",1
+"need to step outside for a minute",1
+"drinking hot tea while watching rain",1
+"just want a quiet moment",1
+"want to talk to someone",1
+"need a hug",1
+"feeling completely unheard",1
+"wishing somebody would reach out",1
+"wind in my hair",1
+"brain fog and can't concentrate",1
+"mind racing at 2 AM",1
+"stomach in knots",1
+"stomach churning",1
+"heavy chest",1
+"headache",1
+"clammy",1
+"tired",1
+"bleary",1
+"cramped",1
+"itchy",1
+"high as a kite",1
+"looking for a friendly face",1
+"sitting in a dark room alone",1
+"staring at the ceiling for hours",1
+"counting down the minutes until five",1
+"need to get away from my desk",1
+"tightness in my jaw",1
+"shallow breathing",1
+"cold sweat on my palms",1
+"unable to hold a single thought",1
+"ready to crawl under a blanket",1
+"hoping someone notices",1
+"wishing I could press pause on everything",1
+"need a long walk without my phone",1
+"looking out the window in silence",1
+"knuckles white from gripping the wheel",1
+"throat feels constricted",1
+"can't sit still right now",1
+"waiting for someone to ask if I'm okay",1
+"pacing back and forth across the rug",1
+"staring at an empty document",1
+"shoulders pulled up to my ears",1
+"resting my head on the cool desk",1
+"need a place to hide for an hour",1
+"wishing I could disappear for a bit",1
+"staring blankly at the wall",1
+"feet feel heavy as lead",1
+"looking for any kind of sign",1
+"pressing my palm against my forehead",1
+"just holding my breath",1
+"listening to the rain on the roof",1
+"need someone to just listen without advice",1
+"wishing the clock would move faster",1
+"heart thumping in my ears",1
+"fidgeting with my pen continuously",1
+"need to scream into a pillow",1
+"waiting for the noise to stop",1
+"can't settle down",1
+"wishing I were somewhere else",1
+"looking at old photos in the dark",1
+"losing my train of thought repeatedly",1
+"eyes burning from staring at the screen",1
+"desperately needing a change of scenery",1
+"clenching my fists in my pockets",1
+"staring at the phone waiting for a message",1
+"need a warm bath and quiet",1
+"sighing deeply every few minutes",1
+"wishing I didn't have to go inside",1
+"muscles feeling completely locked up",1
+"searching for a shred of motivation",1
+"rubbing my temples trying to think",1
+"sitting on the floor with my head down",1
+"hoping this day ends quickly",1
+"throat tightening up",1
+"staring at the floorboards",1
+"just want to turn my phone off completely",1
+"resting against the kitchen counter",1
+"looking for a quiet corner to sit",1
+"wishing someone would take over for a bit",1
+"lump in my throat",1
+"legs feel completely restless",1
+"need a minute to compose myself",1
+"staring into a cup of cold coffee",1
+"wishing for a clean slate",1
+"hunched over my keyboard",1
+"waiting for the dust to settle",1
+"looking for an exit route",1
+"holding back what I want to say",1
+"need a deep breath",1
+"sitting in my car in the driveway",1
+"wishing I had spoken up",1
+"eyes feel heavy and dry",1
+"pacing around the living room",1
+"need a break from people today",1
+"staring at the door handle",1
+"wishing I could restart this morning",1
+"butterflies flutter in my stomach",1
+"looking for a distraction from my mind",1
+"pressing back into the chair cushions",1
+"just wanting to unplug from everything",1
+"good",2
+"bad",2
+"fine",2
+"I'm fine",2
+"doing good",2
+"feeling bad",2
+"pretty good actually",2
+"ecstatic",2
+"hopeless and miserable",2
+"blind rage and fury",2
+"overwhelmed with gratitude",2
+"like a million bucks",2
+"ambivalent",2
+"bittersweet",2
+"terrified but excited",2
+"proud of myself but completely exhausted",2
+"smart",2
+"dumb",2
+"I feel like I'm wasting my life",2
+"Today was surprisingly peaceful and I feel deeply thankful",2
+"I'm just so tired of pretending everything is fine",2
+"I have so much to do and I don't know where to start",2
+"I'm terrified of failing my exam tomorrow",2
+"I can't stop smiling after hearing the good news",2
+"utterly heartbroken over the loss",2
+"filled with pure joy and euphoria",2
+"disgusted by the way they acted",2
+"feeling completely devastated and crushed",2
+"extremely anxious about the presentation",2
+"so angry I can barely speak",2
+"filled with immense pride for my sister",2
+"feeling lonely and forgotten",2
+"overjoyed with the final result",2
+"deeply ashamed of my mistake",2
+"feeling incredibly blessed today",2
+"so frustrated I want to cry",2
+"feeling peaceful and at ease",2
+"completely numb inside",2
+"so thrilled about the news",2
+"consumed by guilt and regret",2
+"feeling miserable and hopeless",2
+"so happy I could burst",2
+"feeling deeply rejected",2
+"absolutely delighted with the surprise",2
+"feeling terrified of what comes next",2
+"filled with quiet contentment",2
+"so jealous of their success",2
+"feeling disgusted with myself",2
+"deeply saddened by the news",2
+"feeling triumphant after winning",2
+"utterly exhausted and drained",2
+"feeling scared and vulnerable",2
+"filled with hopeful anticipation",2
+"feeling outraged at the decision",2
+"so proud of what we accomplished",2
+"feeling miserable all morning",2
+"filled with bitter resentment",2
+"feeling confident and empowered",2
+"utterly humiliated in front of everyone",2
+"feeling calm and serene",2
+"so panicked I can't think straight",2
+"feeling deeply loved and appreciated",2
+"filled with overwhelming sorrow",2
+"feeling optimistic about the future",2
+"so furious my hands are shaking",2
+"feeling lonely in a crowded room",2
+"thrilled beyond words",2
+"feeling utterly helpless",2
+"filled with warm gratitude",2
+"feeling miserable about the situation",2
+"so happy to be back home",2
+"feeling disappointed in myself",2
+"filled with fierce determination",2
+"feeling anxious and uneasy",2
+"so proud of my child",2
+"feeling completely broken",2
+"filled with pure excitement",2
+"feeling disgusted and offended",2
+"so relieved that it's over",2
+"feeling terrified and helpless",2
+"filled with deep satisfaction",2
+"feeling miserable and lonely",2
+"so ecstatic I'm jumping up and down",2
+"feeling betrayed by a close friend",2
+"filled with quiet joy",2
+"feeling overwhelmed and panicked",2
+"so proud of how far I've come",2
+"feeling deeply melancholic today",2
+"filled with sheer delight",2
+"feeling furious at the injustice",2
+"so thankful for your help",2
+"feeling miserable about the weather",2
+"filled with hope and optimism",2
+"feeling sick with anxiety",2
+"so happy I could weep",2
+"feeling isolated and hopeless",2
+"filled with immense gratitude for this life",2
+"feeling terrified of making a mistake",2
+"so proud to be part of this team",2
+"feeling utterly devastated",2

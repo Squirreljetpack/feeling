@@ -1,0 +1,64 @@
+type,category,input_text
+ADJACENT,Adjacent Need,wind in my hair
+ADJACENT,Cognitive,dumb
+ADJACENT,Cognitive,high as a kite
+ADJACENT,Cognitive,smart
+ADJACENT,Cognitive State,brain fog and can't concentrate
+ADJACENT,Cognitive State,mind racing at 2 AM
+ADJACENT,Experiential Need,drinking hot tea while watching rain
+ADJACENT,Experiential Need,just want a quiet moment
+ADJACENT,Experiential Need,need fresh air
+ADJACENT,Experiential Need,need to step outside for a minute
+ADJACENT,Relational Need,feeling completely unheard
+ADJACENT,Relational Need,need a hug
+ADJACENT,Relational Need,want to talk to someone
+ADJACENT,Relational Need,wishing somebody would reach out
+ADJACENT,Somatic,cramped
+ADJACENT,Somatic,itchy
+ADJACENT,Somatic,stomach in knots
+ADJACENT,Somatic State,bleary
+ADJACENT,Somatic State,clammy
+ADJACENT,Somatic State,headache
+ADJACENT,Somatic State,heavy chest
+ADJACENT,Somatic State,stomach churning
+ADJACENT,Somatic State,tired
+CONTROL,Factual/Instruction,add two tablespoons of sugar to the bowl
+CONTROL,Factual/Instruction,the capital city of France is Paris
+CONTROL,Factual/Instruction,turn left at the traffic light
+CONTROL,Noise/Garbage,asbdka123
+CONTROL,Noise/Garbage,xjk2918a99
+CONTROL,Physical Object,blue ceramic coffee mug
+CONTROL,Physical Object,stainless steel refrigerator
+CONTROL,Routine/Action,ate a sandwich
+CONTROL,Routine/Action,brushed my teeth and went to bed
+CONTROL,Routine/Action,changed the oil filter in the car
+CONTROL,Technical/Code,git push origin main --force
+CONTROL,Technical/Code,null pointer exception at line 42
+CONTROL,Technical/Code,the meeting is scheduled for 3 PM
+EMOTION,Ambivalent,ambivalent
+EMOTION,Ambivalent,bittersweet
+EMOTION,Ambivalent,proud of myself but completely exhausted
+EMOTION,Ambivalent,terrified but excited
+EMOTION,Broad Affect,I'm fine
+EMOTION,Broad Affect,bad
+EMOTION,Broad Affect,doing good
+EMOTION,Broad Affect,feeling bad
+EMOTION,Broad Affect,fine
+EMOTION,Broad Affect,good
+EMOTION,Broad Affect,pretty good actually
+EMOTION,High Intensity,blind rage and fury
+EMOTION,High Intensity,ecstatic
+EMOTION,High Intensity,hopeless and miserable
+EMOTION,High Intensity,like a million bucks
+EMOTION,High Intensity,overwhelmed with gratitude
+EMOTION,High Intensity,puzzled
+EMOTION,High Intensity,happy
+EMOTION,High Intensity,blue
+EMOTION,High Intensity,depressed
+EMOTION,High Intensity,glad
+EMOTION,Sentence,I can't stop smiling after hearing the good news
+EMOTION,Sentence,I feel like I'm wasting my life
+EMOTION,Sentence,I have so much to do and I don't know where to start
+EMOTION,Sentence,I'm just so tired of pretending everything is fine
+EMOTION,Sentence,I'm terrified of failing my exam tomorrow
+EMOTION,Sentence,Today was surprisingly peaceful and I feel deeply thankful

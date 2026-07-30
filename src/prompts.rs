@@ -1,0 +1,232 @@
+//! Interactive prompts (cliclack) for the task and clear flows.
+//!
+//! Every interactive input/confirm in the CLI lives here. Prompts are pure
+//! UI: no SQL, no file I/O. Flow-level banner and feedback output lives in
+//! `crate::display`; database access lives in `crate::sql`.
+
+use anyhow::Result;
+
+use crate::date::DateDialect;
+
+/// Maximum allowed task priority. Anything higher is rejected at ingestion
+/// time (cliclack validation in `prompt_priority`). Lower bound is 1 — zero
+/// and negative priorities are not meaningful.
+pub const MAX_PRIORITY: i32 = 999;
+
+/// Prompt for a task priority. Blank input falls back to `default`.
+pub fn prompt_priority(default: i32) -> Result<i32> {
+    use cliclack::input;
+
+    let raw: String = input("Priority:")
+        .placeholder(&default.to_string())
+        .default_input("")
+        .validate(|value: &String| {
+            if value.is_empty() {
+                Ok(())
+            } else {
+                match value.parse::<i32>() {
+                    Ok(n) if (1..=MAX_PRIORITY).contains(&n) => Ok(()),
+                    Ok(_) => Err(format!("Priority must be between 1 and {}", MAX_PRIORITY)),
+                    Err(_) => Err(String::from("Must be a number")),
+                }
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    Ok(raw
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .filter(|n| (1..=MAX_PRIORITY).contains(n))
+        .unwrap_or(default))
+}
+
+/// Prompt for a scheduled task's start time. Blank falls back to `now`.
+/// Validated against the configured date dialect so a bad time fails before
+/// the task is created.
+pub fn prompt_start_time(dialect: DateDialect) -> Result<i64> {
+    use cliclack::input;
+
+    let raw: String = input("Start time:")
+        .placeholder("10pm")
+        .default_input("")
+        .validate(move |input: &String| {
+            if input.trim().is_empty() {
+                Ok(())
+            } else {
+                crate::date::parse_datetime(input, dialect)
+                    .map(|_| ())
+                    .map_err(|e| format!("Invalid time: {}", e))
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    if raw.trim().is_empty() {
+        Ok(crate::date::now())
+    } else {
+        crate::date::parse_datetime(&raw, dialect)
+    }
+}
+
+/// Prompt for a task completion target. Blank input falls back to `default`
+/// (0 = task can be completed once). The caller picks the label, e.g.
+/// `"Times to complete (0 = once):"` for creation or
+/// `"Times to complete per interval (blank = once):"` for edit.
+pub fn prompt_target_count(label: &str, default: i32) -> Result<i32> {
+    use cliclack::input;
+
+    let default_str = if default > 0 {
+        default.to_string()
+    } else {
+        String::new()
+    };
+
+    let raw: String = input(label)
+        .placeholder("0")
+        .default_input(&default_str)
+        .validate(|value: &String| {
+            if value.is_empty() {
+                Ok(())
+            } else {
+                match value.parse::<i32>() {
+                    Ok(n) if n >= 0 => Ok(()),
+                    Ok(_) => Err(String::from("Must be non-negative")),
+                    Err(_) => Err(String::from("Must be a number")),
+                }
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    Ok(raw.trim().parse::<i32>().unwrap_or(default))
+}
+
+/// Prompt for a task name (required, no tabs, trimmed). The duplicate-name
+/// check against the database is the caller's responsibility (it needs the
+/// pool); `prefill` seeds the input for `feeling ! @ <description>`.
+pub fn prompt_name(prefill: Option<&str>) -> Result<String> {
+    use cliclack::input;
+
+    let name: String = input("Task name:")
+        .placeholder("exercise")
+        .default_input(prefill.unwrap_or(""))
+        .validate(|input: &String| {
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                Err("Name is required")
+            } else if trimmed.contains('\t') {
+                Err("Name cannot contain tab characters")
+            } else {
+                Ok(())
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    Ok(name.trim().to_string())
+}
+
+/// Prompt for a recurrence interval (required, valid duration). `default`
+/// pre-fills the input (edit flow).
+pub fn prompt_interval(default: Option<&str>) -> Result<String> {
+    use cliclack::input;
+
+    let raw: String = input("Interval between task occurrences:")
+        .placeholder("1 day 2 hours")
+        .default_input(default.unwrap_or(""))
+        .validate(|input: &String| {
+            if input.is_empty() {
+                Err(String::from("Interval is required"))
+            } else {
+                crate::date::parse_duration_secs(input)
+                    .map(|_| ())
+                    .map_err(|e| format!("Invalid duration: {}", e))
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    Ok(raw)
+}
+
+/// Prompt for an available duration. Blank = always available. The caller
+/// resolves a value >= the interval to `None` (always available). `default`
+/// pre-fills the input (edit flow).
+pub fn prompt_available_duration(placeholder: &str, default: Option<&str>) -> Result<String> {
+    use cliclack::input;
+
+    let raw: String = input("Available duration:")
+        .placeholder(placeholder)
+        .default_input(default.unwrap_or(""))
+        .validate(|input: &String| {
+            if input.is_empty() {
+                Ok(())
+            } else {
+                crate::date::parse_duration_secs(input)
+                    .map(|_| ())
+                    .map_err(|e| format!("Invalid duration: {}", e))
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    Ok(raw)
+}
+
+/// Prompt for a recurring-task end time. The label is "Duration or end time":
+/// input is validated as a duration first (e.g. "1 year", relative to now)
+/// and then as an absolute date/time via `dialect`. Blank = never ends.
+/// Returns the resolved Unix-epoch end time, or `None` for never. `default`
+/// is the remaining time in seconds (pre-filled as a formatted duration).
+pub fn prompt_end(default_remaining: Option<i64>, dialect: DateDialect) -> Result<Option<i64>> {
+    use cliclack::input;
+
+    let default_str = default_remaining
+        .map(crate::date::format_duration)
+        .unwrap_or_default();
+
+    let raw: String = input("Duration or end time:")
+        .placeholder("1 year from now")
+        .default_input(&default_str)
+        .validate(move |input: &String| {
+            if input.is_empty() || crate::date::parse_duration_secs(input).is_ok() {
+                Ok(())
+            } else {
+                crate::date::parse_datetime(input, dialect)
+                    .map(|_| ())
+                    .map_err(|e| format!("Invalid duration or time: {}", e))
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    if raw.is_empty() {
+        Ok(None)
+    } else if let Ok(dur) = crate::date::parse_duration_secs(&raw) {
+        Ok(Some(crate::date::now() + dur))
+    } else {
+        crate::date::parse_datetime(&raw, dialect).map(Some)
+    }
+}
+
+/// Prompt whether a recurring task is optional.
+pub fn prompt_optional(initial: bool) -> Result<bool> {
+    use cliclack::confirm;
+
+    confirm("Is this task optional?")
+        .initial_value(initial)
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))
+}
+
+/// Confirm deleting `count` mood entries for `date`.
+pub fn prompt_clear_confirm(count: i64, date: &str) -> Result<bool> {
+    use cliclack::confirm;
+
+    confirm(format!("Clear {} mood entry/entries for {}?", count, date))
+        .initial_value(false)
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))
+}

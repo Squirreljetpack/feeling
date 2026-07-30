@@ -1,0 +1,86 @@
+[package]
+name = "feeling"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/Squirreljetpack/feeling"
+homepage = "https://github.com/Squirreljetpack/feeling"
+description = "A CLI tool for tracking moods, journaling, habits, metrics, and for managing oneshot, recurring and scheduled tasks"
+
+[[example]]
+name = "seed-db"
+path = "bin/seed_db.rs"
+
+[dependencies]
+cli_boilerplate_automation = { version = "0.*", features = ["serde", "bring"] }
+
+# Database
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+chrono-english = "0.1"
+humantime = "2"
+
+# Paths
+dirs = "6"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Terminal
+crossterm = { version = "0.29", features = ["serde", "event-stream"] }
+
+# Key bindings (Trigger = crokey KeyCombination)
+crokey = "1.3"
+futures = "0.3"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Terminal detection
+atty = "0.2"
+
+# Embeddings (Phase 6): all-MiniLM-L6-v2 ONNX via Burn
+burn = { version = "0.21.0", features = ["flex"] }
+burn-flex = "0.21.0"
+burn-store = "0.21.0"
+burn-onnx = "0.21.0"
+tokenizers = { version = "0.*", default-features = false, features = ["onig"] }
+ureq = { version = "3.*", default-features = false, features = ["rustls"] }
+
+# Color: Oklab -> sRGB conversion (see TODO.md #coloring)
+oklab = "1.1"
+
+# Utilities
+tempfile = "3"
+cliclack = "0.5.5"
+ratatui = "0.30.2"
+
+[build-dependencies]
+burn-onnx = "0.21.0"
+toml = "1.1"
+ureq = { version = "3.*", default-features = false, features = ["rustls"] }
+
+# Maximum optimization for release builds
+[profile.release]
+opt-level = 3
+strip = true
+
+# Optimize dependencies in dev/test profile (drastically accelerates Burn ONNX inference)
+[profile.dev.package."*"]
+opt-level = 3
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+codegen-units = 1
+lto = "fat"

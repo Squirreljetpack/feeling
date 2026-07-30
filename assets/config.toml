@@ -1,0 +1,138 @@
+[moods]
+prefix = "Emotional state: "
+# text anchor subtracted when computing basis ray shift vectors (e.g. "Emotional state").
+neutral_string = "Emotional state"
+
+# Power exponent used for power-weighted centroid blending of basis mood colors.
+blend_steepness = 2.0
+
+# Gate on emotional saliency's control of the produced color's saturation/lightness.
+# Effective saliency `Seff = 1 + P*(S - 1)` for predicted saliency S in [0, 1]
+effective_saliency_gate = 50
+
+# Neutral baseline Oklab lightness (0-100), default 65.
+baseline_oklab_l = 65
+
+# Minimum contribution percentage (0-100) required for a basis mood to be included in blending.
+# min_contribution = 7
+# top_k = 5
+
+
+[[moods.pairs]]
+mood = "happy"
+color = "#1ba84f"
+
+[[moods.pairs]]
+mood = "sad"
+color = "#0b3575"
+
+[[moods.pairs]]
+mood = "drained"
+color = "#495057"
+
+[[moods.pairs]]
+mood = "energetic"
+color = "#c5451e"
+
+[[moods.pairs]]
+mood = "reflective"
+color = "#816248"
+
+[[moods.pairs]]
+mood = "purposeful"
+color = "#FFC107"
+
+[[moods.pairs]]
+mood = "passive"
+color = "#7b8caa"
+
+[[moods.pairs]]
+mood = "frustrated"
+color = "#ae1550"
+
+[[moods.pairs]]
+mood = "pained"
+color = "#870c0c"
+
+[[moods.pairs]]
+mood = "comfortable"
+color = "#4eb9b9"
+
+[[moods.pairs]]
+mood = "guarded"
+color = "#244646"
+
+[[moods.pairs]]
+mood = "vulnerable"
+color = "#b02cbc"
+
+[[moods.pairs]]
+mood = "isolated"
+color = "#090977"
+
+[[moods.pairs]]
+mood = "connected"
+color = "#f0911c"
+
+[[moods.pairs]]
+mood = "confused"
+color = "#5a0475"
+
+[[moods.pairs]]
+mood = "lucid"
+color = "#bbcc8c"
+
+[[moods.pairs]]
+mood = "proud"
+color = "#f354e3"
+
+[[moods.pairs]]
+mood = "let down"
+color = "#351c88"
+
+[[moods.pairs]]
+mood = "engrossed"
+color = "#e1e0ce"
+
+[[moods.pairs]]
+mood = "disgusted"
+color = "#49891b"
+
+[tasks]
+colors = ["dark_red", "dark_yellow", "dark_green"]
+default_priority = 5                               # 1..=999
+default_scheduled_priority = 10                    # 1..=999 (scheduled tasks)
+
+[grid]
+week_rolling = false
+month_rolling = true
+year_rolling = true
+week_start = "Monday"
+
+[today_view]
+include_overdue = false
+
+[tasks_view]
+# Start the TUI tasks app with scheduled tasks merged into ! / @ / @done /
+# @due (Ctrl+a toggles live).
+include_scheduled = false
+
+[date]
+# uk | us — chrono-english dialect for date parsing. Only affects ambiguous
+# slash forms like "3/5/2024" (uk = 5 March, us = March 5); ISO dates and
+# relative phrases ("yesterday", "3 days ago") are unaffected.
+dialect = "uk"
+
+[tracker]
+# example:
+# [tracker.<name>]
+# interval = "1 day"
+# kind = "float"      # text | number | float
+# min = 0
+# max = 10
+
+[editor]
+# Write the "# additional notes below" hint line as the first line of the
+# body editor (feeling .. / feeling ! name ..). When disabled the temp file
+# starts empty and your first line is kept verbatim.
+hint = true

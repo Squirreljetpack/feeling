@@ -1,0 +1,7 @@
+/target
+/feeling/
+.venv/
+.pixi/
+TODO/
+/cache
+.cargo/config.toml
