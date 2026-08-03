@@ -5,3 +5,4 @@
 TODO/
 /cache
 .cargo/config.toml
+/model/

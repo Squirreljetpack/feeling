@@ -10,3 +10,6 @@ $feeling headache
 $feeling strong
 $feeling like a million bucks
 $feeling amazing
+$feeling terrible
+$feeling stuffed
+$feeling ambitious

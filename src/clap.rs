@@ -217,7 +217,7 @@ fn parse_special_command(args: &[String]) -> anyhow::Result<Command> {
         });
     }
 
-    if first == ":config" {
+    if first == ":config" || first == ":c" {
         if args.len() != 1 {
             anyhow::bail!("Usage: feeling :config");
         }

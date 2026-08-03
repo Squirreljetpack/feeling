@@ -212,6 +212,20 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// Cosine similarity of two equal-length vectors; `None` when either vector
+/// is zero-length (the angle is undefined) or the lengths differ.
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() || a.is_empty() {
+        return None;
+    }
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na <= f32::EPSILON || nb <= f32::EPSILON {
+        return None;
+    }
+    Some(dot(a, b) / (na * nb))
+}
+
 /// Query SQLite `embedding_cache` for `text`. On miss, compute `embedder.embed(text, prefix)`
 /// and persist the resulting BLOB to `embedding_cache`.
 pub async fn get_or_embed_cached(
@@ -277,5 +291,25 @@ mod tests {
     #[test]
     fn dot_product() {
         assert_eq!(dot(&[1.0, 2.0], &[3.0, 4.0]), 11.0);
+    }
+
+    #[test]
+    fn cosine_similarity_parallel() {
+        let c = cosine_similarity(&[3.0, 4.0], &[6.0, 8.0]).unwrap();
+        assert!((c - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal() {
+        let c = cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).unwrap();
+        assert!(c.abs() < 1e-5);
+    }
+
+    #[test]
+    fn cosine_similarity_undefined() {
+        // Zero vector / empty / length mismatch are all undefined.
+        assert!(cosine_similarity(&[0.0, 0.0], &[1.0, 2.0]).is_none());
+        assert!(cosine_similarity(&[1.0, 2.0], &[]).is_none());
+        assert!(cosine_similarity(&[1.0, 2.0], &[1.0, 2.0, 3.0]).is_none());
     }
 }

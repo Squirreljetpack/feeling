@@ -901,13 +901,34 @@ pub fn handle_color<W: Write>(mood: &str, config: &Config, out: &mut W) -> Resul
     let saliency = embedder.predict_saliency(&raw_emb);
     let s_eff = axes.effective_saliency(saliency);
 
+    // Shift vector = prefixed embedding relative to the neutral base — the
+    // vector the NNLS regression projects onto (see `regression_weights`).
+    let shift: Vec<f32> = embedding
+        .iter()
+        .zip(&axes.base_vector)
+        .map(|(e, b)| e - b)
+        .collect();
+    let cos_raw_shift = crate::embed::cosine_similarity(&raw_emb, &shift);
+
     // --- output ---
+    writeln!(out, "anchors:")?;
+    for bm in &axes.basis_moods {
+        writeln!(out, "  {}", bm.mood)?;
+    }
     writeln!(out, "mood              : {mood}")?;
     writeln!(
         out,
         "embedding         : {} floats (first 8: {:?}...)",
         embedding.len(),
         &embedding[..8.min(embedding.len())]
+    )?;
+    writeln!(
+        out,
+        "cos sim(raw,shift): {}",
+        match cos_raw_shift {
+            Some(c) => format!("{c:.4}"),
+            None => "(undefined)".to_string(),
+        }
     )?;
     writeln!(out, "saliency score    : {saliency:.4}",)?;
     writeln!(out, "effective saliency: {s_eff:.4}")?;

@@ -39,7 +39,7 @@ Trackers and grids:
   feeling :color <feeling>                            projected mood color diagnostic
 
 Other:
-  feeling :config                                     open the config in $VISUAL / $EDITOR
+  feeling :config | :c                                open the config in $VISUAL / $EDITOR
   feeling :clear [@date]                              clear all mood entries from a day
   feeling :prune                                      delete completed and expired tasks
   feeling -q | -v <command>                           quiet / verbose; flags go first
