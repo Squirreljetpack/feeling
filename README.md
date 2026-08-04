@@ -21,13 +21,15 @@ Usage:
   feeling -tracker value                              add a record to a custom tracker
   feeling [-tracker value] [-tracker value] <mood>    add a records to a custom trackers linked a mood
   feeling !                                           list oneshot tasks
-  feeling ! <description> [@<time>] [.. [body]]       create a oneshot task
+  feeling ! <name> [@<time>] [.. [body]]              create a oneshot task
+  feeling ! @ [name]                                  create a recurring task (interactive)
+  feeling ! @<time> [:name]                           create a scheduled task
+    [@duration] [.. [body]]                             (interactive unless all 3 fields are specified)
+  feeling [@date]                                     today view
   feeling @ / @done / @due                            view recurring / done / due tasks
-  feeling ! @ [description]                           create a recurring task (interactive)
-  feeling                                             today view
   feeling - query_words [count]                       update completion of a task
-                                                        the task must be the unique one containing
-                                                        the words in their order
+                                                        the task must be the unique one whose name
+                                                        contains the words in their order
   feeling - id [count]                                update task completion by id
 
 Trackers and grids:

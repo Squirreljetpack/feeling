@@ -20,7 +20,7 @@ baseline_oklab_l = 65
 
 [[moods.pairs]]
 mood = "happy"
-color = "#80A070"
+color = "#84c741"
 
 [[moods.pairs]]
 mood = "sad"
@@ -59,8 +59,12 @@ mood = "nostalgic"
 color = "#B56547"
 
 [[moods.pairs]]
-mood = "grounded"
+mood = "humble"
 color = "#3B2319"
+
+[[moods.pairs]]
+mood = "secure"
+color = "#2E1352"
 
 [[moods.pairs]]
 mood = "pained"

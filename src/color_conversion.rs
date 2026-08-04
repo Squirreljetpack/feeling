@@ -43,45 +43,36 @@ pub fn rgb_to_oklab(c: Color) -> Oklab {
             // grayscale ramp). Sufficient for terminal color hedging.
             let n = v as u16;
             if n < 16 {
-                match n {
-                    0 => (0, 0, 0),
-                    1 => (128, 0, 0),
-                    2 => (0, 128, 0),
-                    3 => (128, 128, 0),
-                    4 => (0, 0, 128),
-                    5 => (128, 0, 128),
-                    6 => (0, 128, 128),
-                    7 => (192, 192, 192),
-                    8 => (128, 128, 128),
-                    9 => (255, 0, 0),
-                    10 => (0, 255, 0),
-                    11 => (255, 255, 0),
-                    12 => (0, 0, 255),
-                    13 => (255, 0, 255),
-                    14 => (0, 255, 255),
-                    15 => (255, 255, 255),
-                    _ => (128, 128, 128),
-                }
+                static ANSI_16: [(u8, u8, u8); 16] = [
+                    (0, 0, 0),
+                    (128, 0, 0),
+                    (0, 128, 0),
+                    (128, 128, 0),
+                    (0, 0, 128),
+                    (128, 0, 128),
+                    (0, 128, 128),
+                    (192, 192, 192),
+                    (128, 128, 128),
+                    (255, 0, 0),
+                    (0, 255, 0),
+                    (255, 255, 0),
+                    (0, 0, 255),
+                    (255, 0, 255),
+                    (0, 255, 255),
+                    (255, 255, 255),
+                ];
+                ANSI_16[n as usize]
             } else if n >= 232 {
                 let gray = 8 + 10 * (n - 232) as u8;
                 (gray, gray, gray)
             } else {
                 let idx = n - 16;
-                let r = if idx / 36 != 0 {
-                    55 + 40 * (idx / 36)
-                } else {
-                    0
-                } as u8;
-                let g = if !(idx / 6).is_multiple_of(6) {
-                    55 + 40 * ((idx / 6) % 6)
-                } else {
-                    0
-                } as u8;
-                let b = if !idx.is_multiple_of(6) {
-                    55 + 40 * (idx % 6)
-                } else {
-                    0
-                } as u8;
+                let r_idx = idx / 36;
+                let g_idx = (idx / 6) % 6;
+                let b_idx = idx % 6;
+                let r = if r_idx != 0 { 55 + 40 * r_idx } else { 0 } as u8;
+                let g = if g_idx != 0 { 55 + 40 * g_idx } else { 0 } as u8;
+                let b = if b_idx != 0 { 55 + 40 * b_idx } else { 0 } as u8;
                 (r, g, b)
             }
         }

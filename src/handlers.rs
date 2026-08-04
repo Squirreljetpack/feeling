@@ -277,12 +277,12 @@ async fn handle_entry(pool: &SqlitePool, config: &Config, entry: Entry) -> Resul
     };
 
     if feeling.is_empty() && customs.is_empty() && body.is_empty() {
-        anyhow::bail!("Nothing to log. Provide a mood (e.g. 'feeling ok') or a custom tracker (e.g. 'feeling -sleep 8')");
+        anyhow::bail!("Nothing to log");
     }
 
     // Validate mood doesn't contain tabs (view output uses tab separators)
     if feeling.contains('\t') {
-        anyhow::bail!("Mood cannot contain tab characters (view output uses tab separators)");
+        anyhow::bail!("Mood cannot contain tab characters");
     }
 
     // Determine the timestamp (Unix epoch in seconds).
@@ -911,10 +911,6 @@ pub fn handle_color<W: Write>(mood: &str, config: &Config, out: &mut W) -> Resul
     let cos_raw_shift = crate::embed::cosine_similarity(&raw_emb, &shift);
 
     // --- output ---
-    writeln!(out, "anchors:")?;
-    for bm in &axes.basis_moods {
-        writeln!(out, "  {}", bm.mood)?;
-    }
     writeln!(out, "mood              : {mood}")?;
     writeln!(
         out,

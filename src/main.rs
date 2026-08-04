@@ -4,6 +4,10 @@ use feeling::{
 
 use cba::{_dbg, bog};
 use cba::{bo::load_type_or_default, bog::BogOkExt};
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[tokio::main]
 async fn main() {

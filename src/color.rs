@@ -40,6 +40,8 @@ pub struct ColorAxes {
     /// Gate P on emotional saliency: effective saliency Seff = 1 + P*(S - 1).
     pub emotional_saliency_gate: Percentage,
     pub prefix: String,
+    /// Precomputed Gram matrix (A^T A) of dot products between basis mood vectors.
+    pub gram_matrix: Vec<Vec<f32>>,
 }
 
 /// NNLS regression output for one embedding: the contributing basis moods
@@ -84,6 +86,14 @@ impl ColorAxes {
             });
         }
 
+        let n = basis_moods.len();
+        let mut gram_matrix = vec![vec![0.0_f32; n]; n];
+        for i in 0..n {
+            for j in 0..n {
+                gram_matrix[i][j] = crate::embed::dot(&basis_moods[i].vector, &basis_moods[j].vector);
+            }
+        }
+
         Ok(Self {
             basis_moods,
             base_vector: v_base,
@@ -93,6 +103,7 @@ impl ColorAxes {
             baseline_oklab_l: config.baseline_oklab_l,
             emotional_saliency_gate: config.effective_saliency_gate,
             prefix: config.prefix.clone(),
+            gram_matrix,
         })
     }
 
@@ -104,43 +115,53 @@ impl ColorAxes {
     /// no basis moods, a zero-length target vector, a zero total NNLS weight,
     /// or no basis mood surviving the `min_contribution` filter.
     pub fn regression_weights(&self, embedding: &[f32]) -> Option<RegressionWeights> {
-        if self.basis_moods.is_empty() {
+        let n = self.basis_moods.len();
+        if n == 0 || embedding.len() != self.base_vector.len() {
             return None;
         }
 
-        // 1. Shift vector relative to base embedding
-        let v_x: Vec<f32> = embedding
-            .iter()
-            .zip(&self.base_vector)
-            .map(|(x, b)| x - b)
-            .collect();
-        let len_x_norm: f32 = v_x.iter().map(|v| v * v).sum::<f32>().sqrt();
-
+        // 1. Compute shift vector length relative to base embedding without heap allocation
+        let mut len_x_sq = 0.0_f32;
+        for (&x, &b) in embedding.iter().zip(&self.base_vector) {
+            let diff = x - b;
+            len_x_sq += diff * diff;
+        }
+        let len_x_norm = len_x_sq.sqrt();
         if len_x_norm < 1e-6 {
             return None;
         }
+        let inv_norm = 1.0 / len_x_norm;
 
-        let target_vec = crate::embed::normalize(&v_x);
+        // 2. Compute at_b = A^T * target_vec directly without vector allocation
+        let mut at_b = vec![0.0_f32; n];
+        for (i, bm) in self.basis_moods.iter().enumerate() {
+            let mut dot_sum = 0.0_f32;
+            for ((&x, &b), &v) in embedding.iter().zip(&self.base_vector).zip(&bm.vector) {
+                dot_sum += (x - b) * v;
+            }
+            at_b[i] = dot_sum * inv_norm;
+        }
 
-        // 2. Run NNLS on normalized basis vectors
-        let columns: Vec<Vec<f32>> = self
-            .basis_moods
-            .iter()
-            .map(|bm| bm.vector.clone())
-            .collect();
-        let weights = nnls(&columns, &target_vec, 300);
+        // 3. Run NNLS on precomputed Gram matrix and at_b
+        let weights = nnls_core(&self.gram_matrix, &at_b, 300);
 
         let total_weight: f32 = weights.iter().sum();
         if total_weight < 1e-6 {
             return None;
         }
 
-        // 3. Filter out weights by contribution % < min_contribution
+        // 4. Filter out weights by contribution % < min_contribution
+        let min_contrib_thresh = self.min_contribution.to_float();
         let mut raw: Vec<(usize, f32)> = weights
             .iter()
             .enumerate()
-            .map(|(i, &w)| (i, w))
-            .filter(|&(_, w)| w / total_weight >= self.min_contribution.to_float())
+            .filter_map(|(i, &w)| {
+                if w / total_weight >= min_contrib_thresh {
+                    Some((i, w))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         if raw.is_empty() {
@@ -153,19 +174,25 @@ impl ColorAxes {
             raw.truncate(self.top_k);
         }
 
-        // 4. Compute rescaled weights using blend_steepness
-        let max_w = raw.iter().map(|(_, w)| *w).fold(0.0_f32, f32::max);
+        // 5. Compute rescaled weights using blend_steepness
+        let max_w = raw.iter().fold(0.0_f32, |acc, (_, w)| acc.max(*w));
 
         let rescaled: Vec<f32> = if max_w < 1e-6 {
             vec![1.0 / raw.len() as f32; raw.len()]
         } else {
+            let inv_max_w = 1.0 / max_w;
+            let mut sum_u = 0.0_f32;
             let unnorm: Vec<f32> = raw
                 .iter()
-                .map(|(_, w)| (w / max_w).powf(self.steepness))
+                .map(|(_, w)| {
+                    let u = (w * inv_max_w).powf(self.steepness);
+                    sum_u += u;
+                    u
+                })
                 .collect();
-            let sum_u: f32 = unnorm.iter().sum();
             if sum_u > 0.0 {
-                unnorm.iter().map(|u| u / sum_u).collect()
+                let inv_sum = 1.0 / sum_u;
+                unnorm.into_iter().map(|u| u * inv_sum).collect()
             } else {
                 vec![1.0 / raw.len() as f32; raw.len()]
             }
@@ -239,11 +266,6 @@ impl ColorAxes {
         gated_saliency(saliency, self.emotional_saliency_gate.to_float())
     }
 
-    /// Project embedding with default saliency (1.0) if no embedder/text is passed.
-    pub fn project(&self, embedding: &[f32]) -> Oklab {
-        self.project_full(embedding, None, None)
-    }
-
     /// Compute the final Oklab color for a mood string from its
     /// (already computed) prefix-anchored embedding, caching the color per
     /// mood so repeated moods within one render run the pipeline once.
@@ -266,30 +288,20 @@ impl ColorAxes {
     }
 }
 
-/// Lawson-Hanson Non-Negative Least Squares (NNLS) solver.
-/// Solves min || A x - b ||_2 s.t. x >= 0.
-pub fn nnls(columns: &[Vec<f32>], b: &[f32], max_iter: usize) -> Vec<f32> {
-    let n = columns.len();
+/// Lawson-Hanson Non-Negative Least Squares (NNLS) solver using precomputed Gram matrix A^T A and A^T b.
+pub fn nnls_core(at_a: &[Vec<f32>], at_b: &[f32], max_iter: usize) -> Vec<f32> {
+    let n = at_b.len();
     if n == 0 {
         return Vec::new();
     }
 
     let mut x = vec![0.0_f32; n];
     let mut passive = vec![false; n];
+    let mut w = at_b.to_vec();
 
-    let at_b: Vec<f32> = columns
-        .iter()
-        .map(|col| crate::embed::dot(col, b))
-        .collect();
-
-    let mut at_a = vec![vec![0.0_f32; n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            at_a[i][j] = crate::embed::dot(&columns[i], &columns[j]);
-        }
-    }
-
-    let mut w = at_b.clone();
+    let mut pass_indices = Vec::with_capacity(n);
+    let mut z = vec![0.0_f32; n];
+    let mut aug = Vec::new();
 
     for _ in 0..max_iter {
         let mut max_w = 0.0_f32;
@@ -309,26 +321,19 @@ pub fn nnls(columns: &[Vec<f32>], b: &[f32], max_iter: usize) -> Vec<f32> {
         passive[j] = true;
 
         loop {
-            let pass_indices: Vec<usize> = (0..n).filter(|&i| passive[i]).collect();
+            pass_indices.clear();
+            for i in 0..n {
+                if passive[i] {
+                    pass_indices.push(i);
+                }
+            }
+
             let k = pass_indices.len();
             if k == 0 {
                 break;
             }
 
-            let mut sub_a = vec![vec![0.0_f32; k]; k];
-            let mut sub_b = vec![0.0_f32; k];
-            for (r, &pi) in pass_indices.iter().enumerate() {
-                sub_b[r] = at_b[pi];
-                for (c, &pj) in pass_indices.iter().enumerate() {
-                    sub_a[r][c] = at_a[pi][pj];
-                }
-            }
-
-            let z_sub = solve_linear_system(&sub_a, &sub_b);
-            let mut z = vec![0.0_f32; n];
-            for (r, &pi) in pass_indices.iter().enumerate() {
-                z[pi] = z_sub[r];
-            }
+            solve_sub_system_in_place(at_a, at_b, &pass_indices, &mut aug, &mut z);
 
             let mut all_pos = true;
             for &pi in &pass_indices {
@@ -339,7 +344,7 @@ pub fn nnls(columns: &[Vec<f32>], b: &[f32], max_iter: usize) -> Vec<f32> {
             }
 
             if all_pos {
-                x = z;
+                x.copy_from_slice(&z);
                 break;
             }
 
@@ -384,49 +389,90 @@ pub fn nnls(columns: &[Vec<f32>], b: &[f32], max_iter: usize) -> Vec<f32> {
     x
 }
 
-/// Helper: Solve A x = b for a small (k x k) system via Gaussian elimination with partial pivoting.
-fn solve_linear_system(a: &[Vec<f32>], b: &[f32]) -> Vec<f32> {
-    let k = b.len();
-    if k == 0 {
+/// Lawson-Hanson Non-Negative Least Squares (NNLS) solver.
+/// Solves min || A x - b ||_2 s.t. x >= 0.
+pub fn nnls(columns: &[Vec<f32>], b: &[f32], max_iter: usize) -> Vec<f32> {
+    let n = columns.len();
+    if n == 0 {
         return Vec::new();
     }
-    let mut aug: Vec<Vec<f32>> = (0..k)
-        .map(|r| {
-            let mut row = a[r].clone();
-            row.push(b[r]);
-            row
-        })
+
+    let at_b: Vec<f32> = columns
+        .iter()
+        .map(|col| crate::embed::dot(col, b))
         .collect();
+
+    let mut at_a = vec![vec![0.0_f32; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            at_a[i][j] = crate::embed::dot(&columns[i], &columns[j]);
+        }
+    }
+
+    nnls_core(&at_a, &at_b, max_iter)
+}
+
+/// In-place solver for sub-system A^T A * z = A^T b on passive index set using flat augmented matrix.
+fn solve_sub_system_in_place(
+    at_a: &[Vec<f32>],
+    at_b: &[f32],
+    pass_indices: &[usize],
+    aug: &mut Vec<f32>,
+    z: &mut [f32],
+) {
+    let k = pass_indices.len();
+    let stride = k + 1;
+    aug.clear();
+    aug.resize(k * stride, 0.0);
+
+    for (r, &pi) in pass_indices.iter().enumerate() {
+        for (c, &pj) in pass_indices.iter().enumerate() {
+            aug[r * stride + c] = at_a[pi][pj];
+        }
+        aug[r * stride + k] = at_b[pi];
+    }
 
     for i in 0..k {
         let mut max_row = i;
+        let mut max_val = aug[i * stride + i].abs();
         for r in (i + 1)..k {
-            if aug[r][i].abs() > aug[max_row][i].abs() {
+            let val = aug[r * stride + i].abs();
+            if val > max_val {
+                max_val = val;
                 max_row = r;
             }
         }
-        aug.swap(i, max_row);
 
-        let pivot = aug[i][i];
+        if max_row != i {
+            for c in i..=k {
+                aug.swap(i * stride + c, max_row * stride + c);
+            }
+        }
+
+        let pivot = aug[i * stride + i];
         if pivot.abs() < 1e-9 {
             continue;
         }
 
+        let inv_pivot = 1.0 / pivot;
         for c in i..=k {
-            aug[i][c] /= pivot;
+            aug[i * stride + c] *= inv_pivot;
         }
 
         for r in 0..k {
             if r != i {
-                let factor = aug[r][i];
+                let factor = aug[r * stride + i];
                 for c in i..=k {
-                    aug[r][c] -= factor * aug[i][c];
+                    aug[r * stride + c] -= factor * aug[i * stride + c];
                 }
             }
         }
     }
 
-    (0..k).map(|r| aug[r][k]).collect()
+    z.fill(0.0);
+    for (r, &pi) in pass_indices.iter().enumerate() {
+        z[pi] = aug[r * stride + k];
+    }
 }
 
 /// Effective saliency after the emotional gate: `Seff = 1 + P*(S - 1)` for gate
@@ -460,11 +506,11 @@ pub fn average_oklab(colors: &[Oklab]) -> Option<Oklab> {
         sum.a += c.a;
         sum.b += c.b;
     }
-    let n = colors.len() as f32;
+    let inv_n = 1.0 / colors.len() as f32;
     Some(Oklab {
-        l: sum.l / n,
-        a: sum.a / n,
-        b: sum.b / n,
+        l: sum.l * inv_n,
+        a: sum.a * inv_n,
+        b: sum.b * inv_n,
     })
 }
 
@@ -481,15 +527,19 @@ pub fn blend_weights(normalized_scores: &[f32], steepness: f32) -> Vec<f32> {
     let mut weights: Vec<f32> = if max_delta <= 1e-6 {
         vec![1.0 / normalized_scores.len() as f32; normalized_scores.len()]
     } else {
+        let inv_max_delta = 1.0 / max_delta;
         normalized_scores
             .iter()
-            .map(|&t| ((t - 0.5).abs() / max_delta).powf(steepness))
+            .map(|&t| (((t - 0.5).abs()) * inv_max_delta).powf(steepness))
             .collect()
     };
 
     let total_weight: f32 = weights.iter().sum();
-    for w in weights.iter_mut() {
-        *w /= total_weight;
+    if total_weight > 0.0 {
+        let inv_total = 1.0 / total_weight;
+        for w in weights.iter_mut() {
+            *w *= inv_total;
+        }
     }
     weights
 }
