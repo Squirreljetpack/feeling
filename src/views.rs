@@ -56,17 +56,18 @@ impl TodayHorizon {
 pub struct TodayEntry {
     pub id: Option<i64>,
     pub time: i64,
-    pub entry_type: &'static str, // "feeling", "custom", "task", "completion"
+    pub entry_type: &'static str, // "feeling", "custom", "task"
     pub label: String,
     pub body: String,
     pub task_id: Option<i64>,
     pub priority: i32,
-    /// Marker glyph rendered for this entry.
-    pub badge: char,
+    /// Marker glyph rendered for this entry; `None` renders nothing (e.g.
+    /// journal entries without a configured `journal_badge`).
+    pub badge: Option<char>,
     /// Dynamic dot color: Oklab mood projection for feeling entries,
     /// bin_score_color for numeric custom entries, completion_badge
-    /// colors for tasks, last task_color for completion events, or a
-    /// neutral dark gray for journal-only and text-tracker entries.
+    /// colors for tasks, or a neutral dark gray for journal-only and
+    /// text-tracker entries.
     pub color: RatColor,
 }
 
@@ -765,10 +766,12 @@ pub async fn fetch_today_entries(
     let feelings = crate::sql::fetch_feelings_between(pool, day_start_epoch, day_end_epoch).await?;
 
     for f in feelings {
+        // Journal-only entries (empty mood) use the configured journal
+        // badge, or none at all; mood entries always get the filled dot.
         let badge = if f.mood.is_empty() {
-            TEXT_ENTRY_BADGE
+            config.today_view.journal_badge
         } else {
-            '●'
+            Some('●')
         };
 
         // Resolve this entry's embedding → color (cached per mood; legacy
@@ -817,12 +820,12 @@ pub async fn fetch_today_entries(
             // Text payloads have no score; they use the shared text badge.
             TrackerType::Text => (
                 format!("{}: {}", tracker_type, row.score),
-                TEXT_ENTRY_BADGE,
+                Some(TEXT_ENTRY_BADGE),
                 None,
             ),
             TrackerType::Number | TrackerType::Float => {
                 let score = score_f64(&row.score);
-                (format!("{}: {}", tracker_type, score), '◆', Some(score))
+                (format!("{}: {}", tracker_type, score), Some('◆'), Some(score))
             }
         };
         let color = match score {
@@ -877,7 +880,13 @@ pub async fn fetch_today_entries(
             body: detail,
             task_id: Some(task.id),
             priority: task.priority,
-            badge: '○',
+            // Done tasks render ✓ on the task row itself (completion rows
+            // are no longer emitted); in-progress stays ○.
+            badge: if crate::task::is_task_done(task.target_count, task.completions) {
+                Some('✓')
+            } else {
+                Some('○')
+            },
             color,
         });
     }
@@ -921,7 +930,9 @@ pub async fn fetch_today_entries(
             body: detail,
             task_id: Some(task.id),
             priority: task.priority,
-            badge: ch,
+            // Done states (completed or auto-completed) render ✓ on the
+            // task row; failed and open keep the scheduled_badge glyph.
+            badge: Some(if state == "done" { '✓' } else { ch }),
             color: RatColor::from_crossterm(color),
         });
     }
@@ -947,7 +958,11 @@ pub async fn fetch_today_entries(
             body: detail,
             task_id: Some(task.id),
             priority: task.priority,
-            badge: '○',
+            badge: if crate::task::is_task_done(task.target_count, task.completions) {
+                Some('✓')
+            } else {
+                Some('○')
+            },
             color: RatColor::from_crossterm(
                 completion_badge(
                     config,
@@ -956,26 +971,6 @@ pub async fn fetch_today_entries(
                 )
                 .1,
             ),
-        });
-    }
-
-    // 5. Today's todo completions
-    let completions =
-        crate::sql::fetch_completions_with_names(pool, day_start_epoch, day_end_epoch).await?;
-
-    for completion in completions {
-        let time = completion.time;
-        let name = completion.name;
-        entries.push(TodayEntry {
-            id: None,
-            time,
-            entry_type: "completion",
-            label: name.clone(),
-            body: String::new(),
-            task_id: Some(completion.todo_id),
-            priority: 0,
-            badge: '✓',
-            color: RatColor::from_crossterm(*config.tasks.colors.last().unwrap()),
         });
     }
 

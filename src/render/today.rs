@@ -569,30 +569,49 @@ impl Render for TodayApp {
             Action::Quit => self.should_quit = true,
             Action::Accept => self.mark_selected_complete().await,
             Action::Delete(false) => {
-                // Only feeling entries are deletable in the today view.
-                if let Some(entry) = self
-                    .entries
-                    .get(self.selected)
-                    .filter(|e| e.entry_type == "feeling")
-                {
-                    self.modal = Some(Modal::DeleteConfirm {
-                        name: entry.label.clone(),
-                        // Default to the safe option (No).
-                        cursor: 1,
-                    });
+                // Any entry type is deletable (feeling / custom / task);
+                // journal entries have an empty label → the modal says
+                // "Delete journal entry?" (see render_today_modal).
+                if let Some(entry) = self.entries.get(self.selected) {
+                    if matches!(entry.entry_type, "feeling" | "custom" | "task") {
+                        self.modal = Some(Modal::DeleteConfirm {
+                            name: entry.label.clone(),
+                            // Default to the safe option (No).
+                            cursor: 1,
+                        });
+                    }
                 }
             }
             Action::Delete(true) => {
                 // Sent by `Accept` in the DeleteConfirm modal (which closes
-                // itself first); delete the selected feeling entry.
-                if let Some(entry) = self
-                    .entries
-                    .get(self.selected)
-                    .filter(|e| e.entry_type == "feeling")
-                {
-                    if let Some(id) = entry.id {
-                        self.delete_feeling(id).await;
-                        self.refresh().await;
+                // itself first); delete the selected entry by its type.
+                if let Some(entry) = self.entries.get(self.selected) {
+                    match entry.entry_type {
+                        "feeling" => {
+                            if let Some(id) = entry.id {
+                                self.delete_feeling(id).await;
+                                self.refresh().await;
+                            }
+                        }
+                        "custom" => {
+                            if let Some(id) = entry.id {
+                                if let Err(e) = crate::sql::delete_custom(&self.pool, id).await {
+                                    log::error!("Failed to delete custom entry {id}: {e}");
+                                }
+                                self.refresh().await;
+                            }
+                        }
+                        "task" => {
+                            if let Some(task_id) = entry.task_id {
+                                if let Err(e) =
+                                    crate::sql::delete_task(&self.pool, task_id).await
+                                {
+                                    log::error!("Failed to delete task {task_id}: {e}");
+                                }
+                                self.refresh().await;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -652,7 +671,8 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
             };
             let cells = vec![
                 Cell::from(time),
-                Cell::from(entry.badge.to_string()).style(dot_style),
+                Cell::from(entry.badge.map(|c| c.to_string()).unwrap_or_default())
+                    .style(dot_style),
                 label_cell,
             ];
             Row::new(cells).height(1)
@@ -772,7 +792,14 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
             (Some("Edit Tracker".to_string()), lines, None)
         }
         Modal::DeleteConfirm { name, cursor } => {
-            let lines = vec![
+            let label = if name.is_empty() {
+                Line::from(Span::styled(
+                    "Delete journal entry?",
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::ITALIC),
+                ))
+            } else {
                 Line::from(vec![
                     Span::styled(
                         "Delete",
@@ -781,9 +808,9 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
                             .add_modifier(Modifier::ITALIC),
                     ),
                     Span::raw(format!(" '{}'?", name)),
-                ]),
-                Line::from(""),
-            ];
+                ])
+            };
+            let lines = vec![label, Line::from("")];
             (None, lines, Some(confirm_buttons(*cursor)))
         }
         Modal::ResetConfirm { name, cursor, .. } => {

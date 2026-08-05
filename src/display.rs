@@ -123,12 +123,14 @@ pub fn format_today_simple(entries: &[TodayEntry]) -> String {
         };
 
         // Same badge as the TUI: marker glyph colored with the entry's dot
-        // color. Reset-colored badges (e.g. 0% tasks) stay plain.
+        // color. Reset-colored badges (e.g. 0% tasks) stay plain; entries
+        // without a badge (journal entries, no journal_badge configured)
+        // render an empty cell.
         let color = entry.color.into_crossterm();
-        let badge = if color == CtColor::Reset {
-            entry.badge.to_string()
-        } else {
-            entry.badge.to_string().with(color).to_string()
+        let badge = match entry.badge {
+            None => String::new(),
+            Some(c) if color == CtColor::Reset => c.to_string(),
+            Some(c) => c.to_string().with(color).to_string(),
         };
 
         output.push_str(&format!("{}\t{}\t{}\t{}\n", ts, badge, label, detail));

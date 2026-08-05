@@ -200,6 +200,10 @@ pub struct TodayViewConfig {
     /// Defaults to false: only tasks due within the horizon are shown.
     #[serde(default)]
     pub include_overdue: bool,
+    /// Badge glyph for journal-only entries (feeling rows with no mood);
+    /// `None` renders no badge at all.
+    #[serde(default)]
+    pub journal_badge: Option<char>,
 }
 
 /// Settings consumed by [`crate::color::ColorAxes`] when building the mood

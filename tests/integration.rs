@@ -1744,10 +1744,12 @@ async fn test_config_view_sections_deserialize() {
         [tasks_view]
         [today_view]
         include_overdue = true
+        journal_badge = '•'
         "#,
     )
     .unwrap();
     assert!(config.today_view.include_overdue);
+    assert_eq!(config.today_view.journal_badge, Some('•'));
     assert!(config.grid.week_rolling);
     assert!(!config.grid.month_rolling);
     assert_eq!(config.grid.week_start, chrono::Weekday::Sun);
@@ -2629,6 +2631,58 @@ async fn test_delete_feeling_removes_linked_custom_rows() {
     assert_eq!(customs, 0);
 }
 
+/// `sql::delete_custom` (the today view's custom-entry delete path) removes
+/// exactly the targeted row.
+#[tokio::test]
+async fn test_delete_custom_row() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    config.tracker.insert(
+        "sleep".to_string(),
+        feeling::config::TrackerSetting {
+            interval: None,
+            min: None,
+            max: None,
+            kind: TrackerType::Float,
+        },
+    );
+
+    // Two custom entries, one linked to a feeling.
+    let cmd = parse_from(vec![
+        "ok".to_string(),
+        "-sleep".to_string(),
+        "8".to_string(),
+    ])
+    .unwrap();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap();
+    let cmd = parse_from(vec!["-sleep".to_string(), "7".to_string()]).unwrap();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap();
+
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM custom ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 2);
+
+    // Delete the unlinked row; the linked one (and its feeling) survive.
+    let affected = feeling::sql::delete_custom(&pool, ids[1]).await.unwrap();
+    assert_eq!(affected, 1);
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 1);
+    let feelings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(feelings, 1);
+}
+
 #[tokio::test]
 async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
     // The custom.feeling FK has no ON DELETE CASCADE, so deleting a feeling
@@ -2974,10 +3028,9 @@ async fn test_fetch_today_entries_carries_custom_ids() {
 }
 
 #[tokio::test]
-async fn test_fetch_today_entries_completion_carries_task_id() {
-    // The today view's Enter-on-completed-task support relies on ✓
-    // completion entries carrying their todo_id so the render loop can
-    // resolve the task (toggle once-tasks, count dialog for recurring).
+async fn test_fetch_today_entries_completed_task_has_check_badge() {
+    // The today view renders one row per task; a completed task's row
+    // carries the ✓ badge — completion rows are no longer emitted (WP9 9e).
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
@@ -3015,14 +3068,57 @@ async fn test_fetch_today_entries_completion_carries_task_id() {
     )
     .await
     .unwrap();
-    let completion = entries
+    assert!(
+        !entries.iter().any(|e| e.entry_type == "completion"),
+        "completion rows must not appear in today view"
+    );
+    let task_rows: Vec<_> = entries
         .iter()
-        .find(|e| e.entry_type == "completion")
-        .expect("completion entry must appear in today view");
-    assert_eq!(
-        completion.task_id,
-        Some(task_id),
-        "completion entry must carry its todo_id"
+        .filter(|e| e.entry_type == "task" && e.label == "completed task")
+        .collect();
+    assert_eq!(task_rows.len(), 1, "exactly one task row expected");
+    assert_eq!(task_rows[0].badge, Some('✓'), "done task row must carry ✓");
+    assert_eq!(task_rows[0].task_id, Some(task_id));
+}
+
+/// `[today_view] journal_badge` controls the journal-only entry badge; None
+/// renders no badge at all.
+#[tokio::test]
+async fn test_today_view_journal_badge() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    config.moods.init_with(&pool, feeling::embed::global_embedder())
+        .await
+        .unwrap();
+
+    // Journal-only entry: mood '' with a body (via CLI: `feeling .. text`).
+    let cmd = parse_from(vec!["..".to_string(), "a journal note".to_string()]).unwrap();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap();
+
+    // Default (no journal_badge): no badge at all.
+    let mut out = Vec::new();
+    feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out)
+        .await
+        .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    let line = output.lines().find(|l| l.contains("a journal note")).unwrap();
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert_eq!(cols[1], "", "journal badge must be empty by default: {line:?}");
+
+    // With a configured badge, the journal entry carries it.
+    config.today_view.journal_badge = Some('•');
+    let mut out = Vec::new();
+    feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out)
+        .await
+        .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    let line = output.lines().find(|l| l.contains("a journal note")).unwrap();
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert!(
+        cols[1].contains('•'),
+        "journal badge must come from config: {line:?}"
     );
 }
 

@@ -190,16 +190,6 @@ pub struct CompletionRow {
     pub count: i64,
 }
 
-/// A completion event joined with its task name and id (today view). The
-/// `todo_id` lets the today view resolve the full task when the user acts on
-/// an already-completed task's `✓` entry.
-#[derive(Debug, Clone)]
-pub struct CompletionEvent {
-    pub todo_id: i64,
-    pub time: i64,
-    pub name: String,
-}
-
 /// A task deleted by `prune_tasks`, with the reason it was pruned. The
 /// `short_id` is `None` for completed oneshot tasks (their id is cleared on
 /// completion).
@@ -855,7 +845,9 @@ pub async fn fetch_due_oneshot_tasks(
     floor: i64,
 ) -> Result<Vec<TaskRow>> {
     // available_duration_secs IS NULL excludes scheduled tasks — the today
-    // view fetches those separately via fetch_scheduled_today.
+    // view fetches those separately via fetch_scheduled_today. Completed
+    // tasks are included too: their row carries the ✓ badge (the today view
+    // no longer emits separate completion rows).
     let tasks = sqlx::query_as::<_, TaskRow>(
         r#"SELECT t.*, SUM(tc.count) AS completions
            FROM todos t
@@ -865,7 +857,6 @@ pub async fn fetch_due_oneshot_tasks(
            AND t.start_time <= ?
            AND t.start_time >= ?
            GROUP BY t.id
-           HAVING completions IS NULL OR completions < t.target_count
            ORDER BY t.priority DESC, t.start_time ASC"#,
     )
     .bind(horizon_end)
@@ -925,6 +916,8 @@ pub fn recurring_available(task: &TaskRow, now: i64) -> bool {
 /// Active recurring tasks with completions scoped to the current interval,
 /// filtered to those currently within their availability window.
 pub async fn fetch_active_recurring_tasks(pool: &SqlitePool, now: i64) -> Result<Vec<TaskRow>> {
+    // Completed tasks are included too: their row carries the ✓ badge (the
+    // today view no longer emits separate completion rows).
     let tasks = sqlx::query_as::<_, TaskRow>(
         r#"SELECT t.*, SUM(tc.count) AS completions
            FROM todos t
@@ -937,7 +930,6 @@ pub async fn fetch_active_recurring_tasks(pool: &SqlitePool, now: i64) -> Result
            WHERE t.interval_secs IS NOT NULL
            AND (t.end_time IS NULL OR t.end_time > ?)
            GROUP BY t.id
-           HAVING completions IS NULL OR completions < t.target_count
            ORDER BY t.priority DESC"#,
     )
     .bind(now)
@@ -953,32 +945,14 @@ pub async fn fetch_active_recurring_tasks(pool: &SqlitePool, now: i64) -> Result
         .collect())
 }
 
-/// Completion events joined with their task names in `[start, end]`.
-pub async fn fetch_completions_with_names(
-    pool: &SqlitePool,
-    start: i64,
-    end: i64,
-) -> Result<Vec<CompletionEvent>> {
-    let rows = sqlx::query(
-        r#"SELECT tc.todo_id, tc.time, t.name FROM todo_completions tc
-           JOIN todos t ON tc.todo_id = t.id
-           WHERE tc.time >= ? AND tc.time <= ?
-           ORDER BY tc.time ASC"#,
-    )
-    .bind(start)
-    .bind(end)
-    .fetch_all(pool)
-    .await
-    .context("Failed to fetch today's completions")?;
-
-    Ok(rows
-        .iter()
-        .map(|row| CompletionEvent {
-            todo_id: row.get("todo_id"),
-            time: row.get("time"),
-            name: row.get("name"),
-        })
-        .collect())
+/// Delete a custom tracker entry row.
+pub async fn delete_custom(pool: &SqlitePool, id: i64) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM custom WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to delete custom row")?;
+    Ok(result.rows_affected())
 }
 
 /// The full row for one task, with completions scoped to the current

@@ -248,12 +248,12 @@ impl ColorAxes {
         })
     }
 
-    /// Compute the final Oklab color for an embedding, using raw text & the
-    /// embedder for saliency prediction (computed inside
-    /// [`Self::regression_weights`]).
-    pub fn weights_to_color(&self, embedding: &[f32], embedder: &Embedder, mood_text: &str) -> Oklab {
+    /// Compute the final Oklab color from a [`MoodWeights`] regression
+    /// result (produced by [`Self::regression_weights`]); `None` (the
+    /// pipeline fell through) maps to the neutral baseline color.
+    pub fn weights_to_color(&self, reg: Option<&MoodWeights>) -> Oklab {
         let l_neutral = self.baseline_oklab_l.to_float();
-        let Some(reg) = self.regression_weights(embedding, embedder, mood_text) else {
+        let Some(reg) = reg else {
             return Oklab {
                 l: l_neutral,
                 a: 0.0,
@@ -342,7 +342,8 @@ impl ColorAxes {
                 Err(_) => return None,
             },
         };
-        let oklab = self.weights_to_color(&embedding, embedder, mood);
+        let reg = self.regression_weights(&embedding, embedder, mood);
+        let oklab = self.weights_to_color(reg.as_ref());
         cache.insert(mood.to_string(), oklab);
         Some(oklab)
     }
