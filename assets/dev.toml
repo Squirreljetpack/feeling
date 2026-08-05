@@ -1,7 +1,7 @@
 [moods]
-prefix = "Emotional state: "
-# text anchor subtracted when computing basis ray shift vectors (e.g. "Emotional state").
-neutral_string = "Emotional state"
+prefix_string = "person says: "
+# text anchor subtracted when computing basis ray shift vectors (e.g. "this person feels").
+base_string = "this person feels:"
 
 # Power exponent used for power-weighted centroid blending of basis mood colors.
 blend_steepness = 2.0

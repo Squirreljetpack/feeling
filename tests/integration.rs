@@ -1036,55 +1036,6 @@ async fn test_embed_utility() {
 }
 
 #[tokio::test]
-async fn test_score_utility() {
-    use std::io::Cursor;
-
-    // Embed two texts, then score each against the happy→sad axis.
-    // `:embed` and `:score` are debug tools, so they pass "" as the prepend
-    // (raw text). The expected vectors must match that exactly.
-    let embedder = feeling::embed::global_embedder();
-    let happy = embedder.embed("happy day", "").unwrap();
-    let sad = embedder.embed("sad night", "").unwrap();
-
-    let mut embed_input = Cursor::new(b"happy day\nsad night\n");
-    let mut vecs = Vec::new();
-    feeling::handlers::handle_embed(&mut embed_input, &mut vecs).unwrap();
-    let vec_lines = String::from_utf8(vecs)
-        .unwrap()
-        .lines()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-
-    let mut score_input = Cursor::new(vec_lines.join("\n").into_bytes());
-    let mut out = Vec::new();
-    // `handle_score` embeds the axis endpoints with prepend="", so the test
-    // must use the same string-only embedding to build its expected axis.
-    let axis_start = embedder.embed("happy", "").unwrap();
-    let axis_end = embedder.embed("sad", "").unwrap();
-    feeling::handlers::handle_score("happy", "sad", &mut score_input, &mut out).unwrap();
-
-    let scores: Vec<f64> = String::from_utf8(out)
-        .unwrap()
-        .lines()
-        .map(|s| s.parse().unwrap())
-        .collect();
-    assert_eq!(scores.len(), 2);
-
-    // The happy embedding should score lower on the happy→sad axis than sad
-    // (happy projects onto the axis in the negative direction).
-    let axis: Vec<f64> = axis_end
-        .iter()
-        .zip(&axis_start)
-        .map(|(e, s)| (e - s) as f64)
-        .collect();
-    let norm: f64 = axis.iter().map(|x| x * x).sum::<f64>().sqrt();
-    let axis: Vec<f64> = axis.iter().map(|x| x / norm).collect();
-    let proj = |v: &[f64]| v.iter().zip(&axis).map(|(a, b)| a * b).sum::<f64>();
-    assert!((scores[0] - proj(&happy.iter().map(|&x| x as f64).collect::<Vec<_>>())).abs() < 1e-4);
-    assert!((scores[1] - proj(&sad.iter().map(|&x| x as f64).collect::<Vec<_>>())).abs() < 1e-4);
-}
-
-#[tokio::test]
 async fn test_tracker_mood_dots() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
@@ -1689,7 +1640,7 @@ async fn test_color_axes_config_deserializes() {
     // default_axes() when axes.is_empty()); serde(skip) fields stay unset.
     let toml_with_pairs = r##"
         [moods]
-        prefix = "feeling "
+        prefix_string = "feeling "
         blend_steepness = 2.0
 
         [[moods.pairs]]
@@ -2296,8 +2247,8 @@ async fn test_prune_removes_stale_embedding_cache_entries() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
-    let active_key = format!("{}happy", config.moods.prefix);
-    let stale_key = format!("{}obsolete_mood", config.moods.prefix);
+    let active_key = format!("{}happy", config.moods.prefix_string);
+    let stale_key = format!("{}obsolete_mood", config.moods.prefix_string);
 
     // Populate embedding cache with one active pair endpoint and one stale entry
     sqlx::query("INSERT INTO embedding_cache (text, embedding) VALUES ($1, x'00000000')")

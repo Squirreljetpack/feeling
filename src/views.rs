@@ -228,35 +228,16 @@ async fn display_mood_tracker<W: Write>(
     let mut day_has_entry: Vec<bool> = vec![false; num_days];
 
     for f in &feelings {
-        let id = f.id;
-        let mood = &f.mood;
         let time = f.time;
-        let blob = f.embedding.as_ref();
         let day_idx = ((time - start_epoch) / day_secs) as usize;
         if day_idx >= num_days {
             continue;
         }
         day_has_entry[day_idx] = true;
 
-        // Resolve this entry's embedding → color. Rows without a stored
-        // embedding (legacy) recompute the prefix-anchored embedding,
-        // backfill the row, then project through the mood → color cache so
-        // repeated moods run the pipeline once.
-        let embedding = blob.and_then(|b| crate::embed::blob_to_embedding(b));
-        let oklab = if let Some(emb) = embedding {
-            Some(axes.project_full(&emb, Some(embedder), Some(mood)))
-        } else if !mood.is_empty() {
-            match embedder.embed(mood, &axes.prefix) {
-                Ok(emb) => {
-                    let blob_bytes = crate::embed::embedding_to_blob(&emb);
-                    let _ = crate::sql::update_feeling_embedding(pool, id, &blob_bytes).await;
-                    axes.mood_color(embedder, &emb, mood, &mut color_cache)
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+        let oklab = axes
+            .mood_color_cached(pool, embedder, f, &mut color_cache)
+            .await;
 
         if let Some(oklab) = oklab {
             day_colors[day_idx].push(oklab);
@@ -734,34 +715,22 @@ pub async fn fetch_today_entries(
     let feelings = crate::sql::fetch_feelings_between(pool, day_start_epoch, day_end_epoch).await?;
 
     for f in feelings {
-        let id = f.id;
-        let mood = f.mood;
-        let body = f.body;
-        let time = f.time;
-        let blob = f.embedding;
-
-        let badge = if mood.is_empty() {
+        let badge = if f.mood.is_empty() {
             TEXT_ENTRY_BADGE
         } else {
             '●'
         };
-        let embedding = blob.as_deref().and_then(crate::embed::blob_to_embedding);
-        let oklab = if let Some(emb) = embedding {
-            Some(axes.project_full(&emb, Some(embedder), Some(&mood)))
-        } else if !mood.is_empty() {
-            // Legacy rows without a stored embedding: recompute, backfill the
-            // row, then project (cached per mood).
-            match embedder.embed(&mood, &axes.prefix) {
-                Ok(emb) => {
-                    let blob_bytes = crate::embed::embedding_to_blob(&emb);
-                    let _ = crate::sql::update_feeling_embedding(pool, id, &blob_bytes).await;
-                    axes.mood_color(embedder, &emb, &mood, color_cache)
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+
+        // Resolve this entry's embedding → color (cached per mood; legacy
+        // rows without a stored embedding are re-embedded + backfilled).
+        let oklab = axes
+            .mood_color_cached(pool, embedder, &f, color_cache)
+            .await;
+
+        let id = f.id;
+        let mood = f.mood;
+        let body = f.body;
+        let time = f.time;
         let color = oklab
             .map(|oklab| {
                 let rgb = oklab.to_srgb();

@@ -210,10 +210,12 @@ pub struct TodayViewConfig {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct MoodConfig {
-    pub prefix: String,
+    /// Text anchor prefixed to a mood before embedding ("person says: "), so
+    /// the embedding encodes the mood as a statement.
+    pub prefix_string: String,
 
     /// Text used as the neutral baseline anchor subtracted when computing basis ray shift vectors.
-    pub neutral_string: String,
+    pub base_string: String,
 
     /// Power exponent used for power-weighted centroid blending of basis mood colors.
     pub blend_steepness: f32,
@@ -240,8 +242,8 @@ pub struct MoodConfig {
 impl Default for MoodConfig {
     fn default() -> Self {
         Self {
-            prefix: "Emotional state: ".to_string(),
-            neutral_string: "Emotional state".to_string(),
+            prefix_string: "person says: ".to_string(),
+            base_string: "this person feels:".to_string(),
             pairs: Vec::new(),
             blend_steepness: 2.0,
             min_contribution: Percentage::new(7),

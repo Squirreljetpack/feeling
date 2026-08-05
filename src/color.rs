@@ -1,6 +1,6 @@
 //! Mood color computation via NNLS basis-ray regression & saliency scaling.
 //!
-//! Mood strings are embedded with the bge-small model, projected onto a
+//! Mood strings are embedded with the nomic-embed-text-v1.5 model, projected onto a
 //! user-defined set of basis `MoodEndpoint`s via Non-Negative Least Squares (NNLS),
 //! filtered by contribution %, blended using power-weighted centroid mixing in Oklab,
 //! and rescaled by predicted emotional saliency, gated by the configured
@@ -14,10 +14,12 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use oklab::Oklab;
+use sqlx::SqlitePool;
 
 use crate::color_conversion::rgb_to_oklab;
 use crate::config::MoodConfig;
 use crate::embed::Embedder;
+use crate::sql::FeelingRow;
 use crate::utils::Percentage;
 
 /// State for a single basis mood ray.
@@ -39,20 +41,28 @@ pub struct ColorAxes {
     pub baseline_oklab_l: Percentage,
     /// Gate P on emotional saliency: effective saliency Seff = 1 + P*(S - 1).
     pub emotional_saliency_gate: Percentage,
-    pub prefix: String,
+    /// Text anchor prefixed to a mood before embedding ("person says: "), so
+    /// the embedding encodes the mood as a statement.
+    pub prefix_string: String,
+    /// Text used as the neutral baseline anchor subtracted when computing basis ray shift vectors.
+    pub base_string: String,
     /// Precomputed Gram matrix (A^T A) of dot products between basis mood vectors.
     pub gram_matrix: Vec<Vec<f32>>,
 }
 
 /// NNLS regression output for one embedding: the contributing basis moods
-/// with their raw NNLS weights and the rescaled weights used for blending.
+/// with their raw NNLS weights, the rescaled weights used for blending, and
+/// the predicted emotional saliency of the mood text.
 #[derive(Debug)]
-pub struct RegressionWeights {
+pub struct MoodWeights {
     /// (basis mood index, raw NNLS weight), filtered by `min_contribution`,
     /// sorted descending, truncated to `top_k` — same order as [`Self::rescaled`].
     pub raw: Vec<(usize, f32)>,
     /// Power-weighted rescale of `raw`, normalized to sum 1.
     pub rescaled: Vec<f32>,
+    /// Predicted emotional saliency S in [0, 1] for the mood text (1.0 when
+    /// the text is empty or the prediction fails).
+    pub saliency: f32,
 }
 
 impl ColorAxes {
@@ -70,12 +80,17 @@ impl ColorAxes {
         }
 
         let v_base =
-            crate::embed::get_or_embed_cached(pool, embedder, &config.neutral_string, "").await?;
+            crate::embed::get_or_embed_cached(pool, embedder, &config.base_string, "").await?;
 
         let mut basis_moods = Vec::with_capacity(config.pairs.len());
         for pair in &config.pairs {
-            let s = crate::embed::get_or_embed_cached(pool, embedder, &pair.mood, &config.prefix)
-                .await?;
+            let s = crate::embed::get_or_embed_cached(
+                pool,
+                embedder,
+                &pair.mood,
+                &config.prefix_string,
+            )
+            .await?;
             let diff: Vec<f32> = s.iter().zip(&v_base).map(|(x, y)| x - y).collect();
             let norm_vector = crate::embed::normalize(&diff);
             let oklab = rgb_to_oklab(pair.color);
@@ -90,7 +105,8 @@ impl ColorAxes {
         let mut gram_matrix = vec![vec![0.0_f32; n]; n];
         for i in 0..n {
             for j in 0..n {
-                gram_matrix[i][j] = crate::embed::dot(&basis_moods[i].vector, &basis_moods[j].vector);
+                gram_matrix[i][j] =
+                    crate::embed::dot(&basis_moods[i].vector, &basis_moods[j].vector);
             }
         }
 
@@ -102,19 +118,26 @@ impl ColorAxes {
             top_k: config.top_k,
             baseline_oklab_l: config.baseline_oklab_l,
             emotional_saliency_gate: config.effective_saliency_gate,
-            prefix: config.prefix.clone(),
+            prefix_string: config.prefix_string.clone(),
+            base_string: config.base_string.clone(),
             gram_matrix,
         })
     }
 
-    /// Run the NNLS regression and weight-rescaling stages of the pipeline
-    /// for `embedding`, returning the contributing basis moods with their raw
-    /// NNLS weights and the rescaled (power-weighted, normalized) weights.
+    /// Run the NNLS regression, weight-rescaling, and saliency calculation
+    /// stages of the pipeline for `embedding`, returning the contributing
+    /// basis moods with their raw NNLS weights, rescaled weights, and the
+    /// predicted emotional saliency of `mood_text`.
     ///
     /// Returns `None` when the pipeline falls through to the neutral color:
     /// no basis moods, a zero-length target vector, a zero total NNLS weight,
     /// or no basis mood surviving the `min_contribution` filter.
-    pub fn regression_weights(&self, embedding: &[f32]) -> Option<RegressionWeights> {
+    pub fn regression_weights(
+        &self,
+        embedding: &[f32],
+        embedder: &Embedder,
+        mood_text: &str,
+    ) -> Option<MoodWeights> {
         let n = self.basis_moods.len();
         if n == 0 || embedding.len() != self.base_vector.len() {
             return None;
@@ -198,18 +221,41 @@ impl ColorAxes {
             }
         };
 
-        Some(RegressionWeights { raw, rescaled })
+        // 6. Predict emotional saliency from the un-prefixed raw text.
+        // Any failure (embedding, session run, extraction) falls back to 1.0 with a log message.
+        let trimmed_text = mood_text.trim();
+        let saliency = if !trimmed_text.is_empty() {
+            let res = embedder
+                .embed(trimmed_text, "")
+                .and_then(|raw_emb| embedder.predict_saliency(&raw_emb));
+            match res {
+                Ok(s) => s,
+                Err(err) => {
+                    cba::wbog!(
+                        "color";
+                        "Saliency prediction failed for {:?}: {err:#}, falling back to 1.0",
+                        trimmed_text
+                    );
+                    1.0
+                }
+            }
+        } else {
+            1.0
+        };
+
+        Some(MoodWeights {
+            raw,
+            rescaled,
+            saliency,
+        })
     }
 
-    /// Compute the final Oklab color for an embedding, optionally using raw text & embedder for saliency prediction.
-    pub fn project_full(
-        &self,
-        embedding: &[f32],
-        embedder: Option<&Embedder>,
-        mood_text: Option<&str>,
-    ) -> Oklab {
+    /// Compute the final Oklab color for an embedding, using raw text & the
+    /// embedder for saliency prediction (computed inside
+    /// [`Self::regression_weights`]).
+    pub fn project_full(&self, embedding: &[f32], embedder: &Embedder, mood_text: &str) -> Oklab {
         let l_neutral = self.baseline_oklab_l.to_float();
-        let Some(reg) = self.regression_weights(embedding) else {
+        let Some(reg) = self.regression_weights(embedding, embedder, mood_text) else {
             return Oklab {
                 l: l_neutral,
                 a: 0.0,
@@ -229,17 +275,9 @@ impl ColorAxes {
             blended_b += color.b * rw;
         }
 
-        // 6. Compute saliency S from raw embedding using saliency adaptor
-        let saliency = match (embedder, mood_text) {
-            (Some(emb), Some(text)) if !text.trim().is_empty() => {
-                if let Ok(raw_emb) = emb.embed(text, "") {
-                    emb.predict_saliency(&raw_emb)
-                } else {
-                    1.0
-                }
-            }
-            _ => 1.0,
-        };
+        // 6. Saliency S is already computed for `mood_text` in
+        //    `regression_weights`.
+        let saliency = reg.saliency;
 
         // 7. Gate saliency: Seff = 1 + P*(S - 1), linearly interpolating raw
         //    saliency toward 1.0 so P=100 keeps S unchanged and P=0 disables it.
@@ -266,23 +304,54 @@ impl ColorAxes {
         gated_saliency(saliency, self.emotional_saliency_gate.to_float())
     }
 
-    /// Compute the final Oklab color for a mood string from its
-    /// (already computed) prefix-anchored embedding, caching the color per
-    /// mood so repeated moods within one render run the pipeline once.
+    /// Compute the final Oklab color for a mood string from its (already
+    /// computed) prefix-anchored embedding. Uncached — use
+    /// [`Self::mood_color_cached`] when running a render loop so repeated
+    /// moods run the pipeline once.
+    pub fn mood_color(&self, embedder: &Embedder, embedding: &[f32], mood: &str) -> Oklab {
+        self.project_full(embedding, embedder, mood)
+    }
+
+    /// Resolve a feeling row to its final Oklab color within a single render
+    /// run, caching the color per mood so repeated moods run the pipeline
+    /// once.
     ///
-    /// The caller is responsible for embedding `mood` (with `self.prefix`)
-    /// and persisting it, e.g. backfilling a feeling row.
-    pub fn mood_color(
+    /// Uses the row's persisted (prefix-anchored) embedding BLOB when
+    /// available; rows without one (legacy) have the mood embedded on the
+    /// fly (with `self.prefix_string`) and are backfilled via
+    /// [`crate::sql::update_feeling_embedding`].
+    ///
+    /// Returns `None` for empty moods or when embedding fails.
+    pub async fn mood_color_cached(
         &self,
+        pool: &SqlitePool,
         embedder: &Embedder,
-        embedding: &[f32],
-        mood: &str,
+        feeling: &FeelingRow,
         cache: &mut HashMap<String, Oklab>,
     ) -> Option<Oklab> {
+        let mood = &feeling.mood;
         if let Some(oklab) = cache.get(mood) {
             return Some(*oklab);
         }
-        let oklab = self.project_full(embedding, Some(embedder), Some(mood));
+        if mood.is_empty() {
+            return None;
+        }
+        let embedding = match feeling
+            .embedding
+            .as_deref()
+            .and_then(crate::embed::blob_to_embedding)
+        {
+            Some(emb) => emb,
+            None => match embedder.embed(mood, &self.prefix_string) {
+                Ok(emb) => {
+                    let blob_bytes = crate::embed::embedding_to_blob(&emb);
+                    let _ = crate::sql::update_feeling_embedding(pool, feeling.id, &blob_bytes).await;
+                    emb
+                }
+                Err(_) => return None,
+            },
+        };
+        let oklab = self.mood_color(embedder, &embedding, mood);
         cache.insert(mood.to_string(), oklab);
         Some(oklab)
     }

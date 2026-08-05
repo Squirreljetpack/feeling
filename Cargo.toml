@@ -49,11 +49,8 @@ thiserror = "2"
 # Terminal detection
 atty = "0.2"
 
-# Embeddings (Phase 6): all-MiniLM-L6-v2 ONNX via Burn
-burn = { version = "0.21.0", features = ["flex"] }
-burn-flex = "0.21.0"
-burn-store = "0.21.0"
-burn-onnx = "0.21.0"
+# Embeddings: nomic-embed-text-v1.5 INT8 QDQ ONNX via ONNX Runtime (ort)
+ort = "2.0.0-rc.13"
 tokenizers = { version = "0.*", default-features = false, features = ["onig"] }
 ureq = { version = "3.*", default-features = false, features = ["rustls"] }
 
@@ -67,7 +64,6 @@ ratatui = "0.30.2"
 mimalloc = "0.1"
 
 [build-dependencies]
-burn-onnx = "0.21.0"
 toml = "1.1"
 ureq = { version = "3.*", default-features = false, features = ["rustls"] }
 
@@ -76,7 +72,7 @@ ureq = { version = "3.*", default-features = false, features = ["rustls"] }
 opt-level = 3
 strip = true
 
-# Optimize dependencies in dev/test profile (drastically accelerates Burn ONNX inference)
+# Optimize dependencies in dev/test profile (drastically accelerates ONNX Runtime inference)
 [profile.dev.package."*"]
 opt-level = 3
 

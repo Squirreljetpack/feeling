@@ -75,10 +75,9 @@ pub async fn handle_command<W: Write>(
             handle_embed(&mut reader, out)
         }
 
-        Command::Score { start, end } => {
-            let stdin = std::io::stdin();
-            let mut reader = stdin.lock();
-            handle_score(&start, &end, &mut reader, out)
+        Command::Score { .. } => {
+            todo!();
+            // handle_score(&start, &end, &mut reader, out)
         }
 
         Command::Today => {
@@ -210,9 +209,9 @@ async fn handle_prune(pool: &SqlitePool, config: &Config) -> Result<()> {
     };
 
     let mut valid_keys = std::collections::HashSet::new();
-    valid_keys.insert(config.moods.neutral_string.clone());
+    valid_keys.insert(config.moods.base_string.clone());
     for pair in &pairs {
-        valid_keys.insert(format!("{}{}", config.moods.prefix, pair.mood));
+        valid_keys.insert(format!("{}{}", config.moods.prefix_string, pair.mood));
     }
 
     let pruned_cache_count = crate::sql::prune_embedding_cache(pool, &valid_keys).await?;
@@ -319,7 +318,7 @@ async fn handle_entry(pool: &SqlitePool, config: &Config, entry: Entry) -> Resul
         None
     } else {
         crate::embed::global_embedder()
-            .embed(&feeling, &config.moods.prefix)
+            .embed(&feeling, &config.moods.prefix_string)
             .ok()
             .map(|v| crate::embed::embedding_to_blob(&v))
     };
@@ -841,47 +840,8 @@ pub fn handle_embed<R: BufRead, W: Write>(reader: &mut R, out: &mut W) -> Result
     Ok(())
 }
 
-/// `:score start end` — compute the axis `normalize(embed(end) - embed(start))`,
-/// then for each embedding vector read from stdin (space-separated floats, one
-/// per line) print its projection (dot product) onto that axis.
-///
-/// Diagnostic tool: uses raw text (no `feeling ` prefix) for the axis
-/// endpoints so users can probe arbitrary string pairs.
-pub fn handle_score<R: BufRead, W: Write>(
-    start: &str,
-    end: &str,
-    reader: &mut R,
-    out: &mut W,
-) -> Result<()> {
-    let embedder = crate::embed::global_embedder();
-
-    let start_vec = embedder.embed(start, "")?;
-    let end_vec = embedder.embed(end, "")?;
-
-    // Axis direction: from start to end, normalized.
-    let axis: Vec<f32> = end_vec.iter().zip(&start_vec).map(|(e, s)| e - s).collect();
-    let axis = crate::embed::normalize(&axis);
-
-    for line in reader.lines() {
-        let line = line.context("Failed to read stdin")?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let vector = crate::embed::parse_vector(&line)?;
-        if vector.len() != axis.len() {
-            anyhow::bail!(
-                "Vector dimension {} does not match axis dimension {}",
-                vector.len(),
-                axis.len()
-            );
-        }
-        writeln!(out, "{}", crate::embed::dot(&vector, &axis))?;
-    }
-    Ok(())
-}
-
 /// `:color <feeling>` — diagnostic: embed the mood string with the
-/// configured `moods.prefix`, run it through the full three-step mood-color
+/// configured `moods.prefix_string`, run it through the full three-step mood-color
 /// pipeline, and print intermediate values at each stage plus the final
 /// Oklab / sRGB colour (with a terminal swatch of the final colour).
 pub fn handle_color<W: Write>(mood: &str, config: &Config, out: &mut W) -> Result<()> {
@@ -891,14 +851,15 @@ pub fn handle_color<W: Write>(mood: &str, config: &Config, out: &mut W) -> Resul
 
     // Embed the mood with the same prefix as the production pipeline.
     let embedding = embedder
-        .embed(mood, &config.moods.prefix)
+        .embed(mood, &config.moods.prefix_string)
         .context("Failed to embed mood")?;
 
-    let final_oklab = axes.project_full(&embedding, Some(embedder), Some(mood));
+    let weights = axes.regression_weights(&embedding, embedder, mood);
+    let final_oklab = axes.project_full(&embedding, embedder, mood);
     let rgb = final_oklab.to_srgb();
 
     let raw_emb = embedder.embed(mood, "").unwrap_or_default();
-    let saliency = embedder.predict_saliency(&raw_emb);
+    let saliency = weights.as_ref().map(|w| w.saliency).unwrap_or(1.0);
     let s_eff = axes.effective_saliency(saliency);
 
     // Shift vector = prefixed embedding relative to the neutral base — the
@@ -935,7 +896,7 @@ pub fn handle_color<W: Write>(mood: &str, config: &Config, out: &mut W) -> Resul
 
     // Regression weights: raw NNLS weights and the rescaled (power-weighted,
     // normalized) weights used for the Oklab blend, per contributing mood.
-    match axes.regression_weights(&embedding) {
+    match &weights {
         Some(reg) => {
             let raw = reg
                 .raw

@@ -138,11 +138,11 @@ jobs:
           # temp HOME, so re-whitelist it here for the git-lfs commands.
           git config --global --add safe.directory "$(pwd)"
           git lfs pull
-          # Fail fast: build.rs panics if the model is below MODEL_MIN_BYTES (20MB),
+          # Fail fast: build.rs panics if the model is below MODEL_MIN_BYTES (100MB),
           # which is exactly what a bare LFS pointer looks like.
-          size=$(wc -c < assets/model/bge_small.onnx)
-          if [ "$size" -lt 20000000 ]; then
-            echo "git-lfs failed to materialize assets/model/bge_small.onnx (size=$size)" >&2
+          size=$(wc -c < assets/model/embed.onnx)
+          if [ "$size" -lt 100000000 ]; then
+            echo "git-lfs failed to materialize assets/model/embed.onnx (size=$size)" >&2
             exit 1
           fi
         shell: "bash"

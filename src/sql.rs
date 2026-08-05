@@ -456,9 +456,9 @@ pub async fn prune_embedding_cache(
                     .execute(pool)
                     .await
                     .is_ok()
-                {
-                    pruned += 1;
-                }
+            {
+                pruned += 1;
+            }
         }
     }
     Ok(pruned)

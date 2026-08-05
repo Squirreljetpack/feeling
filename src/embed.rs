@@ -1,79 +1,53 @@
-//! Mood embeddings: the bge-small-en-v1.5 int8 ONNX model and its tokenizer are
-//! bundled into the binary at build time (`build.rs` compiles the ONNX weights
-//! into `OUT_DIR/model/bge_small.rs`; the tokenizer is `include_bytes!`-d).
-//! Inference runs via Burn + burn-onnx and returns 384-dim sentence embeddings.
+//! Mood embeddings: the nomic-embed-text-v1.5 int8 QDQ ONNX model and its tokenizer are
+//! bundled into the binary at build time (`include_bytes!` directly from
+//! `assets/model/`; see build.rs). Inference runs via ONNX Runtime (ort) with
+//! dynamic sequence lengths — no fixed-shape padding — and returns 768-dim
+//! sentence embeddings.
+//!
+//! ort 2.0's `Session::run` takes `&mut self`, so each model is wrapped in a
+//! `Mutex` to share the embedder through `OnceLock`; the app serializes
+//! inference anyway, so the lock never contends.
 //!
 //! Loading is a one-time, infallible-in-practice operation guarded by a
 //! `OnceLock`; a failure to load the bundled model is a build/runtime invariant
 //! violation and panics (`global_embedder`).
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
-use burn::tensor::{Int, Tensor, TensorData};
-use burn_flex::Flex;
+use ort::session::Session;
+use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
-type Backend = Flex;
+/// Dimensionality of nomic-embed-text-v1.5 sentence embeddings.
+pub const EMBED_DIM: usize = 768;
+/// Tokenizer truncation cap. The model's native context length is 2048; inputs
+/// longer than this are truncated before tokenization. (Unlike the old
+/// burn-onnx build, the ONNX graph keeps dynamic input shapes — ort runs the
+/// actual token count, so short moods do not pay a fixed 512-token forward
+/// pass.)
+const MAX_SEQ_LEN: usize = 2048;
 
-pub mod bge_small {
-    include!(concat!(env!("OUT_DIR"), "/model/bge_small.rs"));
-}
+static EMBED_ONNX: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/model/embed.onnx"));
+static SALIENCY_ONNX: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/model/saliency_adaptor.onnx"));
+static TOKENIZER_JSON: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/model/tokenizer.json"));
 
-pub mod saliency_adaptor {
-    include!(concat!(env!("OUT_DIR"), "/model/saliency_adaptor.rs"));
-}
-
-/// Dimensionality of bge-small-en-v1.5 sentence embeddings.
-pub const EMBED_DIM: usize = 384;
-/// Model supports up to 256 tokens; the model's own truncation cap.
-const MAX_SEQ_LEN: usize = 256;
-
-static TOKENIZER_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tokenizer.json"));
-
-/// A loaded embedding model: Burn model + WordPiece tokenizer + Saliency Adaptor.
+/// A loaded embedding model: ort sessions for the embedder and saliency
+/// adaptor, plus the WordPiece tokenizer.
 pub struct Embedder {
-    model: bge_small::Model<Backend>,
-    saliency_model: saliency_adaptor::Model<Backend>,
+    embed: Mutex<Session>,
+    saliency: Mutex<Session>,
     tokenizer: Tokenizer,
 }
 
 impl Embedder {
     /// Load the bundled embedding model and tokenizer.
     pub fn load() -> Result<Self> {
-        let tokenizer = Tokenizer::from_bytes(TOKENIZER_BYTES).map_err(|e| {
-            anyhow::anyhow!("Failed to load embedded tokenizer: {e}")
-        })?;
-        let model = bge_small::Model::default();
-        let saliency_model = saliency_adaptor::Model::default();
-
-        Ok(Self {
-            model,
-            saliency_model,
-            tokenizer,
-        })
-    }
-
-    /// Compute the sentence embedding for `text`.
-    ///
-    /// `text` is trimmed before tokenization. `prepend` is concatenated to
-    /// the trimmed text before embedding (use a non-empty prefix like
-    /// `"feeling "` to anchor every embedding into the same lexical
-    /// neighbourhood — the MiniLM space is wide, and a stray noun like
-    /// `"happy"` would otherwise drift away from a `"great mood"` usage).
-    /// Pass `""` for raw text-mode embedding (e.g. diagnostic `:embed`).
-    ///
-    /// Returns a unit-length (L2-normalized) vector of `EMBED_DIM` floats.
-    pub fn embed(&self, text: &str, prepend: &str) -> Result<Vec<f32>> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            // Pad-only input would be meaningless; return a zero vector.
-            return Ok(vec![0.0; EMBED_DIM]);
-        }
-        let text = format!("{prepend}{trimmed}");
-
-        // Tokenize with truncation to the model's max sequence length.
-        let mut tokenizer = self.tokenizer.clone();
+        let mut tokenizer = Tokenizer::from_bytes(TOKENIZER_JSON)
+            .map_err(|e| anyhow::anyhow!("Failed to load embedded tokenizer: {e}"))?;
         tokenizer
             .with_truncation(Some(tokenizers::TruncationParams {
                 max_length: MAX_SEQ_LEN,
@@ -82,7 +56,43 @@ impl Embedder {
                 stride: 0,
             }))
             .map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
-        let enc = tokenizer
+
+        let embed = Session::builder()
+            .context("Failed to build ORT session builder")?
+            .commit_from_memory(EMBED_ONNX)
+            .context("Failed to load embedded embed.onnx session")?;
+        let saliency = Session::builder()
+            .context("Failed to build ORT session builder")?
+            .commit_from_memory(SALIENCY_ONNX)
+            .context("Failed to load embedded saliency_adaptor.onnx session")?;
+
+        Ok(Self {
+            embed: Mutex::new(embed),
+            saliency: Mutex::new(saliency),
+            tokenizer,
+        })
+    }
+
+    /// Compute the sentence embedding for `text`.
+    ///
+    /// `text` is trimmed before tokenization. `prepend` is concatenated to
+    /// the trimmed text before embedding.
+    /// Pass `""` for raw text-mode embedding (e.g. diagnostic `:embed`).
+    ///
+    /// Inputs longer than `MAX_SEQ_LEN` (2048) tokens are silently truncated;
+    /// at ~1500 words this exceeds any realistic mood-journal entry.
+    ///
+    /// Returns a unit-length (L2-normalized) vector of `EMBED_DIM` floats.
+    pub fn embed(&self, text: &str, prepend: &str) -> Result<Vec<f32>> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            // Empty input would be meaningless; return a zero vector.
+            return Ok(vec![0.0; EMBED_DIM]);
+        }
+        let text = format!("{prepend}{trimmed}");
+
+        let enc = self
+            .tokenizer
             .encode(text.as_str(), true)
             .map_err(|e| anyhow::anyhow!("Failed to tokenize {:?}: {e}", text.as_str()))?;
 
@@ -91,29 +101,52 @@ impl Embedder {
         let type_ids: Vec<i64> = enc.get_type_ids().iter().map(|&t| t as i64).collect();
         let seq_len = ids.len();
 
-        let device = Default::default();
-
-        let input_ids =
-            Tensor::<Backend, 2, Int>::from_data(TensorData::new(ids, [1, seq_len]), &device);
-        let attention_mask =
-            Tensor::<Backend, 2, Int>::from_data(TensorData::new(mask, [1, seq_len]), &device);
+        // Dynamic shape: feed the real token count, no fixed-512 padding.
+        let shape = vec![1, seq_len];
+        let input_ids = Tensor::from_array((shape.clone(), ids))
+            .context("Failed to create input_ids tensor")?;
+        let attention_mask = Tensor::from_array((shape.clone(), mask.clone()))
+            .context("Failed to create attention_mask tensor")?;
         let token_type_ids =
-            Tensor::<Backend, 2, Int>::from_data(TensorData::new(type_ids, [1, seq_len]), &device);
+            Tensor::from_array((shape, type_ids)).context("Failed to create token_type_ids tensor")?;
 
-        let outputs = self
-            .model
-            .forward(input_ids, attention_mask, token_type_ids);
-        let last_hidden_flat: Vec<f32> = outputs.into_data().to_vec::<f32>().unwrap();
+        let mut session = self
+            .embed
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock embed session: {e}"))?;
+        let outputs = session
+            .run(ort::inputs! {
+                "input_ids" => input_ids,
+                "attention_mask" => attention_mask,
+                "token_type_ids" => token_type_ids,
+            })
+            .context("Failed to run embed ONNX session")?;
 
-        // CLS pooling: bge-small-en-v1.5 is trained to use the hidden state of
-        // the first token ([CLS]) as the sentence embedding — the BAAI model
-        // card's `sentence_embeddings = model_output[:, 0]`. Mean pooling was
-        // the MiniLM/sentence-transformers convention and is NOT the bge
-        // usage; the model card and Cloudflare's serving notes both recommend
-        // cls pooling for better accuracy. The tokenizer always emits [CLS] at
-        // index 0 (add_special_tokens = true), so the sentence vector is
-        // `last_hidden_flat[0..EMBED_DIM]`.
-        let mut pooled = last_hidden_flat[0..EMBED_DIM].to_vec();
+        let (out_shape, last_hidden_flat) = outputs["last_hidden_state"]
+            .try_extract_tensor::<f32>()
+            .context("Failed to extract embed output tensor")?;
+        let hidden_dim = out_shape[2] as usize;
+        if out_shape.len() < 3 || hidden_dim == 0 {
+            anyhow::bail!("Unexpected embed output shape: {:?}", out_shape);
+        }
+
+        // Mean pooling: average the token embeddings for all non-padding positions.
+        // nomic-embed-text-v1.5 is trained with mean pooling over the attention mask
+        // (model card: `mean_pooling(model_output, attention_mask)`), unlike BGE which
+        // uses CLS-token pooling. Padding tokens (mask=0) are excluded.
+        let valid_count: f32 = mask.iter().map(|&m| m as f32).sum::<f32>().max(1.0);
+        let mut pooled = vec![0.0f32; hidden_dim];
+        for (t, &m) in mask.iter().enumerate() {
+            if m == 1 {
+                let offset = t * hidden_dim;
+                for d in 0..hidden_dim {
+                    pooled[d] += last_hidden_flat[offset + d];
+                }
+            }
+        }
+        for v in &mut pooled {
+            *v /= valid_count;
+        }
 
         // L2 normalize
         let norm: f32 = pooled.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -127,19 +160,23 @@ impl Embedder {
     }
 
     /// Predict scalar emotional saliency in [0.0, 1.0] for a raw (unprefixed) embedding.
-    pub fn predict_saliency(&self, raw_embedding: &[f32]) -> f32 {
-        let device = Default::default();
-        let input = Tensor::<Backend, 2>::from_data(
-            TensorData::new(raw_embedding.to_vec(), [1, EMBED_DIM]),
-            &device,
-        );
-        let output = self.saliency_model.forward(input);
-        let val: Vec<f32> = output.into_data().to_vec::<f32>().unwrap();
-        if val.is_empty() {
-            0.0
-        } else {
-            val[0].clamp(0.0, 1.0)
-        }
+    pub fn predict_saliency(&self, raw_embedding: &[f32]) -> Result<f32> {
+        let dim = raw_embedding.len();
+        let input = Tensor::from_array((vec![1, dim], raw_embedding.to_vec()))
+            .context("Failed to create saliency input tensor")?;
+        let mut session = self
+            .saliency
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock saliency session: {e}"))?;
+        let outputs = session
+            .run(ort::inputs! {
+                "input" => input,
+            })
+            .context("Failed to run saliency ONNX session")?;
+        let (_shape, val) = outputs["output"]
+            .try_extract_tensor::<f32>()
+            .context("Failed to extract saliency output tensor")?;
+        Ok(val.first().copied().unwrap_or(0.0).clamp(0.0, 1.0))
     }
 }
 
