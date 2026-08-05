@@ -108,6 +108,110 @@ pub fn completion_percentage(target_count: i32, completions: Option<i32>) -> Opt
     }
 }
 
+/// What Enter should do with a task — decided by the shared pure fn so both
+/// TUIs behave identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnterAction {
+    /// Mark done — scheduled: set 1; other: +1.
+    Complete,
+    /// Scheduled only: set 0 (failed).
+    SetFailed,
+    /// Scheduled Some(0) before the window end: remove the entry.
+    Clear,
+    /// `target_count <= 1` done: reset directly, no modal.
+    Reset,
+    /// `target_count > 1` done: the TUI asks "Reset progress?" (default Yes).
+    ResetConfirm,
+    /// `target_count > 1` not done: the TUI opens the numeric CompleteModal.
+    CompletePrompt,
+}
+
+/// Next Enter-action for a task, pure and testable. Scheduled tasks never
+/// prompt: they cycle 1 → 0 → (none | 1) with `before` = window still open
+/// (`start + duration >= now`; other kinds are always "before").
+pub fn enter_action(
+    completions: Option<i32>,
+    is_scheduled: bool,
+    target_count: i32,
+    start_time: Option<i64>,
+    duration: Option<i64>,
+    now: i64,
+) -> EnterAction {
+    if is_scheduled {
+        match completions {
+            None => EnterAction::Complete,
+            Some(c) if c > 0 => EnterAction::SetFailed,
+            Some(_) => {
+                let before = start_time.unwrap_or(now) + duration.unwrap_or(0) >= now;
+                if before {
+                    EnterAction::Clear
+                } else {
+                    EnterAction::Complete
+                }
+            }
+        }
+    } else if is_task_done(target_count, completions) {
+        if target_count <= 1 {
+            EnterAction::Reset
+        } else {
+            EnterAction::ResetConfirm
+        }
+    } else if target_count <= 1 {
+        EnterAction::Complete
+    } else {
+        EnterAction::CompletePrompt
+    }
+}
+
+/// Execute a modal-less [`EnterAction`] against the database. `ResetConfirm`
+/// and `CompletePrompt` are TUI-side (modals) and unreachable here.
+pub async fn apply_enter_action(
+    pool: &SqlitePool,
+    task: &crate::sql::TaskRow,
+    action: EnterAction,
+) -> anyhow::Result<()> {
+    match action {
+        EnterAction::Complete => {
+            if task.is_scheduled() {
+                crate::sql::set_scheduled_completion(pool, task.id, 1).await?;
+            } else {
+                apply_completion_delta(pool, task.id, 1).await?;
+            }
+        }
+        EnterAction::SetFailed => {
+            crate::sql::set_scheduled_completion(pool, task.id, 0).await?;
+        }
+        EnterAction::Clear => {
+            crate::sql::reset_task_completions(pool, task.id, None).await?;
+        }
+        EnterAction::Reset => reset_task_progress(pool, task).await?,
+        EnterAction::ResetConfirm | EnterAction::CompletePrompt => {
+            unreachable!("modal actions are handled by the TUI")
+        }
+    }
+    Ok(())
+}
+
+/// Start of the current interval for a recurring task (`None` for others):
+/// the floor used by the interval-scoped completion queries.
+pub fn interval_start(task: &crate::sql::TaskRow, now: i64) -> Option<i64> {
+    let start = task.start_time?;
+    let interval = task.interval_secs?;
+    Some(current_interval_start(start, interval, now))
+}
+
+/// Reset a task's completion progress: scheduled/oneshot clear all
+/// completions; recurring resets only the current interval (earlier
+/// history survives).
+pub async fn reset_task_progress(
+    pool: &SqlitePool,
+    task: &crate::sql::TaskRow,
+) -> anyhow::Result<()> {
+    let floor = interval_start(task, crate::date::now());
+    crate::sql::reset_task_completions(pool, task.id, floor).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +309,48 @@ mod tests {
         assert_eq!(completion_percentage(4, Some(3)), Some(75.0));
         assert_eq!(completion_percentage(4, Some(4)), Some(100.0));
         assert_eq!(completion_percentage(4, Some(5)), Some(125.0)); // over-completed
+    }
+
+    #[test]
+    fn test_enter_action_scheduled() {
+        // Scheduled tasks never prompt: none → done; done → failed;
+        // failed → cleared before the window end, done after.
+        let now = 1_000_000i64;
+        let (start, dur) = (Some(now - 3600), Some(3600)); // window ends at now
+        let scheduled = |c| enter_action(c, true, 0, start, dur, now);
+        assert_eq!(scheduled(None), EnterAction::Complete);
+        assert_eq!(scheduled(Some(1)), EnterAction::SetFailed);
+        assert_eq!(scheduled(Some(0)), EnterAction::Clear); // now == window end → before
+
+        let (start, dur) = (Some(now - 7200), Some(3600)); // window ended an hour ago
+        let scheduled = |c| enter_action(c, true, 0, start, dur, now);
+        assert_eq!(scheduled(None), EnterAction::Complete);
+        assert_eq!(scheduled(Some(1)), EnterAction::SetFailed);
+        assert_eq!(scheduled(Some(0)), EnterAction::Complete); // after → done
+    }
+
+    #[test]
+    fn test_enter_action_once_only_and_target_one() {
+        // Once-only and target-1 tasks just toggle: not done → Complete,
+        // done → Reset (no modal).
+        let now = 1_000_000i64;
+        assert_eq!(enter_action(None, false, 0, None, None, now), EnterAction::Complete);
+        assert_eq!(enter_action(Some(0), false, 0, None, None, now), EnterAction::Complete);
+        assert_eq!(enter_action(Some(1), false, 0, None, None, now), EnterAction::Reset);
+        assert_eq!(enter_action(None, false, 1, None, None, now), EnterAction::Complete);
+        assert_eq!(enter_action(Some(1), false, 1, None, None, now), EnterAction::Reset);
+        assert_eq!(enter_action(Some(0), false, 1, None, None, now), EnterAction::Complete);
+    }
+
+    #[test]
+    fn test_enter_action_multi_target() {
+        // target_count > 1: prompt paths — CompleteModal when not complete,
+        // ResetConfirm when complete.
+        let now = 1_000_000i64;
+        assert_eq!(enter_action(None, false, 5, None, None, now), EnterAction::CompletePrompt);
+        assert_eq!(enter_action(Some(0), false, 5, None, None, now), EnterAction::CompletePrompt);
+        assert_eq!(enter_action(Some(2), false, 5, None, None, now), EnterAction::CompletePrompt);
+        assert_eq!(enter_action(Some(5), false, 5, None, None, now), EnterAction::ResetConfirm);
+        assert_eq!(enter_action(Some(7), false, 5, None, None, now), EnterAction::ResetConfirm);
     }
 }

@@ -41,6 +41,13 @@ pub(crate) enum Modal {
     /// Confirm before deleting the selected feeling entry. `cursor` selects
     /// the navigable button (0 = Yes, 1 = No).
     DeleteConfirm { name: String, cursor: usize },
+    /// Confirm before resetting a completed task's progress (target_count
+    /// > 1 done, or any done task in the tasks app's @done view). Default Yes.
+    ResetConfirm {
+        id: i64,
+        name: String,
+        cursor: usize,
+    },
     /// Numeric payload edit for a Number/Float tracker; only accepts when
     /// the input parses as the tracker's kind.
     EditTracker(EditTrackerModal),
@@ -133,11 +140,11 @@ impl TodayApp {
     }
 
     /// Fetch the full TaskRow for the currently selected entry (if it is a
-    /// task or a completion entry — an already-completed task).
+    /// task row).
     async fn fetch_selected_task(&mut self) {
         self.selected_task = None;
         let entry = match self.entries.get(self.selected) {
-            Some(e) if matches!(e.entry_type, "task" | "completion") => e,
+            Some(e) if e.entry_type == "task" => e,
             _ => return,
         };
         let Some(task_id) = entry.task_id else { return };
@@ -151,19 +158,50 @@ impl TodayApp {
         let Some(task) = self.selected_task.as_ref() else {
             return;
         };
-        if task.target_count > 0 {
-            self.modal = Some(Modal::Complete(CompleteModal {
-                task_id: task.id,
-                input: String::new(),
-                error: None,
-            }));
-            return;
+        let action = crate::task::enter_action(
+            task.completions,
+            task.is_scheduled(),
+            task.target_count,
+            task.start_time,
+            task.available_duration_secs,
+            crate::date::now(),
+        );
+        match action {
+            // Modal-less toggle steps: scheduled cycles 1 → 0 → (none | 1),
+            // done once-only/target-1 tasks reset directly.
+            crate::task::EnterAction::Complete
+            | crate::task::EnterAction::SetFailed
+            | crate::task::EnterAction::Clear => {
+                let task = task.clone();
+                if let Err(e) = crate::task::apply_enter_action(&self.pool, &task, action).await {
+                    log::error!("Failed to apply enter action to task {}: {e}", task.id);
+                }
+                self.refresh().await;
+            }
+            crate::task::EnterAction::Reset => {
+                let task = task.clone();
+                if let Err(e) = crate::task::reset_task_progress(&self.pool, &task).await {
+                    log::error!("Failed to reset task progress for {}: {e}", task.id);
+                }
+                self.refresh().await;
+            }
+            crate::task::EnterAction::ResetConfirm => {
+                // target_count > 1 done: ask first (default Yes).
+                self.modal = Some(Modal::ResetConfirm {
+                    id: task.id,
+                    name: task.name.clone(),
+                    cursor: 0,
+                });
+            }
+            crate::task::EnterAction::CompletePrompt => {
+                // target_count > 1 not done: the numeric prompt.
+                self.modal = Some(Modal::Complete(CompleteModal {
+                    task_id: task.id,
+                    input: String::new(),
+                    error: None,
+                }));
+            }
         }
-        // Once-only tasks (target_count == 0): Enter toggles completion.
-        // When the task is already done (a ✓ completion entry), undo the
-        // most recent completion; otherwise mark it complete.
-        let delta = if task.is_done() { -1 } else { 1 };
-        self.complete_task(task.id, delta).await;
     }
 
     /// Apply a completion delta to a task. Positive deltas append a new
@@ -171,6 +209,34 @@ impl TodayApp {
     /// the most recent events within the current interval (recurring tasks).
     async fn complete_task(&mut self, task_id: i64, delta: i32) {
         let _ = crate::task::apply_completion_delta(&self.pool, task_id, delta).await;
+        self.refresh().await;
+    }
+
+    /// Reset the selected task's completion progress (the ResetConfirm
+    /// modal's confirmed action): recurring tasks keep earlier intervals.
+    async fn reset_selected_progress(&mut self) {
+        let Some(Modal::ResetConfirm { id, .. }) = self.modal.take() else {
+            return;
+        };
+        // The modal always opens for the selected task; fall back to a
+        // defensive refetch if the selection moved.
+        let task = match self.selected_task.as_ref() {
+            Some(t) if t.id == id => t.clone(),
+            _ => match crate::sql::fetch_task_by_id(&self.pool, id, crate::date::now())
+                .await
+                .ok()
+                .flatten()
+            {
+                Some(t) => t,
+                None => {
+                    self.refresh().await;
+                    return;
+                }
+            },
+        };
+        if let Err(e) = crate::task::reset_task_progress(&self.pool, &task).await {
+            log::error!("Failed to reset task progress for {id}: {e}");
+        }
         self.refresh().await;
     }
 
@@ -199,6 +265,33 @@ impl TodayApp {
                 Action::Input(c) if c.eq_ignore_ascii_case(&'y') => {
                     self.modal = None;
                     let _ = tx.send(RenderEvent::Action(Action::Delete(true)));
+                }
+                Action::Input(c) if c.eq_ignore_ascii_case(&'n') => {
+                    self.modal = None;
+                }
+                Action::Quit => {
+                    self.modal = None;
+                }
+                _ => {}
+            }
+            return true;
+        }
+
+        // Accept while a ResetConfirm modal is open: "Yes" (cursor 0)
+        // resets the task's progress; "No" just closes.
+        if let Some(Modal::ResetConfirm { cursor, .. }) = self.modal.as_mut() {
+            match action {
+                Action::Accept => {
+                    if *cursor == 0 {
+                        self.reset_selected_progress().await;
+                    } else {
+                        self.modal = None;
+                    }
+                }
+                Action::Left => *cursor = 0,
+                Action::Right => *cursor = 1,
+                Action::Input(c) if c.eq_ignore_ascii_case(&'y') => {
+                    self.reset_selected_progress().await;
                 }
                 Action::Input(c) if c.eq_ignore_ascii_case(&'n') => {
                     self.modal = None;
@@ -683,6 +776,21 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
                 Line::from(vec![
                     Span::styled(
                         "Delete",
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                    Span::raw(format!(" '{}'?", name)),
+                ]),
+                Line::from(""),
+            ];
+            (None, lines, Some(confirm_buttons(*cursor)))
+        }
+        Modal::ResetConfirm { name, cursor, .. } => {
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(
+                        "Reset progress of",
                         Style::default()
                             .fg(Color::Red)
                             .add_modifier(Modifier::ITALIC),

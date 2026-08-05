@@ -141,44 +141,61 @@ impl TasksApp {
             return;
         }
         let task = &self.tasks[self.selected];
-        if task.is_scheduled() {
-            // Scheduled tasks cycle their state instead of prompting: with
-            // no completion entry, insert 0 (still within the window) or 1
-            // (window elapsed, auto-completed); with an entry, flip to the
-            // other value. The insert replaces any existing entry.
-            let now = crate::date::now();
-            let value = match task.completions {
-                None => {
-                    let elapsed = task.start_time.unwrap_or(now)
-                        + task.available_duration_secs.unwrap_or(0)
-                        < now;
-                    if elapsed {
-                        1
-                    } else {
-                        0
-                    }
+        let action = crate::task::enter_action(
+            task.completions,
+            task.is_scheduled(),
+            task.target_count,
+            task.start_time,
+            task.available_duration_secs,
+            crate::date::now(),
+        );
+        match action {
+            // Modal-less toggle steps: scheduled cycles 1 → 0 → (none | 1),
+            // done once-only/target-1 tasks reset directly.
+            crate::task::EnterAction::Complete
+            | crate::task::EnterAction::SetFailed
+            | crate::task::EnterAction::Clear => {
+                let task = task.clone();
+                if let Err(e) = crate::task::apply_enter_action(&self.pool, &task, action).await {
+                    log::error!("Failed to apply enter action to task {}: {e}", task.id);
                 }
-                Some(c) if c > 0 => 0,
-                Some(_) => 1,
-            };
-            if let Err(e) =
-                crate::sql::set_scheduled_completion(&self.pool, task.id, value).await
-            {
-                log::error!("Failed to update scheduled task {}: {e}", task.id);
+                self.refresh().await;
             }
-            self.refresh().await;
-            return;
+            crate::task::EnterAction::Reset => {
+                // The @done view asks before resetting; everywhere else a
+                // done once-only/target-1 task resets directly.
+                if self.mode == ViewMode::DoneTasks {
+                    self.modal = Some(Modal::ResetConfirm {
+                        id: task.id,
+                        name: task.name.clone(),
+                        // Default Yes.
+                        cursor: 0,
+                    });
+                } else {
+                    let task = task.clone();
+                    if let Err(e) = crate::task::reset_task_progress(&self.pool, &task).await {
+                        log::error!("Failed to reset task progress for {}: {e}", task.id);
+                    }
+                    self.refresh().await;
+                }
+            }
+            crate::task::EnterAction::ResetConfirm => {
+                // target_count > 1 done: ask first (default Yes).
+                self.modal = Some(Modal::ResetConfirm {
+                    id: task.id,
+                    name: task.name.clone(),
+                    cursor: 0,
+                });
+            }
+            crate::task::EnterAction::CompletePrompt => {
+                // target_count > 1 not done: the numeric prompt.
+                self.modal = Some(Modal::Complete(CompleteModal {
+                    task_id: task.id,
+                    input: String::new(),
+                    error: None,
+                }));
+            }
         }
-        if task.target_count > 0 {
-            // Open the modal prompt for tasks with a target_count
-            self.modal = Some(Modal::Complete(CompleteModal {
-                task_id: task.id,
-                input: String::new(),
-                error: None,
-            }));
-            return;
-        }
-        self.complete_task(task.id, 1).await;
     }
 
     /// Apply a completion delta to a task. Positive deltas append a new
@@ -333,27 +350,18 @@ impl TasksApp {
         }
     }
 
-    /// @done: clear the selected task's completion progress. For recurring
-    /// tasks only the current interval's completions are removed, preserving
-    /// history from earlier intervals.
+    /// @done / target_count > 1: clear the selected task's completion
+    /// progress. For recurring tasks only the current interval's completions
+    /// are removed, preserving history from earlier intervals.
     async fn reset_selected_progress(&mut self) {
         let Some(Modal::ResetConfirm { id, .. }) = self.modal.take() else {
             return;
         };
         let task = self.tasks.iter().find(|t| t.id == id).cloned();
-        let now = crate::date::now();
-        // Current interval start: sql.rs uses the same floor for the
-        // interval-scoped completion queries (start_time + n*interval).
-        let interval_start = task.as_ref().and_then(|t| {
-            let start = t.start_time?;
-            let interval = t.interval_secs?;
-            Some(if now <= start {
-                start
-            } else {
-                start + ((now - start) / interval) * interval
-            })
-        });
-        if let Err(e) = crate::sql::reset_task_completions(&self.pool, id, interval_start).await {
+        let Some(task) = task else {
+            return;
+        };
+        if let Err(e) = crate::task::reset_task_progress(&self.pool, &task).await {
             log::error!("Failed to reset task progress for {id}: {e}");
         }
         self.refresh().await;
@@ -406,22 +414,7 @@ impl Render for TasksApp {
             }
             Action::Refresh => self.refresh().await,
             Action::Quit => self.should_quit = true,
-            Action::Accept => {
-                // @done: Enter asks whether to reset progress instead of
-                // completing (tasks here are already complete).
-                if self.mode == ViewMode::DoneTasks {
-                    if let Some(task) = self.tasks.get(self.selected) {
-                        self.modal = Some(Modal::ResetConfirm {
-                            id: task.id,
-                            name: task.name.clone(),
-                            // Default to the safe option (No).
-                            cursor: 1,
-                        });
-                    }
-                } else {
-                    self.mark_selected_complete().await;
-                }
-            }
+            Action::Accept => self.mark_selected_complete().await,
             Action::Delete(false) => {
                 if let Some(task) = self.tasks.get(self.selected) {
                     self.modal = Some(Modal::DeleteConfirm {
