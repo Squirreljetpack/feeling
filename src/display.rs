@@ -4,10 +4,11 @@ use crate::sql::TaskRow;
 use crate::views::TodayEntry;
 use anyhow::Result;
 
-/// Plain banner line for an interactive task flow (replaces the cliclack
-/// `intro` call — plain stdout, no styling).
+/// Banner line for an interactive task flow: cliclack's styled `intro`
+/// (writes to stderr, matching the prompts — the interactive flow is always
+/// at a TTY).
 pub fn task_intro(title: &str) -> Result<()> {
-    println!("{}", title);
+    cliclack::intro(title).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
 }
 

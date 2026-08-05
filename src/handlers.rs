@@ -582,7 +582,11 @@ async fn handle_recurring_task_creation(
     // instead of aborting the whole flow. A pre-fill from `feeling ! @
     // <description>` skips the prompt entirely; on a duplicate the prompt
     // re-opens with the pre-fill as the default input so the user can
-    // change it. The name is trimmed before use.
+    // change it. The name is trimmed before use. The pre-filled value is
+    // logged so the log file records what skipped the prompt.
+    if let Some(p) = &prefill {
+        cba::ibog!("prefill"; "recurring name: {}", p);
+    }
     let name = prompt_unique_name(pool, prefill.as_deref()).await?;
 
     // 2. Priority (1..=999 per validation; blank falls back to default).
@@ -687,19 +691,28 @@ async fn handle_scheduled_task_creation(
     // 1. Task name (required, unique, no tabs). A name from the command
     // line skips the prompt entirely; on a duplicate the prompt re-opens
     // with the given name as the default input so the user can change it.
+    if let Some(n) = &name {
+        cba::ibog!("prefill"; "scheduled name: {}", n);
+    }
     let name = prompt_unique_name(pool, name.as_deref()).await?;
 
     // 2. Start time (required). A start time from the command line skips
     // the prompt; blank in the prompt means "now".
     let start = match start {
-        Some(s) => s,
+        Some(s) => {
+            cba::ibog!("prefill"; "scheduled start: {}", crate::date::format_date_time(s));
+            s
+        }
         None => crate::prompts::prompt_start_time(config.date.dialect)?,
     };
 
     // 3. Available duration (required for scheduled tasks). A duration from
     // the command line skips the prompt; blank means the 1-hour default.
     let duration_secs = match duration_str {
-        Some(d) => parse_duration_secs(&d)?,
+        Some(d) => {
+            cba::ibog!("prefill"; "scheduled duration: {}", d);
+            parse_duration_secs(&d)?
+        }
         None => {
             let raw = crate::prompts::prompt_available_duration("1 hour", None)?;
             if raw.trim().is_empty() {
