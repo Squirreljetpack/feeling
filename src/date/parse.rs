@@ -52,6 +52,11 @@ pub fn parse_date(s: &str, dialect: DateDialect) -> Result<Epoch> {
     Ok(crate::date::day_start(parse_datetime(s, dialect)?))
 }
 
+/// Parse a date string and align to the end of that day if a time is not specified.
+pub fn parse_datetime_end(s: &str, dialect: DateDialect) -> Result<Epoch> {
+    Ok(crate::date::day_end(parse_datetime(s, dialect)?))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::date::format;

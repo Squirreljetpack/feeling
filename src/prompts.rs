@@ -42,14 +42,26 @@ pub fn prompt_priority(default: i32) -> Result<i32> {
         .unwrap_or(default))
 }
 
-/// Prompt for a scheduled task's start time. Blank falls back to `now`.
-/// Validated against the configured date dialect so a bad time fails before
-/// the task is created.
-pub fn prompt_start_time(dialect: DateDialect) -> Result<i64> {
+/// Prompt for a task's start time. Blank input falls back to the default:
+/// `Some(default)` (recurring creation — the placeholder shows the formatted
+/// `default`) or `now` for scheduled creation. Validated against the configured date
+/// dialect so a bad time fails before the task is created.
+pub fn prompt_start_time(default: Option<&str>, dialect: DateDialect) -> Result<i64> {
     use cliclack::input;
 
+    let (default_time, placeholder) = match default {
+        Some(s) => (
+            crate::date::parse_datetime(s, dialect).expect("Placeholder should parse"),
+            s.to_string(),
+        ),
+        None => {
+            let now = crate::date::now();
+            (now, crate::date::format_date_time(now))
+        }
+    };
+
     let raw: String = input("Start time:")
-        .placeholder("10pm")
+        .placeholder(&placeholder)
         .default_input("")
         .validate(move |input: &String| {
             if input.trim().is_empty() {
@@ -64,7 +76,7 @@ pub fn prompt_start_time(dialect: DateDialect) -> Result<i64> {
         .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
 
     if raw.trim().is_empty() {
-        Ok(crate::date::now())
+        Ok(default_time)
     } else {
         crate::date::parse_datetime(&raw, dialect)
     }
@@ -74,18 +86,12 @@ pub fn prompt_start_time(dialect: DateDialect) -> Result<i64> {
 /// (0 = task can be completed once). The caller picks the label, e.g.
 /// `"Times to complete (0 = once):"` for creation or
 /// `"Times to complete per interval (blank = once):"` for edit.
-pub fn prompt_target_count(label: &str, default: i32) -> Result<i32> {
+pub fn prompt_target_count() -> Result<i32> {
     use cliclack::input;
 
-    let default_str = if default > 0 {
-        default.to_string()
-    } else {
-        String::new()
-    };
-
-    let raw: String = input(label)
-        .placeholder("0")
-        .default_input(&default_str)
+    let raw: String = input("Times to complete:")
+        .placeholder("0 (once)")
+        .default_input("0")
         .validate(|value: &String| {
             if value.is_empty() {
                 Ok(())
@@ -100,7 +106,7 @@ pub fn prompt_target_count(label: &str, default: i32) -> Result<i32> {
         .interact()
         .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
 
-    Ok(raw.trim().parse::<i32>().unwrap_or(default))
+    Ok(raw.trim().parse::<i32>().unwrap_or(0))
 }
 
 /// Prompt for a task name (required, no tabs, trimmed). The duplicate-name
@@ -151,22 +157,35 @@ pub fn prompt_interval(default: Option<&str>) -> Result<String> {
     Ok(raw)
 }
 
-/// Prompt for an available duration. Blank = always available. The caller
-/// resolves a value >= the interval to `None` (always available). `default`
+/// Prompt for an available duration. Blank = always available. `max` (in
+/// seconds) optionally caps the allowed input: a duration longer than
+/// `format_duration(max)` is rejected (the recurring flow passes the
+/// interval, since availability beyond it means always available). `default`
 /// pre-fills the input (edit flow).
-pub fn prompt_available_duration(placeholder: &str, default: Option<&str>) -> Result<String> {
+pub fn prompt_available_duration(
+    placeholder: &str,
+    default: Option<&str>,
+    max: Option<i64>,
+) -> Result<String> {
     use cliclack::input;
 
     let raw: String = input("Available duration:")
         .placeholder(placeholder)
         .default_input(default.unwrap_or(""))
-        .validate(|input: &String| {
+        .validate(move |input: &String| {
             if input.is_empty() {
                 Ok(())
             } else {
-                crate::date::parse_duration_secs(input)
-                    .map(|_| ())
-                    .map_err(|e| format!("Invalid duration: {}", e))
+                match crate::date::parse_duration_secs(input) {
+                    Ok(secs) => match max {
+                        Some(m) if secs > m => Err(format!(
+                            "Must be at most {}",
+                            crate::date::format_duration(m)
+                        )),
+                        _ => Ok(()),
+                    },
+                    Err(e) => Err(format!("Invalid duration: {}", e)),
+                }
             }
         })
         .interact()
@@ -180,18 +199,25 @@ pub fn prompt_available_duration(placeholder: &str, default: Option<&str>) -> Re
 /// and then as an absolute date/time via `dialect`. Blank = never ends.
 /// Returns the resolved Unix-epoch end time, or `None` for never. `default`
 /// is the remaining time in seconds (pre-filled as a formatted duration).
-pub fn prompt_end(default_remaining: Option<i64>, dialect: DateDialect) -> Result<Option<i64>> {
+pub fn prompt_end(default: Option<&str>, dialect: DateDialect) -> Result<Option<i64>> {
     use cliclack::input;
 
-    let default_str = default_remaining
-        .map(crate::date::format_duration)
-        .unwrap_or_default();
+    let (default_time, placeholder) = match default {
+        Some(s) => (
+            Some(crate::date::parse_datetime(s, dialect).expect("Placeholder should parse")),
+            s.to_string(),
+        ),
+        None => (None, "never".to_string()),
+    };
 
     let raw: String = input("Duration or end time:")
-        .placeholder("1 year from now")
-        .default_input(&default_str)
+        .placeholder(&placeholder)
+        .default_input("")
         .validate(move |input: &String| {
-            if input.is_empty() || crate::date::parse_duration_secs(input).is_ok() {
+            if input.is_empty()
+                || input == "never"
+                || crate::date::parse_duration_secs(input).is_ok()
+            {
                 Ok(())
             } else {
                 crate::date::parse_datetime(input, dialect)
@@ -202,8 +228,8 @@ pub fn prompt_end(default_remaining: Option<i64>, dialect: DateDialect) -> Resul
         .interact()
         .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
 
-    if raw.is_empty() {
-        Ok(None)
+    if raw.is_empty() || raw == "never" {
+        Ok(default_time)
     } else if let Ok(dur) = crate::date::parse_duration_secs(&raw) {
         Ok(Some(crate::date::now() + dur))
     } else {

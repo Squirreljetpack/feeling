@@ -234,7 +234,7 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | plain words (`happy`, `good ...`) | `Entry { feeling, customs, .. }` — mood entry; custom trackers as `-type score` |
 | `..` (bare, at the end) | opens the body editor (Entry/Task with `open_editor`) |
 | `!` (bare) | `View { mode: OneShotTasks, .. }` — the tasks TUI entry |
-| `! description [@date] [..]` | `Task { OneShot, .. }` — `@YYYY-MM-DD` due date; a second `@`-word is rejected |
+| `! description [@date] [..]` | `Task { OneShot, .. }` — `@YYYY-MM-DD` is the **due** time (stored in `end_time`; `start_time` records creation); a second `@`-word is rejected |
 | `! @` / `! @ description` | `Task { Recurring, prefill }` — interactive recurring creation; the description pre-fills the name prompt (`@`-words inside it stay free text) |
 | `! @<time> [:name] [%<duration>] [..]` | `Task { Scheduled, .. }` — scheduled creation; immediate when all three fields came from the CLI, else interactive with pre-fills. The space discriminator is load-bearing: `! @ 10pm` (bare `@`) is recurring, `! @10pm` is scheduled |
 | `@` / `@done` / `@due` | `View { mode, .. }` — recurring / done / due task views |
@@ -343,11 +343,11 @@ views.rs, render/tasks.rs and render/today.rs (no shared const — queries are
 intentionally duplicated). Single-row fetches use a correlated `(SELECT
 SUM(count) ...)` subquery with the same boundary condition.
 
-Per-mode filters (all governed by `include_completed`, `false` unless the
-`INCLUDE_COMPLETED` env var is set):
+Per-mode filters:
 `@` = recurring, not done in the current interval, `end_time > now`, then a
 Rust availability-window check; `@done` = completed tasks (oneshot only at
-`include_completed=false`); `@due` = oneshot, `start_time <= today_end`; `!` =
+`include_completed=false`); `@due` = oneshot, due time (`end_time`, falling
+back to `start_time` for legacy/undated rows) `<= today_end`; `!` =
 oneshot, not done.
 
 ### Today view — `fetch_today_entries` / `format_today_simple`
@@ -370,8 +370,10 @@ the same `TodayEntry`s, so both renderers share the exact badge/color logic.
 Horizons: Today / Tomorrow / Week — **Week is always the next 7 days** from
 the anchored day. `feeling @<date>` anchors the view to any parseable day
 (day-aligned, config dialect; the TUI title shows Today / Yesterday /
-DD-MM-YY). The oneshot query has two orthogonal bounds: an upper bound at the
-horizon end (`start_time <= horizon_end`) and — unless
+DD-MM-YY). The oneshot query has two orthogonal bounds on the due time
+(`COALESCE(end_time, start_time)`, where `end_time` is the `@<time>`
+deadline and the fallback keeps legacy rows and undated tasks working): an
+upper bound at the horizon end and — unless
 `config.today_view.include_overdue` — a lower bound keeping only tasks due
 from today onward. Empty day → `Nothing logged today.`
 

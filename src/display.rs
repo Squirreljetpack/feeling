@@ -1,7 +1,7 @@
 use crate::clap::CliOpts;
 use crate::config::Config;
 use crate::sql::TaskRow;
-use crate::views::TodayEntry;
+use crate::views::{EntryKind, TodayEntry};
 use anyhow::Result;
 
 /// Banner line for an interactive task flow: cliclack's styled `intro`
@@ -35,9 +35,11 @@ pub fn display_entry(entry: &crate::sql::EntryObject, opts: &CliOpts) -> Result<
 
 /// Ordered field/value pairs for a task's tab-aligned display.
 /// Recurring-only fields (Interval, Available, Optional, End) are shown only
-/// for recurring tasks; scheduled tasks show their Available window; Start
-/// is shown when set; Body only when non-empty. The Type value is lowercase
-/// (`threshold` when a oneshot task has a target count).
+/// for recurring tasks; scheduled tasks show their Available window and the
+/// window start; oneshot tasks show Created (the `start_time` creation
+/// moment) and Due (the `end_time` deadline, only when set); Body only when
+/// non-empty. The Type value is lowercase (`threshold` when a oneshot task
+/// has a target count).
 pub(crate) fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
     rows.push((
@@ -53,8 +55,20 @@ pub(crate) fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> 
         },
     ));
     rows.push(("Priority".to_string(), task.priority.to_string()));
-    if let Some(st) = task.start_time {
-        rows.push(("Start".to_string(), crate::date::format_date_time(st)));
+    if task.is_recurring() || task.is_scheduled() {
+        // Scheduled/recurring: the start is the window start / recurrence
+        // anchor.
+        if let Some(st) = task.start_time {
+            rows.push(("Start".to_string(), crate::date::format_date_time(st)));
+        }
+    } else {
+        // Oneshot: creation time always, due only when an end time was set.
+        if let Some(st) = task.start_time {
+            rows.push(("Created".to_string(), crate::date::format_date_time(st)));
+        }
+        if let Some(et) = task.end_time {
+            rows.push(("Due".to_string(), crate::date::format_date_time(et)));
+        }
     }
     if task.is_recurring() {
         rows.push((
@@ -113,10 +127,10 @@ pub fn format_today_simple(entries: &[TodayEntry]) -> String {
 
     let mut output = String::new();
     for entry in entries {
-        let ts = crate::date::format_time(entry.time);
+        let ts = entry.time_label.clone();
 
-        // Journal-only entries (no mood) carry the body as the label.
-        let (label, detail) = if entry.entry_type == "feeling" && entry.label.is_empty() {
+        // Journal entries (empty mood label) carry the body as the label.
+        let (label, detail) = if entry.kind == EntryKind::Journal {
             (entry.body.to_string(), String::new())
         } else {
             (entry.label.clone(), entry.body.clone())

@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::action::Action;
 use crate::message::{ControlEvent, RenderEvent};
 use crate::tui::Tui;
+use crate::views::EntryKind;
 
 use super::{build_preview, confirm_buttons, system::edit_with_editor, truncate_chars, Render};
 
@@ -40,7 +41,13 @@ pub(crate) enum Modal {
     Complete(CompleteModal),
     /// Confirm before deleting the selected entry (feeling / custom / task).
     /// `cursor` selects the navigable button (0 = Yes, 1 = No).
-    DeleteConfirm { name: String, cursor: usize },
+    DeleteConfirm {
+        name: String,
+        /// Warn when deleting a recurring task (matches the tasks app's
+        /// "This task will stop recurring!" notice).
+        is_recurring: bool,
+        cursor: usize,
+    },
     /// Confirm before resetting a completed task's progress (target_count
     /// > 1 done, or any done task in the tasks app's @done view). Default Yes.
     ResetConfirm {
@@ -74,7 +81,11 @@ pub(crate) struct EditTrackerModal {
 }
 
 impl TodayApp {
-    pub async fn new(pool: &SqlitePool, config: crate::config::Config, day_epoch: Option<i64>) -> Self {
+    pub async fn new(
+        pool: &SqlitePool,
+        config: crate::config::Config,
+        day_epoch: Option<i64>,
+    ) -> Self {
         let mut color_cache = std::collections::HashMap::new();
         let entries = crate::views::fetch_today_entries(
             pool,
@@ -122,10 +133,16 @@ impl TodayApp {
 
     fn apply_sort(&mut self) {
         if self.sort_by_priority {
-            self.entries
-                .sort_by(|a, b| b.priority.cmp(&a.priority).then(a.time.cmp(&b.time)));
+            // Equal-priority ties fall back to the time ordering
+            // (crate::views::today_sort): timed first by timestamp, then the
+            // no-time group by availability end.
+            self.entries.sort_by(|a, b| {
+                b.priority
+                    .cmp(&a.priority)
+                    .then(crate::views::today_sort(a, b))
+            });
         } else {
-            self.entries.sort_by_key(|e| e.time);
+            self.entries.sort_by(crate::views::today_sort);
         }
     }
 
@@ -144,7 +161,7 @@ impl TodayApp {
     async fn fetch_selected_task(&mut self) {
         self.selected_task = None;
         let entry = match self.entries.get(self.selected) {
-            Some(e) if e.entry_type == "task" => e,
+            Some(e) if e.kind.is_task() => e,
             _ => return,
         };
         let Some(task_id) = entry.task_id else { return };
@@ -425,9 +442,12 @@ impl TodayApp {
         let Some(entry) = self.entries.get(self.selected) else {
             return;
         };
-        match entry.entry_type {
-            // Task body edit (oneshot or recurring).
-            "task" => {
+        match entry.kind {
+            // Task body edit (oneshot, threshold, recurring, scheduled).
+            EntryKind::Oneshot
+            | EntryKind::Threshold
+            | EntryKind::Recurring
+            | EntryKind::Scheduled => {
                 let Some(task) = self.selected_task.as_ref() else {
                     return;
                 };
@@ -439,7 +459,7 @@ impl TodayApp {
             }
             // Tracker payload: text opens the editor; number/float open a
             // validation modal.
-            "custom" => {
+            EntryKind::Custom => {
                 let Some(custom_id) = entry.id else { return };
                 let Some((tracker_type, current)) = entry.label.split_once(':') else {
                     return;
@@ -473,16 +493,14 @@ impl TodayApp {
                 }
             }
             // Mood body edit.
-            "feeling" => {
+            EntryKind::Mood | EntryKind::Journal => {
                 let Some(id) = entry.id else { return };
                 let body = entry.body.to_string();
                 if let Some(new_body) = edit_with_editor(tui, controller, rx, &body).await {
                     self.update_feeling_body(id, &new_body).await;
                     self.refresh().await;
                 }
-            }
-            // Completions aren't editable.
-            _ => {}
+            } // Completions aren't editable.
         }
     }
 
@@ -569,31 +587,30 @@ impl Render for TodayApp {
             Action::Quit => self.should_quit = true,
             Action::Accept => self.mark_selected_complete().await,
             Action::Delete(false) => {
-                // Any entry type is deletable (feeling / custom / task);
-                // journal entries have an empty label → the modal says
-                // "Delete journal entry?" (see render_today_modal).
+                // Every entry kind is deletable; journal entries have an empty
+                // label → the modal says "Delete journal entry?" (see
+                // render_today_modal).
                 if let Some(entry) = self.entries.get(self.selected) {
-                    if matches!(entry.entry_type, "feeling" | "custom" | "task") {
-                        self.modal = Some(Modal::DeleteConfirm {
-                            name: entry.label.clone(),
-                            // Default to the safe option (No).
-                            cursor: 1,
-                        });
-                    }
+                    self.modal = Some(Modal::DeleteConfirm {
+                        name: entry.label.clone(),
+                        is_recurring: entry.kind == EntryKind::Recurring,
+                        // Default to the safe option (No).
+                        cursor: 1,
+                    });
                 }
             }
             Action::Delete(true) => {
                 // Sent by `Accept` in the DeleteConfirm modal (which closes
                 // itself first); delete the selected entry by its type.
                 if let Some(entry) = self.entries.get(self.selected) {
-                    match entry.entry_type {
-                        "feeling" => {
+                    match entry.kind {
+                        EntryKind::Mood | EntryKind::Journal => {
                             if let Some(id) = entry.id {
                                 self.delete_feeling(id).await;
                                 self.refresh().await;
                             }
                         }
-                        "custom" => {
+                        EntryKind::Custom => {
                             if let Some(id) = entry.id {
                                 if let Err(e) = crate::sql::delete_custom(&self.pool, id).await {
                                     log::error!("Failed to delete custom entry {id}: {e}");
@@ -601,17 +618,17 @@ impl Render for TodayApp {
                                 self.refresh().await;
                             }
                         }
-                        "task" => {
+                        EntryKind::Oneshot
+                        | EntryKind::Threshold
+                        | EntryKind::Recurring
+                        | EntryKind::Scheduled => {
                             if let Some(task_id) = entry.task_id {
-                                if let Err(e) =
-                                    crate::sql::delete_task(&self.pool, task_id).await
-                                {
+                                if let Err(e) = crate::sql::delete_task(&self.pool, task_id).await {
                                     log::error!("Failed to delete task {task_id}: {e}");
                                 }
                                 self.refresh().await;
                             }
                         }
-                        _ => {}
                     }
                 }
             }
@@ -633,7 +650,7 @@ fn day_label_for(day_epoch: Option<i64>) -> String {
         None => "Today".to_string(),
         Some(ts) if ts == crate::date::today_start() => "Today".to_string(),
         Some(ts) if ts == crate::date::today_start() - 86400 => "Yesterday".to_string(),
-        Some(ts) => crate::date::format_date_dmy(ts),
+        Some(ts) => crate::date::format_date(ts),
     }
 }
 
@@ -649,21 +666,26 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
     } else {
         format!(" ({})", app.horizon.label())
     };
-    let title = format!(" {}{} [sort: {}] ", app.day_label, horizon_suffix, sort_indicator);
+    let title = format!(
+        " {}{} [sort: {}] ",
+        app.day_label, horizon_suffix, sort_indicator
+    );
 
-    // Last column width = area.width minus the fixed time (6) and dot (4) columns.
-    let entry_col_width = area.width.saturating_sub(10) as usize;
+    // Last column width = area.width minus the fixed time (8) and dot (4) columns.
+    let entry_col_width = area.width.saturating_sub(12) as usize;
 
     let rows: Vec<Row> = app
         .entries
         .iter()
         .map(|entry| {
-            let time = crate::date::format_time(entry.time);
+            // Pre-computed time cell: "HH:MM", "Tu HH:MM", or empty for
+            // the no-time group (all-day recurring tasks, undated oneshots).
+            let time = entry.time_label.as_str();
             let dot_style = Style::default().fg(entry.color);
-            // Feeling entries with no mood get the first line of the body in the
-            // last column (truncated to fit the column). All other entries show
-            // their label as-is.
-            let label_cell = if entry.entry_type == "feeling" && entry.label.is_empty() {
+            // Journal entries get the first line of the body in the last
+            // column (truncated to fit). All other entries show their label
+            // as-is.
+            let label_cell = if entry.kind == EntryKind::Journal {
                 let body = entry.body.lines().next().unwrap_or("");
                 Cell::from(truncate_chars(body, entry_col_width))
             } else {
@@ -671,8 +693,7 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
             };
             let cells = vec![
                 Cell::from(time),
-                Cell::from(entry.badge.map(|c| c.to_string()).unwrap_or_default())
-                    .style(dot_style),
+                Cell::from(entry.badge.map(|c| c.to_string()).unwrap_or_default()).style(dot_style),
                 label_cell,
             ];
             Row::new(cells).height(1)
@@ -682,7 +703,7 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
     let table = Table::new(
         rows,
         &[
-            Constraint::Length(6),
+            Constraint::Length(8),
             Constraint::Length(4),
             Constraint::Fill(1),
         ],
@@ -791,7 +812,11 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
             }
             (Some("Edit Tracker".to_string()), lines, None)
         }
-        Modal::DeleteConfirm { name, cursor } => {
+        Modal::DeleteConfirm {
+            name,
+            is_recurring,
+            cursor,
+        } => {
             let label = if name.is_empty() {
                 Line::from(Span::styled(
                     "Delete journal entry?",
@@ -810,7 +835,15 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
                     Span::raw(format!(" '{}'?", name)),
                 ])
             };
-            let lines = vec![label, Line::from("")];
+            let mut lines = vec![label];
+            // Recurring tasks warn that deleting stops the recurrence.
+            if *is_recurring {
+                lines.push(Line::from(Span::styled(
+                    "  This task will stop recurring!",
+                    Style::default().add_modifier(Modifier::ITALIC),
+                )));
+            }
+            lines.push(Line::from(""));
             (None, lines, Some(confirm_buttons(*cursor)))
         }
         Modal::ResetConfirm { name, cursor, .. } => {
@@ -907,7 +940,11 @@ mod tests {
         // Yesterday.
         assert_eq!(day_label_for(Some(today - 86400)), "Yesterday");
         // Any other day → DD-MM-YY.
-        let other = crate::date::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
-        assert_eq!(day_label_for(Some(crate::date::day_start(other))), "15-03-24");
+        let other =
+            crate::date::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
+        assert_eq!(
+            day_label_for(Some(crate::date::day_start(other))),
+            "15-03-24"
+        );
     }
 }

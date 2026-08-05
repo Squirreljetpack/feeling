@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
-use cba::{_dbg, ibog};
+use cba::{_dbg, ebog, ibog};
 use crossterm::style::Stylize;
 use sqlx::SqlitePool;
 use std::io::{BufRead, Write};
 
 use crate::clap::{CliOpts, Command, TaskType, UpdateTarget};
 use crate::config::{Config, TrackerType, DEFAULT_CONFIG};
-use crate::date;
+use crate::date::{self, format_duration};
 use crate::editor::{open_editor_at, open_editor_for_body};
 use crate::paths::default_config_path;
 use crate::render::Render;
@@ -155,11 +155,7 @@ async fn handle_clear(
     let count = crate::sql::clear_moods(pool, start, end, false).await?;
 
     if count == 0 {
-        if tui {
-            cliclack::log::info(format!("No mood entries found for {}", formatted_date))?;
-        } else {
-            println!("No mood entries found for {}", formatted_date);
-        }
+        ebog!("No mood entries found for {formatted_date}");
         return Ok(());
     }
 
@@ -175,11 +171,13 @@ async fn handle_clear(
 
     let deleted_count = crate::sql::clear_moods(pool, start, end, true).await?;
 
-    ibog!(
-        "Cleared {} mood entry/entries for {}",
-        deleted_count,
-        formatted_date
-    );
+    if interactive {
+        cliclack::outro(format!(
+            "Cleared {deleted_count} mood entry/entries for {formatted_date}"
+        ))?;
+    } else {
+        ibog!("Cleared {deleted_count} mood entry/entries for {formatted_date}")
+    }
 
     Ok(())
 }
@@ -256,7 +254,12 @@ async fn handle_config() -> Result<()> {
     open_editor_at(path)
 }
 
-async fn handle_entry(pool: &SqlitePool, config: &Config, opts: &CliOpts, entry: Entry) -> Result<()> {
+async fn handle_entry(
+    pool: &SqlitePool,
+    config: &Config,
+    opts: &CliOpts,
+    entry: Entry,
+) -> Result<()> {
     let feeling = entry.feeling;
     let customs = entry.customs;
     let body = entry.body;
@@ -420,11 +423,13 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                 anyhow::bail!("Task name cannot contain tab characters");
             }
 
-            // Determine start time (shared chrono-english parsing: accepts
-            // dates, datetimes, and relative forms like "yesterday").
-            let start_epoch = match date {
+            // `@<time>` is the due time and lands in `end_time`; `start_time`
+            // records the creation moment. Shared chrono-english parsing:
+            // accepts dates, datetimes, and relative forms like "yesterday".
+            let start_epoch = Some(crate::date::now());
+            let end_epoch = match date {
                 Some(d) => Some(crate::date::parse_datetime(&d, config.date.dialect)?),
-                None => Some(crate::date::now()),
+                None => None,
             };
 
             // Determine priority, target_count and body. All three gate on
@@ -450,7 +455,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                 interval_secs: None,
                 target_count,
                 optional: false,
-                end_time: None,
+                end_time: end_epoch,
             };
             let (new_id, new_short_id) = crate::sql::create_task(pool, &task_obj).await?;
             task_obj.id = Some(new_id);
@@ -481,15 +486,15 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
             // line; otherwise the flow goes interactive with whatever was
             // given pre-filled (a pre-filled value skips its prompt).
             let start_epoch = match &date {
-                Some(d) => Some(crate::date::parse_datetime(d, config.date.dialect).with_context(
-                    || {
+                Some(d) => Some(
+                    crate::date::parse_datetime(d, config.date.dialect).with_context(|| {
                         format!(
                             "Invalid scheduled task start time: '{}' \
                              (description starts with ':', duration with '%')",
                             d
                         )
-                    },
-                )?),
+                    })?,
+                ),
                 None => None,
             };
             let duration_secs = task
@@ -543,7 +548,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                     opts,
                     name,
                     start_epoch,
-                    task.available_duration,
+                    duration_secs,
                     body,
                     open_editor,
                 )
@@ -572,7 +577,7 @@ fn handle_oneshot_task_creation(config: &Config) -> Result<(i32, i32, String)> {
     crate::display::task_intro("Create oneshot task")?;
 
     let priority = crate::prompts::prompt_priority(config.tasks.default_priority)?;
-    let target_count = crate::prompts::prompt_target_count("Times to complete (0 = once):", 0)?;
+    let target_count = crate::prompts::prompt_target_count()?;
     let body = open_editor_for_body(config.editor.hint)?;
 
     Ok((priority, target_count, body))
@@ -601,19 +606,27 @@ async fn handle_recurring_task_creation(
     // change it. The name is trimmed before use. The pre-filled value is
     // logged so the log file records what skipped the prompt.
     if let Some(p) = &prefill {
-        cba::ibog!("prefill"; "recurring name: {}", p);
+        cliclack::log::info(format!("Name: {p}"))?;
     }
     let name = prompt_unique_name(pool, prefill.as_deref()).await?;
 
     // 2. Priority (1..=999 per validation; blank falls back to default).
     let priority = crate::prompts::prompt_priority(config.tasks.default_priority)?;
 
-    // 3. Interval (required, valid duration)
+    // 3. Start time (blank = the current moment, `date::now()`). This is the
+    // recurrence anchor: interval boundaries are computed from it
+    // (`task::current_interval_start`), and the placeholder shows the
+    // formatted default so the current anchor is visible before editing.
+    let start_time = crate::prompts::prompt_start_time(None, config.date.dialect)?;
+
+    // 4. Interval (required, valid duration)
     let interval_str = crate::prompts::prompt_interval(None)?;
     let interval_secs = parse_duration_secs(&interval_str)?;
 
-    // 4. Available duration (blank = always available; if >= interval, also always available)
-    let avail_str = crate::prompts::prompt_available_duration(&interval_str, None)?;
+    // 5. Available duration (blank = always available; capped at the
+    // interval — availability beyond it means always available).
+    let avail_str =
+        crate::prompts::prompt_available_duration(&interval_str, None, Some(interval_secs))?;
 
     let available_duration_secs = if avail_str.is_empty() {
         None
@@ -626,17 +639,17 @@ async fn handle_recurring_task_creation(
         }
     };
 
-    // 5. Target count (blank = 0, task can be completed once)
-    let target_count = crate::prompts::prompt_target_count("Times to complete (0 = once):", 0)?;
+    // 6. Target count (blank = 0, task can be completed once)
+    let target_count = crate::prompts::prompt_target_count()?;
 
-    // 6. End time (blank = never ends). `prompt_end` accepts a duration
+    // 7. End time (blank = never ends). `prompt_end` accepts a duration
     // (relative to now) or an absolute date/time and returns the epoch.
     let end_time = crate::prompts::prompt_end(None, config.date.dialect)?;
 
-    // 7. Optional
+    // 8. Optional
     let is_optional = crate::prompts::prompt_optional(false)?;
 
-    // 8. Body: command-line body (`.. text`) or the editor when `..` with
+    // 9. Body: command-line body (`.. text`) or the editor when `..` with
     // an empty body was given.
     let body = if open_editor {
         open_editor_for_body(config.editor.hint)?
@@ -648,7 +661,6 @@ async fn handle_recurring_task_creation(
     // anchor for interval boundaries when applying completion deltas). Both the
     // stable row id and the user-facing short id are assigned by the database
     // layer (see sql.rs).
-    let start_time = date::now();
     let mut task_obj = TaskObject {
         id: None,
         short_id: None,
@@ -692,7 +704,7 @@ async fn handle_scheduled_task_creation(
     opts: &CliOpts,
     name: Option<String>,
     start: Option<i64>,
-    duration_str: Option<String>,
+    duration: Option<i64>,
     body: String,
     open_editor: bool,
 ) -> Result<()> {
@@ -708,7 +720,7 @@ async fn handle_scheduled_task_creation(
     // line skips the prompt entirely; on a duplicate the prompt re-opens
     // with the given name as the default input so the user can change it.
     if let Some(n) = &name {
-        cba::ibog!("prefill"; "scheduled name: {}", n);
+        cliclack::log::info(format!("Name: {n}"))?;
     }
     let name = prompt_unique_name(pool, name.as_deref()).await?;
 
@@ -716,21 +728,22 @@ async fn handle_scheduled_task_creation(
     // the prompt; blank in the prompt means "now".
     let start = match start {
         Some(s) => {
-            cba::ibog!("prefill"; "scheduled start: {}", crate::date::format_date_time(s));
+            cliclack::log::info(format!("Start: {}", crate::date::format_date_time(s)))?;
             s
         }
-        None => crate::prompts::prompt_start_time(config.date.dialect)?,
+        None => crate::prompts::prompt_start_time(None, config.date.dialect)?,
     };
 
     // 3. Available duration (required for scheduled tasks). A duration from
-    // the command line skips the prompt; blank means the 1-hour default.
-    let duration_secs = match duration_str {
+    // the command line (parsed to seconds in the caller) skips the prompt;
+    // blank means the 1-hour default.
+    let duration_secs = match duration {
         Some(d) => {
-            cba::ibog!("prefill"; "scheduled duration: {}", d);
-            parse_duration_secs(&d)?
+            cliclack::log::info(format!("Duration: {}", format_duration(d)))?;
+            d
         }
         None => {
-            let raw = crate::prompts::prompt_available_duration("1 hour", None)?;
+            let raw = crate::prompts::prompt_available_duration("1 hour", None, None)?;
             if raw.trim().is_empty() {
                 3600
             } else {
@@ -781,32 +794,12 @@ async fn handle_scheduled_task_creation(
     Ok(())
 }
 
-/// Resolve a unique, non-empty task name for creation. A name from the
-/// command line skips the prompt entirely; on a duplicate the prompt
-/// re-opens with the given name as the default input so the user can
-/// change it.
-async fn prompt_unique_name(pool: &SqlitePool, given: Option<&str>) -> Result<String> {
-    let given = given.map(str::trim).filter(|s| !s.is_empty());
-    if let Some(name) = given {
-        if !crate::sql::recurring_task_name_exists(pool, name).await? {
-            return Ok(name.to_string());
-        }
-    }
-    loop {
-        let candidate = crate::prompts::prompt_name(given)?;
-        if crate::sql::recurring_task_name_exists(pool, &candidate).await? {
-            cba::ebog!(
-                "duplicate-name";
-                "A task with name '{}' already exists",
-                candidate
-            );
-            continue;
-        }
-        return Ok(candidate);
-    }
-}
-
-async fn handle_update(pool: &SqlitePool, opts: &CliOpts, target: UpdateTarget, count: Option<i64>) -> Result<()> {
+async fn handle_update(
+    pool: &SqlitePool,
+    opts: &CliOpts,
+    target: UpdateTarget,
+    count: Option<i64>,
+) -> Result<()> {
     match target {
         UpdateTarget::OneShot(short_id) => {
             // `feeling - <id> [count]`: the id is the user-facing short id
@@ -911,7 +904,12 @@ pub fn handle_embed<R: BufRead, W: Write>(reader: &mut R, out: &mut W) -> Result
 /// configured `moods.prefix_string`, run it through the full three-step mood-color
 /// pipeline, and print intermediate values at each stage plus the final
 /// Oklab / sRGB colour (with a terminal swatch of the final colour).
-pub fn handle_color<W: Write>(mood: &str, config: &Config, opts: &CliOpts, out: &mut W) -> Result<()> {
+pub fn handle_color<W: Write>(
+    mood: &str,
+    config: &Config,
+    opts: &CliOpts,
+    out: &mut W,
+) -> Result<()> {
     let embedder = crate::embed::global_embedder();
     let mood = mood.trim();
     let axes = config.moods.color_axes.as_ref().unwrap();
@@ -1026,6 +1024,29 @@ pub fn handle_color<W: Write>(mood: &str, config: &Config, opts: &CliOpts, out: 
     )?;
 
     Ok(())
+}
+
+// -------------------------- HELPERS -------------------------
+
+/// Resolve a unique, non-empty task name for creation. A name from the
+/// command line skips the prompt entirely; on a duplicate the prompt
+/// re-opens with the given name as the default input so the user can
+/// change it.
+async fn prompt_unique_name(pool: &sqlx::SqlitePool, given: Option<&str>) -> Result<String> {
+    let given = given.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(name) = given {
+        if !crate::sql::recurring_task_name_exists(pool, name).await? {
+            return Ok(name.to_string());
+        }
+    }
+    loop {
+        let candidate = crate::prompts::prompt_name(given)?;
+        if crate::sql::recurring_task_name_exists(pool, &candidate).await? {
+            cliclack::log::error(format!("A task with name '{candidate}' already exists"))?;
+            continue;
+        }
+        return Ok(candidate);
+    }
 }
 
 #[cfg(test)]

@@ -50,12 +50,56 @@ impl TodayHorizon {
     }
 }
 
+/// Category of a today-view entry, driving routing (edit / delete / preview)
+/// and presentation. Replaces the old `entry_type` string and the task-only
+/// `interval_secs` marker.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntryKind {
+    /// One-shot task without a completion target (`target_count == 0`).
+    Oneshot,
+    /// One-shot task with a completion target (`target_count > 0`).
+    Threshold,
+    /// Recurring task (has an interval).
+    Recurring,
+    /// Scheduled task (no interval; has an availability window).
+    Scheduled,
+    /// Feeling entry carrying a mood label.
+    Mood,
+    /// Journal-only feeling entry (empty mood label; the body holds the text).
+    Journal,
+    /// Custom tracker entry.
+    Custom,
+}
+
+impl EntryKind {
+    pub fn is_task(self) -> bool {
+        matches!(
+            self,
+            Self::Oneshot | Self::Threshold | Self::Recurring | Self::Scheduled
+        )
+    }
+
+    pub fn is_mood(self) -> bool {
+        matches!(self, Self::Mood | Self::Journal)
+    }
+
+    pub fn is_custom(self) -> bool {
+        matches!(self, Self::Custom)
+    }
+}
+
 /// Data for a single today-view entry.
 #[derive(Debug, Clone)]
+
 pub struct TodayEntry {
     pub id: Option<i64>,
     pub time: i64,
-    pub entry_type: &'static str, // "feeling", "custom", "task"
+    /// Rendered time-cell text: "HH:MM", "Tu HH:MM" (two-letter weekday
+    /// prefix for entries outside the anchored day), or empty for entries
+    /// with no displayable time (all-day recurring tasks, undated oneshots)
+    /// — those sort after all timed entries.
+    pub time_label: String,
+    pub kind: EntryKind,
     pub label: String,
     pub body: String,
     pub task_id: Option<i64>,
@@ -161,11 +205,7 @@ pub async fn handle_tracker<W: Write>(
             TrackerItem::Mood => {
                 // Positional mood-grid marker: render the mood dots grid here.
                 if opts.verbose() {
-                    writeln!(
-                        out,
-                        "{}",
-                        grid_title("Moods", period, opts.verbose_level())
-                    )?;
+                    writeln!(out, "{}", grid_title("Moods", period, opts.verbose_level()))?;
                 }
                 display_mood_tracker(pool, config, start_epoch, end_epoch, period, out).await?;
             }
@@ -193,11 +233,7 @@ pub async fn handle_tracker<W: Write>(
                 } else {
                     // Custom tracker: display score dots
                     if opts.verbose() {
-                        writeln!(
-                            out,
-                            "{}",
-                            grid_title(id_str, period, opts.verbose_level())
-                        )?;
+                        writeln!(out, "{}", grid_title(id_str, period, opts.verbose_level()))?;
                     }
                     display_custom_tracker(
                         pool,
@@ -441,11 +477,8 @@ async fn display_custom_tracker<W: Write>(
                 writeln!(
                     out,
                     "{}",
-                    format!(
-                        " [{}]",
-                        crate::date::format_datetime_short(entry.time)
-                    )
-                    .with(CtColor::DarkGrey)
+                    format!(" [{}]", crate::date::format_datetime_short(entry.time))
+                        .with(CtColor::DarkGrey)
                 )?;
             } else {
                 writeln!(out)?;
@@ -742,6 +775,66 @@ pub(crate) fn completion_badge_text(count: i64, target_count: i32) -> String {
     }
 }
 
+/// Today-view time cell for a timestamp: "HH:MM" when it falls on the
+/// anchored day, "Tu HH:MM" (two-letter weekday prefix) otherwise — entries
+/// outside the anchored day stay distinguishable in the +tomorrow/+week
+/// horizons.
+fn today_time_label(time: i64, day_start_epoch: i64) -> String {
+    if crate::date::day_start(time) == day_start_epoch {
+        crate::date::format_time(time)
+    } else {
+        format!(
+            "{} {}",
+            crate::date::format_weekday(time),
+            crate::date::format_time(time)
+        )
+    }
+}
+
+/// Time cell and sort key for a recurring task in the today view. The
+/// availability window in the current interval ends at
+/// `current_interval_start + available_duration_secs`; a task without an
+/// explicit duration is available for the whole interval, so its implicit
+/// window end is the next interval start. The whole-horizon variant gets an
+/// empty time label and sorts after all timed entries by its implicit end.
+fn recurring_entry_time(
+    start_time: Option<i64>,
+    interval_secs: Option<i64>,
+    available_duration_secs: Option<i64>,
+    now: i64,
+    day_start_epoch: i64,
+) -> (i64, String) {
+    match (start_time, interval_secs, available_duration_secs) {
+        (Some(st), Some(interval), Some(dur)) if dur < interval => {
+            let end = crate::task::current_interval_start(st, interval, now) + dur;
+            (end, today_time_label(end, day_start_epoch))
+        }
+        (Some(st), Some(interval), _) => {
+            let end = crate::task::current_interval_start(st, interval, now) + interval;
+            (end, String::new())
+        }
+        // Defensive: interval-less recurring row (the fetch guarantees
+        // interval_secs IS NOT NULL) — fall back to the anchor, timed.
+        _ => {
+            let t = start_time.unwrap_or(now);
+            (t, today_time_label(t, day_start_epoch))
+        }
+    }
+}
+
+/// Today-view sort: timed entries first (by timestamp ascending); then the
+/// no-time group (all-day recurring tasks, undated oneshots) by priority
+/// descending, then by untruncated availability end ascending.
+pub(crate) fn today_sort(a: &TodayEntry, b: &TodayEntry) -> std::cmp::Ordering {
+    let (a_blank, b_blank) = (a.time_label.is_empty(), b.time_label.is_empty());
+    match (a_blank, b_blank) {
+        (false, true) => std::cmp::Ordering::Less,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, false) => a.time.cmp(&b.time),
+        (true, true) => b.priority.cmp(&a.priority).then(a.time.cmp(&b.time)),
+    }
+}
+
 /// Fetch all today-view entries within the given horizon.
 pub async fn fetch_today_entries(
     pool: &SqlitePool,
@@ -791,7 +884,12 @@ pub async fn fetch_today_entries(
         entries.push(TodayEntry {
             id: Some(id),
             time,
-            entry_type: "feeling",
+            time_label: today_time_label(time, day_start_epoch),
+            kind: if mood.is_empty() {
+                EntryKind::Journal
+            } else {
+                EntryKind::Mood
+            },
             label: mood,
             body,
             task_id: None,
@@ -823,7 +921,11 @@ pub async fn fetch_today_entries(
             ),
             TrackerType::Number | TrackerType::Float => {
                 let score = score_f64(&row.score);
-                (format!("{}: {}", tracker_type, score), Some('◆'), Some(score))
+                (
+                    format!("{}: {}", tracker_type, score),
+                    Some('◆'),
+                    Some(score),
+                )
             }
         };
         let color = match score {
@@ -833,7 +935,8 @@ pub async fn fetch_today_entries(
         entries.push(TodayEntry {
             id: Some(custom_id),
             time,
-            entry_type: "custom",
+            time_label: today_time_label(time, day_start_epoch),
+            kind: EntryKind::Custom,
             label,
             body: String::new(),
             task_id: None,
@@ -843,9 +946,10 @@ pub async fn fetch_today_entries(
         });
     }
 
-    // 3. Oneshot tasks due by the end of the horizon (start_time <= horizon_end).
-    // This upper bound alone would also match overdue tasks (due before today),
-    // so unless config.today_view.include_overdue is set, a lower bound keeps
+    // 3. Oneshot tasks due by the end of the horizon (due time — `end_time`
+    // when set, else the legacy `start_time` — <= horizon_end). This upper
+    // bound alone would also match overdue tasks (due before today), so
+    // unless config.today_view.include_overdue is set, a lower bound keeps
     // only tasks due from today onward. The floor is bound (i64::MIN =
     // effectively no filter) so the SQL stays static.
     let overdue_floor = if config.today_view.include_overdue {
@@ -856,12 +960,20 @@ pub async fn fetch_today_entries(
     let due_tasks = crate::sql::fetch_due_oneshot_tasks(pool, horizon_end, overdue_floor).await?;
 
     for task in &due_tasks {
-        let urgency = match task.start_time {
-            Some(st) if st < day_start_epoch => "OVERDUE",
+        // Due time: `end_time` when set (`! name @<time>`), else the legacy
+        // `start_time` (rows predating the end-time semantic / undated tasks).
+        let due = task.end_time.or(task.start_time);
+        let urgency = match due {
+            Some(d) if d < day_start_epoch => "OVERDUE",
             _ => "due",
         };
         let detail = format!("[p={}] {}", task.priority, urgency);
-        let time = task.start_time.unwrap_or(day_start_epoch);
+        // Undated oneshots (no end_time) have no due date: empty time cell,
+        // sorted after all timed entries (i64::MAX key).
+        let (time, time_label) = match task.end_time {
+            Some(d) => (d, today_time_label(d, day_start_epoch)),
+            None => (i64::MAX, String::new()),
+        };
         let color = RatColor::from_crossterm(
             completion_badge(
                 config,
@@ -873,7 +985,12 @@ pub async fn fetch_today_entries(
         entries.push(TodayEntry {
             id: None,
             time,
-            entry_type: "task",
+            time_label,
+            kind: if task.target_count > 0 {
+                EntryKind::Threshold
+            } else {
+                EntryKind::Oneshot
+            },
             label: task.name.clone(),
             body: detail,
             task_id: Some(task.id),
@@ -920,10 +1037,15 @@ pub async fn fetch_today_entries(
             task.available_duration_secs,
             now_ts,
         );
+        // The lhs shows the window end (the deadline), matching the
+        // recurring availability-end rule.
+        let window_end =
+            task.start_time.unwrap_or(day_start_epoch) + task.available_duration_secs.unwrap_or(0);
         entries.push(TodayEntry {
             id: None,
-            time: task.start_time.unwrap_or(day_start_epoch),
-            entry_type: "task",
+            time: window_end,
+            time_label: today_time_label(window_end, day_start_epoch),
+            kind: EntryKind::Scheduled,
             label: task.name.clone(),
             body: detail,
             task_id: Some(task.id),
@@ -942,16 +1064,18 @@ pub async fn fetch_today_entries(
 
     for task in &recurring_tasks {
         let detail = format!("[p={}] recurring", task.priority);
-        // Tasks without availability are active all day → sort to top
-        let time = if task.available_duration_secs.is_none() {
-            day_start_epoch
-        } else {
-            task.start_time.unwrap_or(now_ts)
-        };
+        let (time, time_label) = recurring_entry_time(
+            task.start_time,
+            task.interval_secs,
+            task.available_duration_secs,
+            now_ts,
+            day_start_epoch,
+        );
         entries.push(TodayEntry {
             id: None,
             time,
-            entry_type: "task",
+            time_label,
+            kind: EntryKind::Recurring,
             label: task.name.clone(),
             body: detail,
             task_id: Some(task.id),
@@ -972,8 +1096,10 @@ pub async fn fetch_today_entries(
         });
     }
 
-    // Sort all entries chronologically
-    entries.sort_by_key(|e| e.time);
+    // Sort: timed entries first by timestamp, then the no-time group by
+    // priority descending and untruncated availability end.
+    // untruncated availability end.
+    entries.sort_by(today_sort);
 
     Ok(entries)
 }
@@ -989,9 +1115,14 @@ pub async fn handle_today<W: Write>(
     out: &mut W,
 ) -> Result<()> {
     let mut color_cache = std::collections::HashMap::new();
-    let entries =
-        fetch_today_entries(pool, config, TodayHorizon::Today, day_epoch, &mut color_cache)
-            .await?;
+    let entries = fetch_today_entries(
+        pool,
+        config,
+        TodayHorizon::Today,
+        day_epoch,
+        &mut color_cache,
+    )
+    .await?;
 
     if entries.is_empty() {
         writeln!(out, "Nothing logged today.")?;
@@ -1042,5 +1173,89 @@ mod tests {
         assert_eq!(grid_title("idea", TrackerPeriod::Month, 2), "idea (Month)");
         assert_eq!(grid_title("@run", TrackerPeriod::Year, 3), "@run (Year)");
         assert_eq!(grid_title("idea", TrackerPeriod::Month, 1), "idea");
+    }
+
+    #[test]
+    fn test_today_time_label() {
+        // 2024-03-15 is a Friday; 2024-03-16 a Saturday.
+        let day =
+            crate::date::parse_datetime("2024-03-15 00:00", crate::date::DateDialect::Uk).unwrap();
+        let same =
+            crate::date::parse_datetime("2024-03-15 09:30", crate::date::DateDialect::Uk).unwrap();
+        let next =
+            crate::date::parse_datetime("2024-03-16 09:30", crate::date::DateDialect::Uk).unwrap();
+        assert_eq!(today_time_label(same, day), "09:30");
+        assert_eq!(today_time_label(next, day), "Sa 09:30");
+    }
+
+    #[test]
+    fn test_recurring_entry_time() {
+        let day =
+            crate::date::parse_datetime("2024-03-16 00:00", crate::date::DateDialect::Uk).unwrap();
+        let anchor =
+            crate::date::parse_datetime("2024-03-15 08:00", crate::date::DateDialect::Uk).unwrap();
+        let now =
+            crate::date::parse_datetime("2024-03-16 14:00", crate::date::DateDialect::Uk).unwrap();
+        let day_secs = 86400;
+        let hour_secs = 3600;
+
+        // With an availability window: ends 09:00 in the current interval
+        // (16th), same day as the anchor — no weekday prefix.
+        let (t, label) =
+            recurring_entry_time(Some(anchor), Some(day_secs), Some(hour_secs), now, day);
+        assert_eq!(
+            t,
+            crate::date::parse_datetime("2024-03-16 09:00", crate::date::DateDialect::Uk).unwrap()
+        );
+        assert_eq!(label, "09:00");
+
+        // Without one: active all day; implicit end = next interval start,
+        // empty time cell.
+        let (t, label) = recurring_entry_time(Some(anchor), Some(day_secs), None, now, day);
+        assert_eq!(
+            t,
+            crate::date::parse_datetime("2024-03-17 08:00", crate::date::DateDialect::Uk).unwrap()
+        );
+        assert_eq!(label, "");
+    }
+
+    #[test]
+    fn test_today_sort() {
+        let entry = |time: i64, time_label: &str, priority: i32| TodayEntry {
+            id: None,
+            time,
+            time_label: time_label.to_string(),
+            kind: EntryKind::Oneshot,
+            label: String::new(),
+            body: String::new(),
+            task_id: None,
+            priority,
+            badge: None,
+            color: RatColor::DarkGray,
+        };
+        let mut entries = [
+            entry(200, "20:00", 1),
+            entry(350, "", 5),
+            entry(300, "", 2),
+            entry(400, "", 5),
+            entry(100, "10:00", 9),
+        ];
+        entries.sort_by(today_sort);
+        let got: Vec<(i64, i32, String)> = entries
+            .iter()
+            .map(|e| (e.time, e.priority, e.time_label.clone()))
+            .collect();
+        // Timed entries first by timestamp; the no-time group then by
+        // priority descending, then by untruncated availability end.
+        assert_eq!(
+            got,
+            vec![
+                (100, 9, "10:00".to_string()),
+                (200, 1, "20:00".to_string()),
+                (350, 5, String::new()),
+                (400, 5, String::new()),
+                (300, 2, String::new()),
+            ]
+        );
     }
 }

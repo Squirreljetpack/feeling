@@ -5,7 +5,7 @@ use ratatui::{
 };
 
 use crate::date;
-use crate::views::TodayEntry;
+use crate::views::{EntryKind, TodayEntry};
 
 /// A `  field: value` line: the field name (with colon) in yellow, the
 /// value uncolored. Field names are lowercase.
@@ -31,10 +31,10 @@ fn date_line(ts: i64) -> Line<'static> {
 ///   / "Scheduled", full caps, bold) in its own color, indented one space,
 ///   over a dark-grey rule as wide as the title plus two;
 /// - the task name, indented, white, italic;
-/// - a blank line, then the fields (`id`, `priority`, `start`/`due`, and
-///   the recurring/scheduled metadata (`next`, `interval`, `duration`,
-///   plus `ends`/`optional` when set / `duration`, `state`) as `field:
-///   value` lines with yellow lowercase field names;
+/// - a blank line, then the fields (`id`, `priority`, `creation`/`due` for
+///   oneshot, `start` for scheduled, and the recurring metadata (`next`,
+///   `interval`, `duration`, plus `ends`/`optional` when set / `duration`,
+///   `state`) as `field: value` lines with yellow lowercase field names;
 /// - the progress bar for counted tasks (a blank line on each side), then
 ///   the body when nonempty (a blank line, then the body indented two
 ///   spaces).
@@ -80,10 +80,10 @@ pub fn build_preview(task: &crate::sql::TaskRow) -> Vec<Line<'static>> {
         }
     }
     lines.push(field_line("priority", task.priority.to_string()));
-    if let Some(st) = task.start_time {
-        if task.is_recurring() {
-            // Recurring tasks show when the next interval opens instead of
-            // a fixed start time.
+    if task.is_recurring() {
+        // Recurring tasks show when the next interval opens instead of
+        // a fixed start time.
+        if let Some(st) = task.start_time {
             let now = date::now();
             let next = match task.interval_secs {
                 Some(interval) if interval > 0 => {
@@ -96,9 +96,20 @@ pub fn build_preview(task: &crate::sql::TaskRow) -> Vec<Line<'static>> {
                 _ => st,
             };
             lines.push(field_line("next", date::format_date_time(next)));
-        } else {
-            let label = if task.is_scheduled() { "start" } else { "due" };
-            lines.push(field_line(label, date::format_date_time(st)));
+        }
+    } else if task.is_scheduled() {
+        // Scheduled tasks show the window start.
+        if let Some(st) = task.start_time {
+            lines.push(field_line("start", date::format_date_time(st)));
+        }
+    } else {
+        // Oneshot tasks: the creation time always, and the due time only
+        // when one was set (`! name @<time>` → end_time).
+        if let Some(st) = task.start_time {
+            lines.push(field_line("creation", date::format_date_time(st)));
+        }
+        if let Some(et) = task.end_time {
+            lines.push(field_line("due", date::format_date_time(et)));
         }
     }
 
@@ -133,8 +144,6 @@ pub fn build_preview(task: &crate::sql::TaskRow) -> Vec<Line<'static>> {
         }
         if let Some(avail) = task.available_duration_secs {
             lines.push(field_line("duration", date::format_duration(avail)));
-        } else {
-            lines.push(field_line("duration", "always".to_string()));
         }
         if let Some(ref s) = task.end_datetime() {
             lines.push(field_line("ends", s.clone()));
@@ -195,36 +204,35 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
     // Start with a blank line so the heading reads as a heading.
     lines.push(Line::default());
 
-    let is_journal = entry.entry_type == "feeling" && entry.label.is_empty();
-    let (title, title_style): (String, Style) = if is_journal {
-        (
+    let (title, title_style): (String, Style) = match entry.kind {
+        EntryKind::Mood => (
+            "FEELING".to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+        ),
+        EntryKind::Journal => (
             "JOURNAL".to_string(),
             Style::default()
                 .fg(Color::Gray)
                 .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        match entry.entry_type {
-            "feeling" => (
-                "FEELING".to_string(),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-            ),
-            "custom" => (
-                "CUSTOM".to_string(),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            // Fallback for task/completion entries reaching here without a
-            // selected TaskRow (normally they render via build_preview).
-            other => (
-                other.to_uppercase(),
+        ),
+        EntryKind::Custom => (
+            "CUSTOM".to_string(),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        // Task entries normally render via build_preview (they carry a
+        // selected TaskRow); this is the fallback for entries reaching here
+        // without one.
+        EntryKind::Oneshot | EntryKind::Threshold | EntryKind::Recurring | EntryKind::Scheduled => {
+            (
+                "TASK".to_string(),
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
-            ),
+            )
         }
     };
     lines.push(Line::from(Span::styled(format!(" {}", title), title_style)));
@@ -233,7 +241,7 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
         Style::default().fg(Color::DarkGray),
     )));
 
-    if is_journal {
+    if entry.kind == EntryKind::Journal {
         // Journal-only: skip the mood segment — the date, then the body
         // directly.
         lines.push(date_line(entry.time));

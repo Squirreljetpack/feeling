@@ -40,6 +40,7 @@ recommend using fs with rg to search through all notes.
 config value, confirm before accepting scheduled
 interactive todo creation requires opening editor, a bit odd but not sure how to signal to enable easily.
 :query for a variety of items, categories, filters, output null seperated items
-
+CliError instead of anyhow error, so that we can return Handled without logging the error
+support attaching additional mood/journal entries to Moods, display timestamped in preview (carry extra id column)
 
 # 

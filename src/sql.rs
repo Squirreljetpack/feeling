@@ -847,7 +847,10 @@ pub async fn fetch_completions_between(
 }
 
 /// Incomplete oneshot tasks due by `horizon_end` (and >= `floor`, which
-/// excludes overdue tasks unless the config opts in).
+/// excludes overdue tasks unless the config opts in). Due is `end_time` when
+/// set (`! name @<time>`); rows without one fall back to `start_time`, so
+/// legacy rows (where the old due lived in `start_time`) and undated tasks
+/// (due at creation) keep working.
 pub async fn fetch_due_oneshot_tasks(
     pool: &SqlitePool,
     horizon_end: i64,
@@ -856,17 +859,18 @@ pub async fn fetch_due_oneshot_tasks(
     // available_duration_secs IS NULL excludes scheduled tasks — the today
     // view fetches those separately via fetch_scheduled_today. Completed
     // tasks are included too: their row carries the ✓ badge (the today view
-    // no longer emits separate completion rows).
+    // no longer emits separate completion rows). Due is the end_time when
+    // set, else the start_time (legacy rows / undated tasks).
     let tasks = sqlx::query_as::<_, TaskRow>(
         r#"SELECT t.*, SUM(tc.count) AS completions
            FROM todos t
            LEFT JOIN todo_completions tc ON tc.todo_id = t.id
            WHERE t.interval_secs IS NULL
            AND t.available_duration_secs IS NULL
-           AND t.start_time <= ?
-           AND t.start_time >= ?
+           AND COALESCE(t.end_time, t.start_time) <= ?
+           AND COALESCE(t.end_time, t.start_time) >= ?
            GROUP BY t.id
-           ORDER BY t.priority DESC, t.start_time ASC"#,
+           ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
     )
     .bind(horizon_end)
     .bind(floor)
@@ -1124,7 +1128,7 @@ pub async fn fetch_tasks_for_view(
                           OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
                               AND t.start_time + t.available_duration_secs >= ?)
                        GROUP BY t.id
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
+                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
                     true,
                 ),
                 (true, false) => (
@@ -1136,7 +1140,7 @@ pub async fn fetch_tasks_for_view(
                               AND t.start_time + t.available_duration_secs >= ?)
                        GROUP BY t.id
                        HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
+                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
                     true,
                 ),
                 (false, true) => (
@@ -1145,7 +1149,7 @@ pub async fn fetch_tasks_for_view(
                        LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                        WHERE t.interval_secs IS NULL AND t.available_duration_secs IS NULL
                        GROUP BY t.id
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
+                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
                     false,
                 ),
                 (false, false) => (
@@ -1155,7 +1159,7 @@ pub async fn fetch_tasks_for_view(
                        WHERE t.interval_secs IS NULL AND t.available_duration_secs IS NULL
                        GROUP BY t.id
                        HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
+                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
                     false,
                 ),
             };
@@ -1347,8 +1351,9 @@ pub async fn fetch_tasks_for_view(
             }
         }
         ViewMode::DueTasks => {
-            // Tasks due today or overdue: oneshot tasks with start_time <=
-            // today, plus scheduled tasks (the same query — interval_secs
+            // Tasks due today or overdue: oneshot tasks whose due time
+            // (end_time when set, else the legacy start_time) is today or
+            // earlier, plus scheduled tasks (the same query — interval_secs
             // IS NULL already matches them) when include_scheduled is set.
             // The HAVING clause keeps only entry-less scheduled rows unless
             // include_completed drops it. See VIEWS.md.
@@ -1359,18 +1364,18 @@ pub async fn fetch_tasks_for_view(
                        FROM todos t
                        LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                        WHERE t.interval_secs IS NULL
-                       AND t.start_time <= ?
+                       AND COALESCE(t.end_time, t.start_time) <= ?
                        GROUP BY t.id
-                       ORDER BY t.start_time ASC, t.priority DESC"#
+                       ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
                 } else {
                     r#"SELECT t.*, SUM(tc.count) AS completions
                        FROM todos t
                        LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                        WHERE t.interval_secs IS NULL
-                       AND t.start_time <= ?
+                       AND COALESCE(t.end_time, t.start_time) <= ?
                        GROUP BY t.id
                        HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY t.start_time ASC, t.priority DESC"#
+                       ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
                 }
             } else if include_completed {
                 r#"SELECT t.*, SUM(tc.count) AS completions
@@ -1378,19 +1383,19 @@ pub async fn fetch_tasks_for_view(
                    LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                    WHERE t.interval_secs IS NULL
                    AND t.available_duration_secs IS NULL
-                   AND t.start_time <= ?
+                   AND COALESCE(t.end_time, t.start_time) <= ?
                    GROUP BY t.id
-                   ORDER BY t.start_time ASC, t.priority DESC"#
+                   ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
             } else {
                 r#"SELECT t.*, SUM(tc.count) AS completions
                    FROM todos t
                    LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                    WHERE t.interval_secs IS NULL
                    AND t.available_duration_secs IS NULL
-                   AND t.start_time <= ?
+                   AND COALESCE(t.end_time, t.start_time) <= ?
                    GROUP BY t.id
                    HAVING completions IS NULL OR completions < t.target_count
-                   ORDER BY t.start_time ASC, t.priority DESC"#
+                   ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
             };
             let tasks = sqlx::query_as::<_, TaskRow>(sql)
                 .bind(today_end)

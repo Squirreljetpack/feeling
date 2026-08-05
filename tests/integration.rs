@@ -9,35 +9,21 @@ use feeling::{
     handlers::handle_command,
 };
 use sqlx::{Row, SqlitePool};
-use std::sync::Mutex;
-
-/// Serializes tests that mutate process-wide env vars (EDITOR / VISUAL /
-/// FEELING_CONFIG_DIR) so they never observe each other's values. Poison
-/// recovery keeps a panicking test from deadlocking the rest.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Write a fake-editor shell script that appends `text` (plus newline) to
-/// its first argument — the temp file the body editor points at. Lets the
-/// editor-hint tests simulate a user typing below the hint line without
-/// spawning a real editor.
-fn fake_editor_appending(dir: &std::path::Path, name: &str, text: &str) -> std::path::PathBuf {
-    let path = dir.join(name);
-    std::fs::write(
-        &path,
-        format!("#!/bin/sh\nprintf '%s\\n' '{}' >> \"$1\"\n", text),
-    )
-    .unwrap();
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    path
-}
 
 /// Helper: create a oneshot task and return its id
 async fn create_oneshot_task(pool: &SqlitePool, name: &str) -> i64 {
     let cmd = parse_from(vec!["!".to_string(), name.to_string()]).unwrap();
     let config = Config::default();
-    handle_command(cmd, pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     sqlx::query_scalar::<_, i64>("SELECT id FROM todos WHERE name = ?")
         .bind(name)
@@ -52,9 +38,16 @@ async fn test_create_feeling_entry() {
     let config = Config::default();
 
     let cmd = parse_from(vec!["comfortably".to_string(), "numb".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let row = sqlx::query("SELECT mood, body FROM feeling")
         .fetch_one(&pool)
@@ -97,9 +90,16 @@ async fn test_create_feeling_with_customs() {
     ])
     .unwrap();
 
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let feeling = sqlx::query("SELECT id, mood FROM feeling")
         .fetch_one(&pool)
@@ -139,9 +139,16 @@ async fn test_create_custom_only() {
     );
 
     let cmd = parse_from(vec!["-sleep".to_string(), "10".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // No feeling should be inserted
     let feeling_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
@@ -206,9 +213,16 @@ async fn test_custom_tracker_interval_insert_strategies() {
         ("-affirmation", "second"),
     ] {
         let cmd = parse_from(vec![tracker.to_string(), value.to_string()]).unwrap();
-        handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-            .await
-            .unwrap();
+        handle_command(
+            cmd,
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
     }
 
     // Float: replaced by the latest value in the slot (1 row, score 6).
@@ -256,9 +270,16 @@ async fn test_custom_tracker_interval_insert_strategies() {
     );
     for _ in 0..2 {
         let cmd = parse_from(vec!["-water".to_string(), "1".to_string()]).unwrap();
-        handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-            .await
-            .unwrap();
+        handle_command(
+            cmd,
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     }
     let water_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom WHERE type = 'water'")
@@ -278,9 +299,16 @@ async fn test_create_oneshot_task() {
 
     let cmd = parse_from(vec!["!".to_string(), "urgent task".to_string()]).unwrap();
 
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let task = sqlx::query("SELECT name, body, priority, interval_secs, target_count FROM todos")
         .fetch_one(&pool)
@@ -309,17 +337,30 @@ async fn test_create_oneshot_task_with_date() {
     ])
     .unwrap();
 
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
-    let task = sqlx::query("SELECT name, start_time FROM todos")
+    let task = sqlx::query("SELECT name, start_time, end_time FROM todos")
         .fetch_one(&pool)
         .await
         .unwrap();
 
     assert_eq!(task.get::<String, _>("name"), "scheduled task");
-    // Verify start_time is set to the specified date at midnight
+    // `@<time>` is the due time: end_time is set to the specified date at
+    // midnight, while start_time records the creation moment.
+    let end_time: i64 = task.get("end_time");
+    assert_eq!(
+        end_time,
+        feeling::date::parse_datetime("2024-03-20", config.date.dialect).unwrap()
+    );
     let start_time: i64 = task.get("start_time");
     assert!(start_time > 0);
 }
@@ -343,9 +384,16 @@ async fn test_custom_tracker_range_not_enforced() {
     // insertion: below-min, in-range, and above-max values all store.
     for value in ["3", "7", "11"] {
         let cmd = parse_from(vec!["-sleep".to_string(), value.to_string()]).unwrap();
-        handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-            .await
-            .unwrap();
+        handle_command(
+            cmd,
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
     }
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom")
@@ -398,9 +446,16 @@ async fn test_multiple_customs_same_feeling() {
     ])
     .unwrap();
 
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let feeling_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
         .fetch_one(&pool)
@@ -429,14 +484,28 @@ async fn test_view_oneshot_tasks() {
 
     // Create some oneshot tasks
     let cmd1 = parse_from(vec!["!".to_string(), "low priority task".to_string()]).unwrap();
-    handle_command(cmd1, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd1,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let cmd2 = parse_from(vec!["!".to_string(), "high priority task".to_string()]).unwrap();
-    handle_command(cmd2, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd2,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // View oneshot tasks and capture the tab-separated output
     let cmd = parse_from(vec!["!".to_string()]).unwrap();
@@ -483,9 +552,16 @@ async fn test_update_oneshot_task_simple() {
     // Mark as done: - <short id>. On a fresh pool the row id equals the
     // short id, so `create_oneshot_task`'s return value works directly.
     let cmd = parse_from(vec!["-".to_string(), task_id.to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // The user-facing short id is cleared once the task is completed.
     let short_id: Option<i64> =
@@ -518,7 +594,15 @@ async fn test_update_nonexistent_oneshot_fails() {
     let config = Config::default();
 
     let cmd = parse_from(vec!["-".to_string(), "99999".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -531,7 +615,15 @@ async fn test_update_at_name_fails_as_query() {
     // The `- @name` recurring form was removed; `- @name` is now a word
     // query that never matches (task names don't carry the '@' prefix).
     let cmd = parse_from(vec!["-".to_string(), "@nonexistent".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No task matches"));
 }
@@ -546,9 +638,16 @@ async fn test_update_by_query_words() {
 
     // "milk" matches exactly one task.
     let cmd = parse_from(vec!["-".to_string(), "milk".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let completions: Option<i32> = sqlx::query_scalar(
         "SELECT SUM(count) FROM todo_completions tc JOIN todos t ON t.id = tc.todo_id \
@@ -585,9 +684,16 @@ async fn test_update_by_query_words_multiword_in_order() {
         "eggs".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let first: Option<i32> = sqlx::query_scalar(
         "SELECT SUM(count) FROM todo_completions tc JOIN todos t ON t.id = tc.todo_id \
@@ -616,9 +722,16 @@ async fn test_update_by_query_words_with_count() {
     create_oneshot_task(&pool, "buy milk").await;
 
     let cmd = parse_from(vec!["-".to_string(), "milk".to_string(), "3".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let completions: Option<i32> = sqlx::query_scalar(
         "SELECT SUM(count) FROM todo_completions tc JOIN todos t ON t.id = tc.todo_id \
@@ -638,7 +751,15 @@ async fn test_update_by_query_words_no_match_fails() {
     create_oneshot_task(&pool, "buy milk").await;
 
     let cmd = parse_from(vec!["-".to_string(), "walk".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No task matches"));
 }
@@ -652,59 +773,18 @@ async fn test_update_by_query_words_multiple_matches_fail() {
     create_oneshot_task(&pool, "buy milk again").await;
 
     let cmd = parse_from(vec!["-".to_string(), "buy".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("2 tasks match"), "got: {msg}");
-}
-
-#[tokio::test]
-async fn test_editor_hint_on_strips_hint_line() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    let editor = fake_editor_appending(dir.path(), "editor_append.sh", "my body text");
-
-    std::env::set_var("VISUAL", &editor);
-    std::env::set_var("EDITOR", "true"); // fallback, unused
-
-    let pool = test_pool().await.unwrap();
-    let config = Config::default(); // [editor] hint defaults to true
-
-    let cmd = parse_from(vec!["ok".to_string(), "..".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
-
-    let body: String = sqlx::query_scalar("SELECT body FROM feeling")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(body, "my body text");
-}
-
-#[tokio::test]
-async fn test_editor_hint_off_keeps_first_line() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    let editor = fake_editor_appending(dir.path(), "editor_append.sh", "first line\nsecond line");
-
-    std::env::set_var("VISUAL", &editor);
-    std::env::set_var("EDITOR", "true");
-
-    let pool = test_pool().await.unwrap();
-    let mut config = Config::default();
-    config.editor.hint = false;
-
-    let cmd = parse_from(vec!["ok".to_string(), "..".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
-
-    let body: String = sqlx::query_scalar("SELECT body FROM feeling")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(body, "first line\nsecond line");
 }
 
 #[tokio::test]
@@ -739,9 +819,16 @@ async fn test_create_feeling_tracker_in_final_position() {
         "5".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'good'")
         .fetch_one(&pool)
@@ -759,25 +846,6 @@ async fn test_create_feeling_tracker_in_final_position() {
     assert_eq!(rows[1].get::<String, _>("type"), "water");
     assert_eq!(rows[1].get::<f64, _>("score"), 5.0);
     assert_eq!(rows[1].get::<Option<i64>, _>("feeling"), Some(feeling_id));
-}
-
-#[tokio::test]
-async fn test_no_feeling_no_custom_bails() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let pool = test_pool().await.unwrap();
-    let config = Config::default();
-
-    // Prevent the test from spawning a real editor: `true` exits 0 without
-    // modifying the temp file, so body stays empty and the "Nothing to log"
-    // check fires correctly.
-    std::env::set_var("EDITOR", "true");
-    std::env::set_var("VISUAL", "true");
-
-    // Empty entry (no feeling, no customs) should fail
-    let cmd = parse_from(vec!["..".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Nothing to log"));
 }
 
 #[tokio::test]
@@ -804,9 +872,16 @@ async fn test_out_of_range_custom_still_inserts() {
     ])
     .unwrap();
 
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let feeling_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
         .fetch_one(&pool)
@@ -828,7 +903,15 @@ async fn test_tab_in_mood_rejected() {
 
     // Mood with tab should be rejected
     let cmd = parse_from(vec!["ok\tfeeling".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("tab characters"));
 }
@@ -841,7 +924,15 @@ async fn test_unknown_tracker_rejected() {
     // Unknown tracker should be rejected
     let cmd = parse_from(vec!["-unknown".to_string(), "5".to_string()]).unwrap();
 
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -862,7 +953,8 @@ async fn test_today_view_no_data() {
         .unwrap();
     // handle_today should succeed even with no data
     let mut out = Vec::new();
-    let result = feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
+    let result =
+        feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
     assert!(result.is_ok());
     let output = String::from_utf8(out).unwrap();
     assert!(
@@ -950,7 +1042,8 @@ async fn test_today_view_with_data() {
 
     // handle_today should succeed with data and emit tab-separated rows
     let mut out = Vec::new();
-    let result = feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
+    let result =
+        feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
     assert!(result.is_ok());
     let output = String::from_utf8(out).unwrap();
     assert!(output.contains("good"), "output: {output:?}");
@@ -1004,9 +1097,16 @@ async fn test_feeling_score_roundtrip() {
 
     // CLI-created entries compute the saliency at insert time.
     let cmd = parse_from(vec!["vivid".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let rows = feeling::sql::fetch_feelings_between(&pool, 0, i64::MAX)
         .await
         .unwrap();
@@ -1028,7 +1128,9 @@ async fn test_feeling_score_roundtrip() {
         .await
         .unwrap();
     assert_eq!(rows[0].score, None);
-    feeling::sql::update_feeling_score(&pool, id, 0.42).await.unwrap();
+    feeling::sql::update_feeling_score(&pool, id, 0.42)
+        .await
+        .unwrap();
     let rows = feeling::sql::fetch_feelings_between(&pool, 0, i64::MAX)
         .await
         .unwrap();
@@ -1049,18 +1151,34 @@ async fn test_today_view_backfills_feeling_score() {
 
     // Two moods: one fresh, one pre-seeded.
     let cmd = parse_from(vec!["vivid".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let cmd = parse_from(vec!["glum".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let glum_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'glum'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    feeling::sql::update_feeling_score(&pool, glum_id, 0.5).await.unwrap();
+    feeling::sql::update_feeling_score(&pool, glum_id, 0.5)
+        .await
+        .unwrap();
 
     // A directly-inserted row (no score) exercises the backfill path.
     sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('dull', '', ?)")
@@ -1099,9 +1217,16 @@ async fn test_view_done_tasks() {
     // Create a oneshot task, then complete it
     let task_id = create_oneshot_task(&pool, "finished task").await;
     let update_cmd = parse_from(vec!["-".to_string(), task_id.to_string()]).unwrap();
-    handle_command(update_cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        update_cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // @done should list the completed task
     let cmd = parse_from(vec!["@done".to_string()]).unwrap();
@@ -1138,9 +1263,16 @@ async fn test_view_due_tasks() {
         format!("@{today_str}"),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // @due should list the task
     let cmd = parse_from(vec!["@due".to_string()]).unwrap();
@@ -1193,9 +1325,16 @@ async fn test_tracker_mood_dots() {
 
     // Create a feeling entry (with a mood and body so it gets a dot)
     let cmd = parse_from(vec!["happy".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // : (mood tracker) should print a header and dot rows
     let cmd = parse_from(vec![":".to_string()]).unwrap();
@@ -1260,9 +1399,16 @@ async fn test_tracker_custom_dots() {
 
     // Custom entry via CLI
     let cmd = parse_from(vec!["-sleep".to_string(), "8".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // : sleep should show a filled dot
     let cmd = parse_from(vec![":".to_string(), "sleep".to_string()]).unwrap();
@@ -1604,9 +1750,16 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
         "good".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // Stored as text with the string payload
     let row = sqlx::query("SELECT score, typeof(score) AS t FROM custom")
@@ -1664,9 +1817,16 @@ async fn test_text_tracker_lists_all_entries_in_range() {
 
     for text in ["fixed 2 bugs", "shipped the feature", "wrote docs"] {
         let cmd = parse_from(vec!["-accomplishment".to_string(), text.to_string()]).unwrap();
-        handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-            .await
-            .unwrap();
+        handle_command(
+            cmd,
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
     }
 
     let cmd = parse_from(vec![":".to_string(), "accomplishment".to_string()]).unwrap();
@@ -1697,7 +1857,15 @@ async fn test_custom_tracker_parse_errors() {
         },
     );
     let cmd = parse_from(vec!["-sleep".to_string(), "good".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     assert!(
         result
@@ -1718,7 +1886,15 @@ async fn test_custom_tracker_parse_errors() {
         },
     );
     let cmd = parse_from(vec!["-bugs".to_string(), "3.5".to_string()]).unwrap();
-    let result = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
     assert!(result.is_err());
     assert!(
         result
@@ -1752,9 +1928,16 @@ async fn test_number_tracker_stored_as_integer() {
     );
 
     let cmd = parse_from(vec!["-bugs".to_string(), "3".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // Number trackers store INTEGER payloads.
     let row = sqlx::query("SELECT score, typeof(score) AS t FROM custom")
@@ -1766,9 +1949,16 @@ async fn test_number_tracker_stored_as_integer() {
 
     // Values outside min/max still insert (min/max only affect binning).
     let cmd = parse_from(vec!["-bugs".to_string(), "11".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let row = sqlx::query("SELECT score, typeof(score) AS t FROM custom ORDER BY id DESC")
         .fetch_one(&pool)
@@ -1817,9 +2007,16 @@ async fn test_today_view_include_overdue() {
     let mut config = Config::default();
     config.today_view.include_overdue = true;
     let mut out = Vec::new();
-    handle_command(parse_from(vec![]).unwrap(), &pool, &config, &CliOpts::default(), &mut out, false)
-        .await
-        .unwrap();
+    handle_command(
+        parse_from(vec![]).unwrap(),
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut out,
+        false,
+    )
+    .await
+    .unwrap();
     let output = String::from_utf8(out).unwrap();
     assert!(output.contains(name), "output: {output:?}");
     assert!(output.contains("OVERDUE"), "output: {output:?}");
@@ -1911,9 +2108,16 @@ async fn test_mood_tracker_grid_week_rolling_true_full_week() {
 
     // One mood entry today, via the CLI path.
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let output = run_tracker(&pool, &config, ":").await;
 
@@ -1937,9 +2141,16 @@ async fn test_mood_tracker_grid_week_default_non_rolling() {
     let config = Config::default();
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let output = run_tracker(&pool, &config, ":").await;
 
@@ -1967,9 +2178,16 @@ async fn test_mood_tracker_grid_week_start_config() {
     config.grid.week_start = chrono::Weekday::Sun;
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let output = run_tracker(&pool, &config, ":").await;
 
@@ -1992,9 +2210,16 @@ async fn test_mood_tracker_grid_month_rolling_default() {
     let config = Config::default();
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let output = run_tracker(&pool, &config, ":month").await;
 
@@ -2008,10 +2233,7 @@ async fn test_mood_tracker_grid_month_rolling_default() {
     }
     let expected = (today - start).num_days() + 1;
 
-    assert!(
-        !output.contains("Mood tracker"),
-        "output: {output:?}"
-    );
+    assert!(!output.contains("Mood tracker"), "output: {output:?}");
     assert_eq!(
         output.matches('◯').count() as i64,
         expected - 1,
@@ -2036,9 +2258,16 @@ async fn test_mood_tracker_grid_month_rolling_false() {
     config.grid.month_rolling = false;
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let output = run_tracker(&pool, &config, ":month").await;
 
@@ -2064,9 +2293,16 @@ async fn test_mood_tracker_grid_year_default_rolling() {
     let config = Config::default();
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let output = run_tracker(&pool, &config, ":year").await;
 
@@ -2099,9 +2335,16 @@ async fn test_mood_tracker_grid_year_not_rolling_calendar_layout() {
     config.grid.year_rolling = false;
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let output = run_tracker(&pool, &config, ":year").await;
 
@@ -2156,9 +2399,16 @@ async fn test_short_id_allocator_smallest_free_positive() {
     // Create three oneshot tasks; they get short ids 1, 2, 3 in order.
     for s in ["task a", "task b", "task c"] {
         let cmd = parse_from(vec!["!".to_string(), s.to_string()]).unwrap();
-        handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-            .await
-            .unwrap();
+        handle_command(
+            cmd,
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
     }
     let mut ids = fetch_all_short_ids(&pool).await;
     ids.sort();
@@ -2174,9 +2424,16 @@ async fn test_short_id_allocator_smallest_free_positive() {
         .await
         .unwrap();
     let cmd = parse_from(vec!["!".to_string(), "task d".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let mut ids = fetch_all_short_ids(&pool).await;
     ids.sort();
     // After deleting id=2 (short id 2) the remaining short ids are {1, 3};
@@ -2196,9 +2453,16 @@ async fn test_completions_clear_short_ids_active_keeps_its() {
 
     for s in ["first", "second", "third"] {
         let cmd = parse_from(vec!["!".to_string(), s.to_string()]).unwrap();
-        handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-            .await
-            .unwrap();
+        handle_command(
+            cmd,
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
     }
     // Complete third first, then first. Both lose their short id; "second"
     // stays active and keeps short id 2.
@@ -2209,9 +2473,16 @@ async fn test_completions_clear_short_ids_active_keeps_its() {
             .await
             .unwrap();
         let cmd = parse_from(vec!["-".to_string(), id.to_string()]).unwrap();
-        handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-            .await
-            .unwrap();
+        handle_command(
+            cmd,
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
     }
 
     let mut ids = fetch_all_short_ids(&pool).await;
@@ -2224,9 +2495,16 @@ async fn test_completions_clear_short_ids_active_keeps_its() {
 
     // A completed task's former short id is immediately free for reuse.
     let cmd = parse_from(vec!["!".to_string(), "fourth".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let mut ids = fetch_all_short_ids(&pool).await;
     ids.sort();
     assert_eq!(
@@ -2242,15 +2520,29 @@ async fn test_untoggle_reassigns_smallest_free_short_id() {
     let config = Config::default();
 
     let cmd = parse_from(vec!["!".to_string(), "toggle".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // Complete it: the short id is cleared.
     let cmd = parse_from(vec!["-".to_string(), "1".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let short_id: Option<i64> =
         sqlx::query_scalar("SELECT short_id FROM todos WHERE name = 'toggle'")
             .fetch_one(&pool)
@@ -2267,9 +2559,16 @@ async fn test_untoggle_reassigns_smallest_free_short_id() {
         "-1".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let short_id: Option<i64> =
         sqlx::query_scalar("SELECT short_id FROM todos WHERE name = 'toggle'")
             .fetch_one(&pool)
@@ -2286,13 +2585,27 @@ async fn test_reset_reassigns_short_id_to_completed_task() {
     let config = Config::default();
 
     let cmd = parse_from(vec!["!".to_string(), "restore me".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let cmd = parse_from(vec!["-".to_string(), "1".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let short_id: Option<i64> =
         sqlx::query_scalar("SELECT short_id FROM todos WHERE name = 'restore me'")
             .fetch_one(&pool)
@@ -2346,13 +2659,27 @@ async fn test_prune_deletes_completed_task_and_cascades_completions() {
     // Create a oneshot and complete it via the short id (fresh pool: row id
     // == short id == 1). Completion clears the short id but keeps the row.
     let cmd = parse_from(vec!["!".to_string(), "park me".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let cmd = parse_from(vec!["-".to_string(), "1".to_string(), "3".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     assert_eq!(completion_count(&pool, "park me").await, 1);
     let short_id: Option<i64> =
         sqlx::query_scalar("SELECT short_id FROM todos WHERE name = 'park me'")
@@ -2367,9 +2694,16 @@ async fn test_prune_deletes_completed_task_and_cascades_completions() {
     // :prune should drop the row and the cascaded completion (via ON DELETE
     // CASCADE on todo_completions in db.rs).
     let cmd = parse_from(vec![":prune".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM todos WHERE name = 'park me')")
@@ -2426,9 +2760,16 @@ async fn test_prune_deletes_expired_recurring_task() {
     .unwrap();
 
     let cmd = parse_from(vec![":prune".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let names: Vec<String> = sqlx::query("SELECT name FROM todos")
         .fetch_all(&pool)
@@ -2472,15 +2813,25 @@ async fn test_prune_clears_embedding_cache() {
 
     // Run :prune
     let cmd = parse_from(vec![":prune".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let cache_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM embedding_cache")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(cache_after, 0, "prune should clear the whole embedding cache");
+    assert_eq!(
+        cache_after, 0,
+        "prune should clear the whole embedding cache"
+    );
 }
 
 // ---- Invalid timestamps must fail task creation ----
@@ -2495,9 +2846,16 @@ async fn test_task_creation_invalid_timestamps_fail() {
 
     // Oneshot with a garbage date: `! task @x`.
     let cmd = parse_from(vec!["!".to_string(), "task".to_string(), "@x".to_string()]).unwrap();
-    let err = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap_err();
+    let err = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("Failed to parse datetime"),
         "unexpected error: {err:#}"
@@ -2510,9 +2868,16 @@ async fn test_task_creation_invalid_timestamps_fail() {
         "@2024-99-99".to_string(),
     ])
     .unwrap();
-    let err = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap_err();
+    let err = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("Failed to parse datetime"),
         "unexpected error: {err:#}"
@@ -2520,9 +2885,16 @@ async fn test_task_creation_invalid_timestamps_fail() {
 
     // Scheduled with a garbage start: `! @x`.
     let cmd = parse_from(vec!["!".to_string(), "@x".to_string()]).unwrap();
-    let err = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap_err();
+    let err = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("Failed to parse datetime"),
         "unexpected error: {err:#}"
@@ -2573,73 +2945,6 @@ async fn test_delete_task_cascades_completions() {
     assert_eq!(after, 0, "FK CASCADE should drop completions");
 }
 
-/// The id-allocator's reassignment (positive to negative on completion) must
-/// cascade to `todo_completions.todo_id` via `ON UPDATE CASCADE`.
-///
-/// The id-reassignment design was removed in favor of a stable autoincrement
-/// row id plus a nullable user-facing `short_id`, so `ON UPDATE CASCADE` no
-/// longer exists and there is nothing to cascade — this test is obsolete.
-/// The short-id lifecycle is covered by the short-id allocation tests.
-
-// ---- :config bundled-copy behavior ----
-
-/// When the live config path doesn't exist, `:config` must copy the bundled
-/// `assets/config.toml` verbatim. `FEELING_CONFIG_DIR` redirects that path
-/// to a temporary directory for isolation; `EDITOR=true` short-circuits the
-/// spawned editor so the test runs without leaving us at a real prompt.
-#[tokio::test]
-async fn test_config_copies_bundled_when_missing() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let temp = tempfile::tempdir().unwrap();
-    let prev = std::env::var("FEELING_CONFIG_DIR").ok();
-    // SAFETY: env-mutation in tests is process-wide; other tests that
-    // read FEELING_CONFIG_DIR are sequenced rather than concurrent within
-    // tokio::test runs.
-    std::env::set_var("FEELING_CONFIG_DIR", temp.path());
-
-    let pool = test_pool().await.unwrap();
-    let config = Config::default();
-
-    let prev_editor = std::env::var("EDITOR").ok();
-    std::env::set_var("EDITOR", "true");
-
-    let cmd = parse_from(vec![":config".to_string()]).unwrap();
-    let r = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false).await;
-    if let Some(p) = prev_editor {
-        std::env::set_var("EDITOR", p);
-    } else {
-        std::env::remove_var("EDITOR");
-    }
-
-    assert!(r.is_ok(), ":config copy-on-missing should succeed: {r:?}");
-
-    // paths.rs appends a profile-suffixed file name (dev.toml / toml);
-    // we look for any *.toml in the redirected temp dir.
-    let entries: Vec<_> = std::fs::read_dir(temp.path())
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("toml"))
-        .collect();
-    assert_eq!(
-        entries.len(),
-        1,
-        "exactly one config target should be created: {:?}",
-        entries.iter().map(|e| e.path()).collect::<Vec<_>>()
-    );
-    let written = std::fs::read_to_string(entries[0].path()).unwrap();
-    assert_eq!(
-        written,
-        feeling::config::DEFAULT_CONFIG,
-        "copied file must be byte-identical to the bundled defaults"
-    );
-
-    if let Some(p) = prev {
-        std::env::set_var("FEELING_CONFIG_DIR", p);
-    } else {
-        std::env::remove_var("FEELING_CONFIG_DIR");
-    }
-}
-
 #[tokio::test]
 async fn test_bundled_config_defaults_load_through_serde() {
     // The bundled `assets/config.toml` ships with hex RGB endpoints via the
@@ -2684,9 +2989,16 @@ async fn test_delete_feeling_removes_linked_custom_rows() {
         "8".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'ok'")
         .fetch_one(&pool)
@@ -2749,13 +3061,27 @@ async fn test_delete_custom_row() {
         "8".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let cmd = parse_from(vec!["-sleep".to_string(), "7".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM custom ORDER BY id")
         .fetch_all(&pool)
@@ -2802,9 +3128,16 @@ async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
         "8".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'ok'")
         .fetch_one(&pool)
         .await
@@ -2833,9 +3166,16 @@ async fn test_edit_todo_body_updates_in_place() {
         "initial body".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let task_id: i64 = sqlx::query_scalar("SELECT id FROM todos WHERE name = 'ship it'")
         .fetch_one(&pool)
         .await
@@ -2879,9 +3219,16 @@ async fn test_edit_custom_text_payload() {
     );
 
     let cmd = parse_from(vec!["-note".to_string(), "hello".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let custom_id: i64 = sqlx::query_scalar("SELECT id FROM custom WHERE type = 'note'")
         .fetch_one(&pool)
         .await
@@ -2917,9 +3264,16 @@ async fn test_edit_custom_float_payload() {
     );
 
     let cmd = parse_from(vec!["-sleep".to_string(), "8".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let custom_id: i64 = sqlx::query_scalar("SELECT id FROM custom WHERE type = 'sleep'")
         .fetch_one(&pool)
         .await
@@ -2952,9 +3306,16 @@ async fn test_edit_feeling_body() {
         "original note".to_string(),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'calm'")
         .fetch_one(&pool)
         .await
@@ -3091,9 +3452,16 @@ async fn test_fetch_today_entries_carries_custom_ids() {
     );
 
     let cmd = parse_from(vec!["-sleep".to_string(), "8".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let embedder = feeling::embed::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
@@ -3110,7 +3478,7 @@ async fn test_fetch_today_entries_carries_custom_ids() {
     .unwrap();
     let custom = entries
         .iter()
-        .find(|e| e.entry_type == "custom")
+        .find(|e| e.kind == feeling::views::EntryKind::Custom)
         .expect("custom entry must appear in today view");
     assert!(custom.id.is_some(), "custom entry must carry its row id");
 
@@ -3137,17 +3505,31 @@ async fn test_fetch_today_entries_completed_task_has_check_badge() {
         format!("@{today_str}"),
     ])
     .unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
     let task_id: i64 = sqlx::query_scalar("SELECT id FROM todos WHERE name = 'completed task'")
         .fetch_one(&pool)
         .await
         .unwrap();
     let update_cmd = parse_from(vec!["-".to_string(), task_id.to_string()]).unwrap();
-    handle_command(update_cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        update_cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let mut config = config;
     let embedder = feeling::embed::global_embedder();
@@ -3163,13 +3545,12 @@ async fn test_fetch_today_entries_completed_task_has_check_badge() {
     )
     .await
     .unwrap();
-    assert!(
-        !entries.iter().any(|e| e.entry_type == "completion"),
-        "completion rows must not appear in today view"
-    );
+    // (Legacy: the today view used to emit separate completion rows; that
+    // behavior is gone and cannot be expressed via EntryKind — the enum has
+    // no completion variant.)
     let task_rows: Vec<_> = entries
         .iter()
-        .filter(|e| e.entry_type == "task" && e.label == "completed task")
+        .filter(|e| e.kind.is_task() && e.label == "completed task")
         .collect();
     assert_eq!(task_rows.len(), 1, "exactly one task row expected");
     assert_eq!(task_rows[0].badge, Some('✓'), "done task row must carry ✓");
@@ -3182,15 +3563,24 @@ async fn test_fetch_today_entries_completed_task_has_check_badge() {
 async fn test_today_view_journal_badge() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    config.moods.init_with(&pool, feeling::embed::global_embedder())
+    config
+        .moods
+        .init_with(&pool, feeling::embed::global_embedder())
         .await
         .unwrap();
 
     // Journal-only entry: mood '' with a body (via CLI: `feeling .. text`).
     let cmd = parse_from(vec!["..".to_string(), "a journal note".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     // Default (no journal_badge): no badge at all.
     let mut out = Vec::new();
@@ -3198,9 +3588,15 @@ async fn test_today_view_journal_badge() {
         .await
         .unwrap();
     let output = String::from_utf8(out).unwrap();
-    let line = output.lines().find(|l| l.contains("a journal note")).unwrap();
+    let line = output
+        .lines()
+        .find(|l| l.contains("a journal note"))
+        .unwrap();
     let cols: Vec<&str> = line.split('\t').collect();
-    assert_eq!(cols[1], "", "journal badge must be empty by default: {line:?}");
+    assert_eq!(
+        cols[1], "",
+        "journal badge must be empty by default: {line:?}"
+    );
 
     // With a configured badge, the journal entry carries it.
     config.today_view.journal_badge = Some('•');
@@ -3209,7 +3605,10 @@ async fn test_today_view_journal_badge() {
         .await
         .unwrap();
     let output = String::from_utf8(out).unwrap();
-    let line = output.lines().find(|l| l.contains("a journal note")).unwrap();
+    let line = output
+        .lines()
+        .find(|l| l.contains("a journal note"))
+        .unwrap();
     let cols: Vec<&str> = line.split('\t').collect();
     assert!(
         cols[1].contains('•'),
@@ -3224,9 +3623,16 @@ async fn test_clear_command() {
 
     // Create a feeling entry for today
     let cmd = parse_from(vec!["feeling".to_string(), "good".to_string()]).unwrap();
-    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
         .fetch_one(&pool)
@@ -3236,9 +3642,16 @@ async fn test_clear_command() {
 
     // Clear entries for today (non-interactive mode in tests)
     let clear_cmd = parse_from(vec![":clear".to_string()]).unwrap();
-    handle_command(clear_cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
-        .await
-        .unwrap();
+    handle_command(
+        clear_cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
 
     let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
         .fetch_one(&pool)

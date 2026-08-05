@@ -18,8 +18,8 @@ pub type Epoch = i64;
 
 // Re-export sub-module functions at the crate::date level.
 pub use format::{
-    format_date, format_date_dmy, format_date_time, format_datetime_short, format_duration,
-    format_time,
+    format_date, format_date_time, format_datetime_short, format_duration, format_time,
+    format_weekday,
 };
 pub use parse::{parse_date, parse_datetime, DateDialect};
 pub use parse_duration::parse_duration_secs;

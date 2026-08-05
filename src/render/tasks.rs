@@ -108,22 +108,19 @@ impl TasksApp {
 
     /// Re-sort the current task list according to the selected sort mode.
     fn apply_sort(&mut self) {
+        // Due time for sorting: `end_time` when set, else `start_time`
+        // (legacy rows / undated tasks) — the same fallback the due
+        // queries use.
+        let due = |t: &TaskRow| t.end_time.or(t.start_time).unwrap_or(i64::MAX);
         if self.sort_by_due {
             // Nearness of next due date first; priority as tiebreak (descending)
             self.tasks.sort_by(|a, b| {
-                a.start_time
-                    .unwrap_or(i64::MAX)
-                    .cmp(&b.start_time.unwrap_or(i64::MAX))
-                    .then(b.priority.cmp(&a.priority))
+                due(a).cmp(&due(b)).then(b.priority.cmp(&a.priority))
             });
         } else {
             // Priority descending first; due date as tiebreak
             self.tasks.sort_by(|a, b| {
-                b.priority.cmp(&a.priority).then_with(|| {
-                    a.start_time
-                        .unwrap_or(i64::MAX)
-                        .cmp(&b.start_time.unwrap_or(i64::MAX))
-                })
+                b.priority.cmp(&a.priority).then_with(|| due(a).cmp(&due(b)))
             });
         }
     }

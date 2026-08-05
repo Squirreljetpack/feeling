@@ -17,13 +17,34 @@ pub fn format_time(ts: Epoch) -> String {
         .unwrap_or_else(|| "--:--".to_string())
 }
 
-/// Format an epoch timestamp as `YYYY-MM-DD`.
+/// Two-letter local weekday abbreviation for an epoch ("Mo".."Su").
+pub fn format_weekday(ts: Epoch) -> String {
+    use chrono::{Datelike, TimeZone};
+    chrono::Local
+        .timestamp_opt(ts, 0)
+        .earliest()
+        .map(|dt| {
+            match dt.weekday() {
+                chrono::Weekday::Mon => "Mo",
+                chrono::Weekday::Tue => "Tu",
+                chrono::Weekday::Wed => "We",
+                chrono::Weekday::Thu => "Th",
+                chrono::Weekday::Fri => "Fr",
+                chrono::Weekday::Sat => "Sa",
+                chrono::Weekday::Sun => "Su",
+            }
+            .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// Format an epoch timestamp as `DD-MM-YY`.
 pub fn format_date(ts: Epoch) -> String {
     use chrono::TimeZone;
     chrono::Local
         .timestamp_opt(ts, 0)
         .earliest()
-        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .map(|dt| dt.format("%d-%m-%y").to_string())
         .unwrap_or_else(|| "--".to_string())
 }
 
@@ -41,17 +62,6 @@ pub fn format_date_time(ts: Epoch) -> String {
 /// `> value [timestamp]` lines); currently identical to [`format_date_time`].
 pub fn format_datetime_short(ts: Epoch) -> String {
     format_date_time(ts)
-}
-
-/// Format an epoch timestamp as `DD-MM-YY` (e.g. `15-03-26`) — the TodayApp
-/// title label for anchored days that are neither today nor yesterday.
-pub fn format_date_dmy(ts: Epoch) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .earliest()
-        .map(|dt| dt.format("%d-%m-%y").to_string())
-        .unwrap_or_else(|| "--".to_string())
 }
 
 #[cfg(test)]
@@ -74,14 +84,15 @@ mod tests {
     }
 
     #[test]
-    fn test_format_date_dmy() {
-        let ts = parse::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
-        assert_eq!(format_date_dmy(ts), "15-03-24");
-    }
-
-    #[test]
     fn test_format_datetime_short_defers_to_date_time() {
         let ts = parse::parse_datetime("2024-03-15 14:30", crate::date::DateDialect::Uk).unwrap();
         assert_eq!(format_datetime_short(ts), format_date_time(ts));
+    }
+
+    #[test]
+    fn test_format_weekday() {
+        // 2024-03-15 was a Friday.
+        let ts = parse::parse_datetime("2024-03-15 12:00", crate::date::DateDialect::Uk).unwrap();
+        assert_eq!(format_weekday(ts), "Fr");
     }
 }

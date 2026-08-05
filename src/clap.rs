@@ -583,23 +583,23 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
             }
             Field::Duration => {
                 if word.starts_with('%') {
-                    anyhow::bail!(
-                        "Only one %<duration> is allowed per scheduled task \
-                         (description starts with ':', duration with '%')"
-                    );
+                    anyhow::bail!("Only one %<duration> is allowed per scheduled task");
                 }
-                if word.starts_with(':') {
-                    anyhow::bail!(
-                        "Description must come before the duration in a scheduled task \
-                         (description starts with ':', duration with '%')"
-                    );
+                if let Some(rest) = word.strip_prefix(':') {
+                    // A description may also come after the duration — a
+                    // `:`-word switches back to the description field.
+                    field = Field::Description;
+                    if !rest.is_empty() {
+                        name_parts.push(rest.to_string());
+                    }
+                } else {
+                    // Plain words extend a multi-word duration ("%2 hours").
+                    let parts = duration.get_or_insert_with(String::new);
+                    if !parts.is_empty() {
+                        parts.push(' ');
+                    }
+                    parts.push_str(word);
                 }
-                // Plain words extend a multi-word duration ("%2 hours").
-                let parts = duration.get_or_insert_with(String::new);
-                if !parts.is_empty() {
-                    parts.push(' ');
-                }
-                parts.push_str(word);
             }
         }
     }
@@ -1119,9 +1119,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_task_scheduled_description_after_duration_rejected() {
-        // Description must come before the duration.
-        assert!(parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting"])).is_err());
+    fn test_parse_task_scheduled_description_after_duration_allowed() {
+        // Description may come after the duration too: `! @10pm %2 hours :meeting`.
+        let cmd = parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.name, Some("meeting".to_string()));
+                assert_eq!(task.date, Some("10pm".to_string()));
+                assert_eq!(task.available_duration, Some("2 hours".to_string()));
+            }
+            _ => panic!("Expected Task command"),
+        }
     }
 
     #[test]
