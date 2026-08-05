@@ -14,6 +14,15 @@ pub const DEFAULT_CONFIG: &str = include_str!("../assets/config.toml");
 mod types;
 pub use types::*;
 
+/// The whole configuration file (`config.toml`). Every section is optional
+/// — a missing section or key falls back to a built-in default, so a config
+/// can be as small as a single `[tracker.sleep]` block.
+///
+/// Sections: `[moods]` (mood-to-color anchors and color settings),
+/// `[tasks]` (defaults for new tasks, badge colors), `[tracker.<name>]`
+/// (custom trackers), `[grid]` (tracker grid ranges), `[tasks_view]` and
+/// `[today_view]` (view options), `[date]` (date parsing dialect),
+/// `[editor]` (body editor).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -49,17 +58,18 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Normalize a loaded config:
-    /// - Drop trackers whose names are unusable: begin with `:` (collides
-    ///   with the grid-view `:` command), contain `-` or whitespace
-    ///   (unaddressable — `-name value` splits on the dash/space), or
-    ///   consist solely of letters from [`FLAG_CHARACTERS`] (`q`/`v` —
-    ///   reserved for the leading `-q`/`-v` flags, so `-q` / `-v` / `-qv`
-    ///   can never be a tracker token).
-    /// - If `task_color.colors` is empty, fall back to the default palette
-    ///   (DarkRed, DarkYellow, DarkGreen) so dot binning never panics on an
-    ///   empty palette.
+    /// Normalize a loaded config before use: drop custom trackers whose
+    /// names cannot be addressed from the CLI, and fall back to the default
+    /// badge palette when fewer than three colors are configured. Run
+    /// automatically at startup, before any command is handled.
+    ///
+    /// The bundled default config never needs this; a user-edited config
+    /// may. See [`is_valid_tracker_name`] for the exact tracker-name rules.
     pub fn init(&mut self) {
+        // Drop trackers whose names are unusable: a `:` prefix collides with
+        // the grid-view `:` command, `-`/whitespace can't be addressed as
+        // `-name value`, and names made purely of the flag characters
+        // (`q`/`v`) would be swallowed by the leading `-q`/`-v` flags.
         self.tracker.retain(|name, _| {
             if !is_valid_tracker_name(name) {
                 cba::ebog!(
@@ -81,10 +91,10 @@ impl Config {
     }
 }
 
-/// Tracker-name validity for [`Config::init`]. A name is usable only when
-/// it is non-empty, does not begin with `:` (grid-view command syntax),
-/// contains no `-` or whitespace, and is not made purely of the leading
-/// flag characters (`q` / `v`).
+// Tracker-name validity for `Config::init`. A name is usable only when it
+// is non-empty, does not begin with `:` (grid-view command syntax), contains
+// no `-` or whitespace, and is not made purely of the leading flag
+// characters (`q` / `v`).
 fn is_valid_tracker_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -98,29 +108,36 @@ fn is_valid_tracker_name(name: &str) -> bool {
     !name.chars().all(|c| FLAG_CHARACTERS.contains(c))
 }
 
-/// `[grid]` section — tracker grid options (`:` / `:week` / `:month` / `:year`).
+/// `[grid]` section — how far back the tracker grids (`:`, `:week`, `:month`,
+/// `:year`) reach, and which day each week starts on.
 ///
-/// "Rolling" grids are anchored to today (a fixed-size window); non-rolling
-/// grids start at the calendar period boundary (week_start / month start).
+/// Each period has two modes. "Rolling" grids always end today and keep a
+/// fixed number of cells, so today is always the last one. Calendar grids
+/// run from the period's boundary through today, so they grow as the period
+/// passes.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct GridViewConfig {
-    /// true = last 7 days (including today).
-    /// false = from week_start through today.
+    /// `true`: the last 7 days, always ending today (7 cells).
+    /// `false`: the current calendar week, from `week_start` through today.
+    /// Defaults to `false`.
     #[serde(default)]
     pub week_rolling: bool,
 
-    /// true = the rolling "last 4 weeks" window ending today.
-    /// false = from the month start through today.
+    /// `true`: the last 4 weeks, ending today.
+    /// `false`: the current calendar month, from its first day through today.
+    /// Defaults to `true`.
     pub month_rolling: bool,
 
-    /// false = the calendar year (January 1 through
-    /// today).
-    /// true = the calendar year, aligned to a full week start (so the grid never opens with blank cells).
+    /// `true`: the calendar year, aligned back to the nearest `week_start`
+    /// before January 1 so the grid never opens with blank cells.
+    /// `false`: the calendar year from January 1 through today.
+    /// Defaults to `true`.
     pub year_rolling: bool,
 
-    /// The day each week starts on for tracker grids. Defaults to Monday.
+    /// The day each week starts on for the grids, and the alignment day for
+    /// the rolling month and year windows. Defaults to Monday.
     pub week_start: chrono::Weekday,
 }
 
@@ -171,10 +188,10 @@ pub struct TasksViewConfig {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct EditorConfig {
-    /// Write the `# additional notes below` hint line as the first line of
-    /// the body-editor temp file. When disabled the file starts empty and
-    /// the first line the user types is kept verbatim (with the hint on,
-    /// that first line is the hint and is stripped on read).
+    /// When `true` (default), the body editor opens with a
+    /// `# additional notes below` hint line; type below it and the hint is
+    /// stripped when the file is saved. When `false`, the file starts empty
+    /// and the first line you type is kept verbatim.
     #[serde(default = "EditorConfig::default_hint")]
     pub hint: bool,
 }
@@ -191,7 +208,8 @@ impl EditorConfig {
     }
 }
 
-/// `[today_view]` section — options for the today view (`feeling -`).
+/// `[today_view]` section — options for the today view (bare `feeling`,
+/// `feeling @<date>`, and the today TUI).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TodayViewConfig {
@@ -199,40 +217,49 @@ pub struct TodayViewConfig {
     /// Defaults to false: only tasks due within the horizon are shown.
     #[serde(default)]
     pub include_overdue: bool,
-    /// Badge glyph for journal-only entries (feeling rows with no mood);
-    /// `None` renders no badge at all.
+    /// Glyph shown next to journal-only entries (a feeling with no mood
+    /// word). Omit the key to show no badge.
     #[serde(default)]
     pub journal_badge: Option<char>,
 }
 
-/// Settings consumed by [`crate::color::ColorAxes`] when building the mood
-/// color pipeline. Flattened into [`MoodConfig`] so the `[moods]` TOML keys
-/// stay exactly as they are.
+/// `[moods]` color settings — how mood words are turned into colors from
+/// your `[[moods.pairs]]` anchors. These keys live directly on the `[moods]`
+/// table (they are flattened into [`MoodConfig`]).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct ColorAxesSettings {
-    /// Text anchor prefixed to a mood before embedding ("person says: "), so
-    /// the embedding encodes the mood as a statement.
+    /// A short phrase prepended to every anchor mood before it is converted
+    /// to a color, so the anchors read as statements about a person
+    /// (default `"person says: "`). Keep it in sync with `base_string`.
     pub prefix_string: String,
 
-    /// Text used as the neutral baseline anchor subtracted when computing basis ray shift vectors.
+    /// A neutral phrase standing for "no particular mood"; anchor colors are
+    /// measured from this baseline, so moods far from it produce more vivid
+    /// colors (default `"this person feels:"`).
     pub base_string: String,
 
-    /// Power exponent used for power-weighted centroid blending of basis mood colors.
+    /// How decisively the strongest anchor mood wins the final color:
+    /// `1.0` mixes the contributing moods evenly, higher values let the
+    /// strongest mood's color dominate (default `2.0`).
     pub blend_steepness: f32,
 
-    /// Maximum number of top NNLS weights to include in blending.
+    /// The maximum number of anchor moods that may contribute to a single
+    /// color, strongest first (default `5`).
     pub top_k: usize,
 
-    /// Minimum contribution percentage (0-100) required for a basis mood to be included in blending.
+    /// An anchor mood must make up at least this percentage of the color
+    /// mix to be included at all (default `7`).
     pub min_contribution: Percentage,
 
-    /// Gate on emotional saliency's control of the produced color's saturation/lightness.
-    /// Effective saliency `Seff = 1 + P*(S - 1)` for predicted saliency S in [0, 1];
+    /// How much emotional intensity (saliency) moves a color away from
+    /// neutral: `0` disables it entirely, `100` keeps the full effect
+    /// (default `50`).
     pub effective_saliency_gate: Percentage,
 
-    /// Neutral baseline Oklab lightness (0-100), default 65.
+    /// The lightness of the neutral color used when no anchor mood matches
+    /// (0–100, default `65`).
     pub baseline_oklab_l: Percentage,
 }
 
@@ -250,27 +277,30 @@ impl Default for ColorAxesSettings {
     }
 }
 
-/// Config for sentence-embedding mood colors via NNLS regression & saliency scaling.
-///
-/// `color_axes` caches the built [`crate::color::ColorAxes`] struct (computed at init
-/// via `init_with`, skipped by serde) so subsequent color projections skip MiniLM forward passes.
+/// `[moods]` section — your mood-to-color anchors (`pairs`) plus the color
+/// settings that derive every other mood's color from them.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct MoodConfig {
-    /// Settings consumed by the color axes (flattened — the `[moods]` TOML
-    /// keys for these live directly on the table).
+    /// The color settings — the `[moods]` keys other than `pairs`
+    /// (flattened, so they live directly on the table).
     #[serde(flatten)]
     pub axes: ColorAxesSettings,
 
+    /// Your anchor moods: one `[[moods.pairs]]` entry per mood, mapping a
+    /// mood word (or phrase) to the color it should produce.
     pub pairs: Vec<MoodEndpoint>,
 
+    // The built color model. Computed once per run by `init_with`; never
+    // serialized (marked `skip`).
     #[serde(skip)]
     pub color_axes: Option<crate::color::ColorAxes>,
 }
 
 impl MoodConfig {
-    /// Embed each pair's mood using SQLite cache and store the built [`crate::color::ColorAxes`] struct.
-    /// Idempotent: a second call is a no-op.
+    /// Build the color model from the configured anchors. Run automatically
+    /// before any color-producing command (entry logging, today view,
+    /// trackers); calling it again later is a no-op.
     pub async fn init_with(
         &mut self,
         pool: &sqlx::SqlitePool,
@@ -289,16 +319,22 @@ impl MoodConfig {
     }
 }
 
+/// `[tasks]` section — defaults for new tasks and the completion-badge
+/// colors.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct TasksConfig {
+    /// Default priority (1–999) for new oneshot and recurring tasks when
+    /// none is given (default 5).
     pub default_priority: i32,
-    /// Default priority used when creating scheduled tasks without an
-    /// explicit priority (immediate `! @<time>; …; @<duration>` creation
-    /// and the interactive flow's prompt default).
+    /// Default priority for scheduled tasks created without an explicit one
+    /// (`! @<time> :name %<duration>`, immediate or interactive) (default 10).
     #[serde(default = "TasksConfig::default_scheduled_priority")]
     pub default_scheduled_priority: i32,
+    /// Colors for the completion badge (`◯`/`●`) shown in task lists, from
+    /// lowest to highest progress (default dark red, dark yellow, dark
+    /// green).
     pub colors: ColorBins,
 }
 
@@ -318,18 +354,30 @@ impl Default for TasksConfig {
     }
 }
 
+/// `[tracker.<name>]` section — a custom tracker. The table key is the
+/// tracker's name, used as `-<name> <value>` when logging an entry (e.g.
+/// `-sleep 8` for a tracker named `sleep`).
 #[derive(Debug, Clone, Deserialize, Default, Serialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct TrackerSetting {
+    /// How often the tracker is expected to be logged, e.g. `"1 day"` or
+    /// `"1 week"`. With an interval, re-logging the same tracker within the
+    /// same period replaces the previous entry; without one, every log adds
+    /// a new entry (default: none).
     #[serde(
         default,
         deserialize_with = "crate::date::deserialize::deserialize_duration"
     )]
     pub interval: Option<i64>,
-    /// Payload type; defaults to `text` when omitted in config.
+    /// What kind of value the tracker stores: `text`, `number`, or `float`
+    /// (default `text`).
     pub kind: TrackerType,
+    /// Upper bound for the tracker's values, used to pick the entry's color
+    /// in tracker grids (`number`/`float` trackers only).
     pub max: Option<f64>,
+    /// Lower bound for the tracker's values, used to pick the entry's color
+    /// in tracker grids (`number`/`float` trackers only).
     pub min: Option<f64>,
 }
 

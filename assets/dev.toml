@@ -1,20 +1,19 @@
 [moods]
 prefix_string = "person says: "
-# text anchor subtracted when computing basis ray shift vectors (e.g. "this person feels").
+# A neutral phrase standing for "no particular mood"; anchor colors are measured from this baseline.
 base_string = "this person feels:"
 
-# Power exponent used for power-weighted centroid blending of basis mood colors.
+# How decisively the strongest anchor mood wins the final color (1.0 = even mix, higher = dominant).
 blend_steepness = 2.0
 
-# Gate on emotional saliency's control of the produced color's saturation/lightness.
-# Effective saliency `Seff = 1 + P*(S - 1)` for predicted saliency S in [0, 1];
-# P=100 keeps raw saliency, P=0 disables saliency entirely (Seff always 1.0). Default 80.
+# How much emotional intensity (saliency) moves a color away from neutral:
+# 0 disables it entirely, 100 keeps the full effect. Default 50.
 effective_saliency_gate = 80
 
-# Neutral baseline Oklab lightness (0-100), default 65.
+# Neutral gray lightness (0-100) used when no anchor mood matches, default 65.
 baseline_oklab_l = 65
 
-# Minimum contribution percentage (0-100) required for a basis mood to be included in blending.
+# An anchor mood must make up at least this % of the color mix to be included at all.
 # min_contribution = 7
 # top_k = 5
 

@@ -111,60 +111,12 @@ builds, `config.toml` in release (cba `expr_as_path_fn`). State dir:
 `state_dir/feeling.db`, log at `state_dir/feeling.log`.
 
 **config.rs** — `Config` (serde, every section `deny_unknown_fields` with
-per-field defaults). Section inventory:
-
-```toml
-[moods]                        # ColorAxesSettings, flattened — the settings ColorAxes consumes
-prefix_string = "person says: "    # anchor prefixed to a mood before embedding
-base_string = "this person feels:" # neutral baseline anchor (subtracted for basis rays)
-blend_steepness = 2.0              # power exponent for the weight rescale
-top_k = 5                          # max contributing basis moods kept
-min_contribution = 7               # min % weight for a basis mood to contribute
-effective_saliency_gate = 50       # P in Seff = 1 + P*(S - 1)
-baseline_oklab_l = 65              # neutral Oklab lightness
-
-[[moods.pairs]]                # one basis mood per entry (mood + color endpoint)
-mood = "happy"
-color = "#15F76F"
-
-[tasks]
-default_priority = 5           # 1..=999 (cliclack validation enforces)
-default_scheduled_priority = 10
-colors = ["DarkRed", "DarkYellow", "DarkGreen"]   # completion badge bins
-
-[tracker.sleep]                # registered custom trackers (unknown types are rejected)
-interval = "1 day"             # humantime duration
-kind = "float"                 # payload type: text | number | float (default: text)
-max = 10
-min = 0                        # min/max apply to number and float; ignored for text
-
-[grid]
-week_rolling = false           # true = full Mon..Sun week (7 dots); false = week_start..today
-month_rolling = true           # true = rolling last 4 weeks ending today; false = month_start..today
-year_rolling = true            # true = calendar year (Jan 1..today); false = aligned full weeks
-week_start = "monday"          # day each week starts on (Mon .. Sun)
-
-[tasks_view]                   # reserved, no fields yet
-[today_view]
-include_overdue = false        # show tasks due before today in the today view
-journal_badge = '•'            # optional glyph for journal-only entries (None = no badge)
-
-[date]
-dialect = "uk"                 # chrono-english dialect: uk (day-first) | us (month-first)
-
-[editor]
-hint = true                    # editor-launch hint line
-```text
+per-field defaults).
 
 `Config::init` (called from main after load) drops tracker names that collide
 with CLI syntax — `:`-prefix, `-`/whitespace inside, or names made purely of
 the flag letters `q`/`v` — and falls back to the default palette when
 `tasks.colors` has fewer than 3 entries.
-
-Custom tracker payloads: `text` stores a string (`-accomplishment "fixed 2 bugs"`),
-`number` an integer (min/max apply), `float` a decimal (min/max apply). Values
-are parsed against the declared kind at write time with a clear error on
-mismatch (e.g. a float tracker given a non-numeric argument).
 
 ---
 
@@ -696,7 +648,7 @@ real editor.
 
 ## 14. Deferred / intentionally out of scope
 
-- **`:score`** — stub (`todo!()`), the old Burn-era vector-scoring diagnostic.
+- **`:score`** — stub (`todo!()`).
 - **`:g` grid view** — parser bails "Grid view (:g) is not yet implemented".
 - **`include_completed`** — always `false`; no CLI flag to set it yet (by design,
   the plumbing is in place).
