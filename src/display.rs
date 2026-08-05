@@ -1,3 +1,4 @@
+use crate::clap::CliOpts;
 use crate::config::Config;
 use crate::sql::TaskRow;
 use crate::views::TodayEntry;
@@ -10,30 +11,13 @@ pub fn task_intro(title: &str) -> Result<()> {
     Ok(())
 }
 
-/// Display a created task: a summary header line followed by field/value
-/// rows. Field names and values are separated by a tab with the labels
-/// padded to a fixed width, so all values line up vertically.
-pub fn display_task(task: &crate::sql::TaskObject) -> Result<()> {
-    let kind = if task.is_recurring() {
-        "recurring"
-    } else if task.is_scheduled() {
-        "scheduled"
-    } else {
-        "oneshot"
-    };
-    println!(
-        "Created {} task #{}: {}",
-        kind,
-        task.short_id.unwrap_or_default(),
-        task.name
-    );
-    print_rows(&task_rows(task));
-    Ok(())
-}
-
 /// Display a logged entry: mood, custom trackers, and body as field/value
-/// rows (tab-separated, vertically aligned).
-pub fn display_entry(entry: &crate::sql::EntryObject) -> Result<()> {
+/// rows (tab-separated, vertically aligned). Quiet suppresses the whole
+/// confirmation; otherwise all rows are always shown.
+pub fn display_entry(entry: &crate::sql::EntryObject, opts: &CliOpts) -> Result<()> {
+    if opts.quiet() {
+        return Ok(());
+    }
     let mut rows: Vec<(String, String)> = Vec::new();
     if !entry.mood.is_empty() {
         rows.push(("Feeling".to_string(), entry.mood.clone()));
@@ -51,17 +35,20 @@ pub fn display_entry(entry: &crate::sql::EntryObject) -> Result<()> {
 /// Ordered field/value pairs for a task's tab-aligned display.
 /// Recurring-only fields (Interval, Available, Optional, End) are shown only
 /// for recurring tasks; scheduled tasks show their Available window; Start
-/// is shown when set; Body only when non-empty.
-fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> {
+/// is shown when set; Body only when non-empty. The Type value is lowercase
+/// (`threshold` when a oneshot task has a target count).
+pub(crate) fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
     rows.push((
         "Type".to_string(),
         if task.is_recurring() {
-            "Recurring".to_string()
+            "recurring".to_string()
         } else if task.is_scheduled() {
-            "Scheduled".to_string()
+            "scheduled".to_string()
+        } else if task.target_count > 0 {
+            "threshold".to_string()
         } else {
-            "OneShot".to_string()
+            "oneshot".to_string()
         },
     ));
     rows.push(("Priority".to_string(), task.priority.to_string()));
@@ -99,18 +86,22 @@ fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> {
                 .unwrap_or_default(),
         ));
     }
-    rows.push(("Target".to_string(), task.target_count.to_string()));
+    // The Target row only exists when the task actually has a target count.
+    if task.target_count > 0 {
+        rows.push(("Target".to_string(), task.target_count.to_string()));
+    }
     if !task.body.is_empty() {
         rows.push(("Body".to_string(), task.body.clone()));
     }
     rows
 }
 
-/// Print tab-aligned field/value rows. Labels are padded to a fixed width so
-/// every value starts at the same column regardless of label length.
-fn print_rows(rows: &[(String, String)]) {
+/// Print field/value rows as `field:    val`: the label, a colon, a
+/// fixed-width pad, then the value — so every value starts at the same
+/// column regardless of label length.
+pub(crate) fn print_rows(rows: &[(String, String)]) {
     for (label, value) in rows {
-        println!("{label:<14}\t{value}");
+        println!("{}:\t{value}", format!("{label:<13}"));
     }
 }
 
@@ -205,20 +196,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_display_task_runs() {
+    fn test_task_rows() {
+        // Threshold type for a oneshot with a target; Target row present.
         let task = TaskObject {
             id: Some(1),
             short_id: Some(1),
-            name: "test task".to_string(),
-            body: "test body".to_string(),
+            name: "pushups".to_string(),
+            body: String::new(),
             priority: 5,
             start_time: Some(1700000000),
             available_duration_secs: None,
             interval_secs: None,
-            target_count: 0,
+            target_count: 20,
             optional: false,
             end_time: None,
         };
-        assert!(display_task(&task).is_ok());
+        let rows = task_rows(&task);
+        let type_row = rows.iter().find(|(l, _)| l == "Type").unwrap();
+        assert_eq!(type_row.1, "threshold");
+        assert!(rows.iter().any(|(l, v)| l == "Target" && v == "20"));
+
+        // Plain oneshot: lowercase type, no Target row at target_count 0.
+        let mut task = task.clone();
+        task.target_count = 0;
+        let rows = task_rows(&task);
+        assert_eq!(rows[0], ("Type".to_string(), "oneshot".to_string()));
+        assert!(!rows.iter().any(|(l, _)| l == "Target"));
+
+        // Recurring and scheduled stay lowercase.
+        task.interval_secs = Some(86400);
+        assert_eq!(task_rows(&task)[0].1, "recurring");
+        task.interval_secs = None;
+        task.start_time = Some(1700000000);
+        task.available_duration_secs = Some(3600);
+        // Scheduled is discriminated by available_duration + no interval;
+        // construct via is_scheduled helpers used by task_rows.
+        assert_eq!(task_rows(&task)[0].1, "scheduled");
     }
 }

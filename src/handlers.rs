@@ -247,7 +247,7 @@ async fn handle_config() -> Result<()> {
     open_editor_at(path)
 }
 
-async fn handle_entry(pool: &SqlitePool, config: &Config, _opts: &CliOpts, entry: Entry) -> Result<()> {
+async fn handle_entry(pool: &SqlitePool, config: &Config, opts: &CliOpts, entry: Entry) -> Result<()> {
     let feeling = entry.feeling;
     let customs = entry.customs;
     let body = entry.body;
@@ -322,7 +322,7 @@ async fn handle_entry(pool: &SqlitePool, config: &Config, _opts: &CliOpts, entry
     let feeling_id = crate::sql::create_entry(pool, &entry_obj).await?;
     log::debug!("Inserted feeling with id={:?}", feeling_id);
 
-    crate::display::display_entry(&entry_obj)?;
+    crate::display::display_entry(&entry_obj, opts)?;
 
     Ok(())
 }
@@ -381,7 +381,7 @@ fn interval_slot(time_epoch: i64, interval_secs: i64) -> (i64, i64) {
     (slot_start, slot_start + interval_secs)
 }
 
-async fn handle_task(pool: &SqlitePool, config: &Config, _opts: &CliOpts, task: Task) -> Result<()> {
+async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: Task) -> Result<()> {
     let task_type = task.task_type;
     let name = task.name;
     let body = task.body;
@@ -440,13 +440,22 @@ async fn handle_task(pool: &SqlitePool, config: &Config, _opts: &CliOpts, task: 
             task_obj.id = Some(new_id);
             task_obj.short_id = Some(new_short_id);
 
-            crate::display::display_task(&task_obj)?;
+            if !opts.quiet() {
+                println!(
+                    "Created task #{}: {}",
+                    task_obj.short_id.unwrap_or_default(),
+                    task_obj.name
+                );
+                if opts.verbose() {
+                    crate::display::print_rows(&crate::display::task_rows(&task_obj));
+                }
+            }
         }
         TaskType::Recurring => {
             // Create new recurring task via interactive flow, with an
             // optional pre-filled name from `feeling ! @ <description>` and
             // an optional body from `.. body` (editor when `..` is bare).
-            handle_recurring_task_creation(pool, config, prefill, body, open_editor).await?;
+            handle_recurring_task_creation(pool, config, opts, prefill, body, open_editor).await?;
         }
         TaskType::Scheduled => {
             // Scheduled task creation: `! @<time> [:description] [@<duration>]`.
@@ -501,11 +510,21 @@ async fn handle_task(pool: &SqlitePool, config: &Config, _opts: &CliOpts, task: 
                 task_obj.id = Some(new_id);
                 task_obj.short_id = Some(new_short_id);
 
-                crate::display::display_task(&task_obj)?;
+                if !opts.quiet() {
+                    println!(
+                        "Created task #{}: {}",
+                        task_obj.short_id.unwrap_or_default(),
+                        task_obj.name
+                    );
+                    if opts.verbose() {
+                        crate::display::print_rows(&crate::display::task_rows(&task_obj));
+                    }
+                }
             } else {
                 handle_scheduled_task_creation(
                     pool,
                     config,
+                    opts,
                     name,
                     start_epoch,
                     task.available_duration,
@@ -546,6 +565,7 @@ fn handle_oneshot_task_creation(config: &Config) -> Result<(i32, i32, String)> {
 async fn handle_recurring_task_creation(
     pool: &SqlitePool,
     config: &Config,
+    opts: &CliOpts,
     prefill: Option<String>,
     body: String,
     open_editor: bool,
@@ -626,20 +646,30 @@ async fn handle_recurring_task_creation(
     task_obj.id = Some(new_id);
     task_obj.short_id = Some(new_short_id);
 
-    crate::display::display_task(&task_obj)?;
+    if !opts.quiet() {
+        println!(
+            "Created task #{}: {}",
+            task_obj.short_id.unwrap_or_default(),
+            task_obj.name
+        );
+        if opts.verbose() {
+            crate::display::print_rows(&crate::display::task_rows(&task_obj));
+        }
+    }
 
     Ok(())
 }
 
-/// Interactive scheduled creation flow (`! @<time>[; description][;
-/// @<duration>]` with anything missing from the command line). Mirrors the
-/// recurring flow: required name (unique, re-prompt on duplicates) and start
-/// time, then the available duration (blank → 1 hour), then priority.
-/// Scheduled tasks always have target_count 0, so there is no target prompt.
-/// Values that came from the command line skip their prompt.
+/// Interactive scheduled creation flow (`! @<time> [:description] [@<duration>]`
+/// with anything missing from the command line). Mirrors the recurring flow:
+/// required name (unique, re-prompt on duplicates) and start time, then the
+/// available duration (blank → 1 hour), then priority. Scheduled tasks always
+/// have target_count 0, so there is no target prompt. Values that came from
+/// the command line skip their prompt.
 async fn handle_scheduled_task_creation(
     pool: &SqlitePool,
     config: &Config,
+    opts: &CliOpts,
     name: Option<String>,
     start: Option<i64>,
     duration_str: Option<String>,
@@ -708,7 +738,16 @@ async fn handle_scheduled_task_creation(
     task_obj.id = Some(new_id);
     task_obj.short_id = Some(new_short_id);
 
-    crate::display::display_task(&task_obj)?;
+    if !opts.quiet() {
+        println!(
+            "Created task #{}: {}",
+            task_obj.short_id.unwrap_or_default(),
+            task_obj.name
+        );
+        if opts.verbose() {
+            crate::display::print_rows(&crate::display::task_rows(&task_obj));
+        }
+    }
 
     Ok(())
 }
@@ -738,7 +777,7 @@ async fn prompt_unique_name(pool: &SqlitePool, given: Option<&str>) -> Result<St
     }
 }
 
-async fn handle_update(pool: &SqlitePool, _opts: &CliOpts, target: UpdateTarget, count: Option<i64>) -> Result<()> {
+async fn handle_update(pool: &SqlitePool, opts: &CliOpts, target: UpdateTarget, count: Option<i64>) -> Result<()> {
     match target {
         UpdateTarget::OneShot(short_id) => {
             // `feeling - <id> [count]`: the id is the user-facing short id
@@ -747,7 +786,7 @@ async fn handle_update(pool: &SqlitePool, _opts: &CliOpts, target: UpdateTarget,
             let info = crate::sql::fetch_oneshot_task_for_update(pool, short_id)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("Oneshot task with id {} not found", short_id))?;
-            update_oneshot(pool, &info, count).await?
+            update_oneshot(pool, opts, &info, count).await?
         }
         UpdateTarget::Query { words } => {
             // `feeling - <words…> [count]`: update the *unique* oneshot task
@@ -760,7 +799,7 @@ async fn handle_update(pool: &SqlitePool, _opts: &CliOpts, target: UpdateTarget,
                     "No task matches \"{}\" — the words must appear in a task name, in order",
                     joined
                 ),
-                1 => update_oneshot(pool, &matches[0], count).await?,
+                1 => update_oneshot(pool, opts, &matches[0], count).await?,
                 n => {
                     let names = matches
                         .iter()
@@ -791,6 +830,7 @@ async fn handle_update(pool: &SqlitePool, _opts: &CliOpts, target: UpdateTarget,
 /// re-reads it so it reflects the post-update id.
 async fn update_oneshot(
     pool: &SqlitePool,
+    opts: &CliOpts,
     info: &TaskUpdateInfo,
     count: Option<i64>,
 ) -> Result<()> {
@@ -798,20 +838,22 @@ async fn update_oneshot(
     let new_completions = crate::sql::update_task(pool, info.id, increment).await?;
     let is_done = crate::task::is_task_done(info.target_count, Some(new_completions));
 
-    if is_done {
-        println!(
-            "Task '{}' completed! (completions: {})",
-            info.name, new_completions
-        );
-    } else {
-        let short_id = crate::sql::fetch_task_short_id(pool, info.id).await?;
-        println!(
-            "Task '{}' (id {}) updated: {}/{} completions",
-            info.name,
-            short_id.unwrap_or_default(),
-            new_completions,
-            info.target_count
-        );
+    if !opts.quiet() {
+        if is_done {
+            println!(
+                "Task '{}' completed! (completions: {})",
+                info.name, new_completions
+            );
+        } else {
+            let short_id = crate::sql::fetch_task_short_id(pool, info.id).await?;
+            println!(
+                "Task '{}' (id {}) updated: {}/{} completions",
+                info.name,
+                short_id.unwrap_or_default(),
+                new_completions,
+                info.target_count
+            );
+        }
     }
 
     Ok(())
