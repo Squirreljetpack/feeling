@@ -37,6 +37,12 @@ pub fn format_date_time(ts: Epoch) -> String {
         .unwrap_or_else(|| "--".to_string())
 }
 
+/// Short datetime form for per-entry annotations (e.g. the text-tracker
+/// `> value [timestamp]` lines); currently identical to [`format_date_time`].
+pub fn format_datetime_short(ts: Epoch) -> String {
+    format_date_time(ts)
+}
+
 /// Format an epoch timestamp as `DD-MM-YY` (e.g. `15-03-26`) — the TodayApp
 /// title label for anchored days that are neither today nor yesterday.
 pub fn format_date_dmy(ts: Epoch) -> String {
@@ -71,5 +77,11 @@ mod tests {
     fn test_format_date_dmy() {
         let ts = parse::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
         assert_eq!(format_date_dmy(ts), "15-03-24");
+    }
+
+    #[test]
+    fn test_format_datetime_short_defers_to_date_time() {
+        let ts = parse::parse_datetime("2024-03-15 14:30", crate::date::DateDialect::Uk).unwrap();
+        assert_eq!(format_datetime_short(ts), format_date_time(ts));
     }
 }

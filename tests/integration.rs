@@ -1109,8 +1109,42 @@ async fn test_tracker_mood_dots() {
         .await
         .unwrap();
     let output = String::from_utf8(out).unwrap();
-    assert!(output.contains("Mood tracker (Week)"), "output: {output:?}");
+    // Titles are verbose-only now: default output has no header, just the
+    // dot rows; -v adds the bare title, -vv the ' (Week)' suffix.
+    assert!(!output.contains("Mood tracker"), "output: {output:?}");
     assert!(output.contains('●'), "expected a filled dot: {output:?}");
+
+    let verbose_cmd = parse_from(vec![":".to_string()]).unwrap();
+    let mut out = Vec::new();
+    handle_command(
+        verbose_cmd,
+        &pool,
+        &config,
+        &CliOpts { qv: [0, 1] },
+        &mut out,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(output.contains('●'), "expected a filled dot: {output:?}");
+    let output = String::from_utf8(out).unwrap();
+    assert!(output.contains("Moods"), "output: {output:?}");
+    assert!(!output.contains("Moods (Week)"), "output: {output:?}");
+
+    let vv_cmd = parse_from(vec![":".to_string()]).unwrap();
+    let mut out = Vec::new();
+    handle_command(
+        vv_cmd,
+        &pool,
+        &config,
+        &CliOpts { qv: [0, 2] },
+        &mut out,
+        false,
+    )
+    .await
+    .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    assert!(output.contains("Moods (Week)"), "output: {output:?}");
 }
 
 #[tokio::test]
@@ -1142,8 +1176,25 @@ async fn test_tracker_custom_dots() {
         .await
         .unwrap();
     let output = String::from_utf8(out).unwrap();
-    assert!(output.contains("Tracker 'sleep'"), "output: {output:?}");
+    // Titles are verbose-only: no "Tracker 'sleep'" header by default;
+    // -vv shows the bare label with the period suffix.
+    assert!(!output.contains("Tracker 'sleep'"), "output: {output:?}");
     assert!(output.contains('●'), "expected a filled dot: {output:?}");
+
+    let vv_cmd = parse_from(vec![":".to_string(), "sleep".to_string()]).unwrap();
+    let mut out = Vec::new();
+    handle_command(
+        vv_cmd,
+        &pool,
+        &config,
+        &CliOpts { qv: [0, 2] },
+        &mut out,
+        false,
+    )
+    .await
+    .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    assert!(output.contains("sleep (Week)"), "output: {output:?}");
 }
 
 #[tokio::test]
@@ -1184,11 +1235,24 @@ async fn test_tracker_recurring_dots() {
         .await
         .unwrap();
     let output = String::from_utf8(out).unwrap();
-    assert!(
-        output.contains(&format!("Task '{name}'")),
-        "output: {output:?}"
-    );
+    // Titles are verbose-only; -vv shows the bare @name with ' (Week)'.
+    assert!(!output.contains("Task 'exercise'"), "output: {output:?}");
     assert!(output.contains('●'), "expected a filled dot: {output:?}");
+
+    let vv_cmd = parse_from(vec![":".to_string(), format!("@{name}")]).unwrap();
+    let mut out = Vec::new();
+    handle_command(
+        vv_cmd,
+        &pool,
+        &config,
+        &CliOpts { qv: [0, 2] },
+        &mut out,
+        false,
+    )
+    .await
+    .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    assert!(output.contains("@exercise (Week)"), "output: {output:?}");
 }
 
 #[tokio::test]
@@ -1220,8 +1284,9 @@ async fn test_tracker_recurring_year_uses_middle_dot() {
         .await
         .unwrap();
     let output = String::from_utf8(out).unwrap();
+    // Titles are verbose-only: no "Task '…' (Year)" header by default.
     assert!(
-        output.contains(&format!("Task '{name}' (Year)")),
+        !output.contains(&format!("Task '{name}' (Year)")),
         "output: {output:?}"
     );
     assert!(
@@ -1231,6 +1296,25 @@ async fn test_tracker_recurring_year_uses_middle_dot() {
     assert!(
         !output.contains('◯'),
         "year grid must not use the large ◯: {output:?}"
+    );
+
+    // -vv shows the @name with the ' (Year)' suffix.
+    let vv_cmd = parse_from(vec![":year".to_string(), format!("@{name}")]).unwrap();
+    let mut out = Vec::new();
+    handle_command(
+        vv_cmd,
+        &pool,
+        &config,
+        &CliOpts { qv: [0, 2] },
+        &mut out,
+        false,
+    )
+    .await
+    .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    assert!(
+        output.contains(&format!("@{name} (Year)")),
+        "output: {output:?}"
     );
 }
 
@@ -1737,7 +1821,8 @@ async fn test_mood_tracker_grid_week_rolling_true_full_week() {
     let output = run_tracker(&pool, &config, ":").await;
 
     // week_rolling=true always renders the full week: exactly 7 dots.
-    assert!(output.contains("Mood tracker (Week)"), "output: {output:?}");
+    // Titles are verbose-only — no header by default.
+    assert!(!output.contains("Mood tracker"), "output: {output:?}");
     assert_eq!(output.matches('◯').count(), 6, "output: {output:?}");
     assert_eq!(output.matches('●').count(), 1, "output: {output:?}");
     assert_eq!(output.matches('◯').count() + output.matches('●').count(), 7);
@@ -1765,7 +1850,7 @@ async fn test_mood_tracker_grid_week_default_non_rolling() {
     // depends on today's weekday — computed here, never hardcoded.
     use chrono::Datelike;
     let expected = chrono::Local::now().weekday().num_days_from_monday() as i64 + 1;
-    assert!(output.contains("Mood tracker (Week)"), "output: {output:?}");
+    assert!(!output.contains("Mood tracker"), "output: {output:?}");
     assert_eq!(
         output.matches('◯').count() as i64,
         expected - 1,
@@ -1827,7 +1912,7 @@ async fn test_mood_tracker_grid_month_rolling_default() {
     let expected = (today - start).num_days() + 1;
 
     assert!(
-        output.contains("Mood tracker (Month)"),
+        !output.contains("Mood tracker"),
         "output: {output:?}"
     );
     assert_eq!(
@@ -1891,9 +1976,9 @@ async fn test_mood_tracker_grid_year_default_rolling() {
     use chrono::Datelike;
     let today = chrono::Local::now().date_naive();
 
-    assert!(output.contains("Mood tracker (Year)"), "output: {output:?}");
-    // Header line + exactly 7 grid rows (one per weekday, Monday first).
-    assert_eq!(output.lines().count(), 8, "output: {output:?}");
+    assert!(!output.contains("Mood tracker"), "output: {output:?}");
+    // Exactly 7 grid rows (one per weekday, Monday first) — no header line.
+    assert_eq!(output.lines().count(), 7, "output: {output:?}");
     // One dot per day Jan 1..=today; today is the only filled day.
     assert_eq!(output.matches('●').count(), 1, "output: {output:?}");
     assert_eq!(
@@ -1927,9 +2012,9 @@ async fn test_mood_tracker_grid_year_not_rolling_calendar_layout() {
     let today = chrono::Local::now().date_naive();
     let jan1 = today.with_ordinal(1).unwrap();
 
-    assert!(output.contains("Mood tracker (Year)"), "output: {output:?}");
-    // Header line + exactly 7 grid rows (one per weekday, Monday first).
-    assert_eq!(output.lines().count(), 8, "output: {output:?}");
+    assert!(!output.contains("Mood tracker"), "output: {output:?}");
+    // Exactly 7 grid rows (one per weekday, Monday first) — no header line.
+    assert_eq!(output.lines().count(), 7, "output: {output:?}");
     // One dot per day Jan 1..=today; today is the only filled day.
     assert_eq!(output.matches('●').count(), 1, "output: {output:?}");
     assert_eq!(

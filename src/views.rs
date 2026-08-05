@@ -105,7 +105,7 @@ fn effective_range(
 pub async fn handle_tracker<W: Write>(
     pool: &SqlitePool,
     config: &Config,
-    _opts: &CliOpts,
+    opts: &CliOpts,
     period: TrackerPeriod,
     items: Vec<TrackerItem>,
     out: &mut W,
@@ -150,15 +150,35 @@ pub async fn handle_tracker<W: Write>(
         }
     };
 
-    for item in &items {
+    for (i, item) in items.iter().enumerate() {
+        // Section header: at -v a title line (the ({period:?}) suffix only
+        // from -vv); otherwise a blank-line separator — skipped before the
+        // first item so there's no double leading newline.
+        if i > 0 && !opts.verbose() {
+            writeln!(out)?;
+        }
         match item {
             TrackerItem::Mood => {
                 // Positional mood-grid marker: render the mood dots grid here.
+                if opts.verbose() {
+                    writeln!(
+                        out,
+                        "{}",
+                        grid_title("Moods", period, opts.verbose_level())
+                    )?;
+                }
                 display_mood_tracker(pool, config, start_epoch, end_epoch, period, out).await?;
             }
             TrackerItem::Tracker(id_str) => {
                 if let Some(name) = id_str.strip_prefix('@') {
                     // Recurring task: display completion dots
+                    if opts.verbose() {
+                        writeln!(
+                            out,
+                            "{}",
+                            grid_title(&format!("@{name}"), period, opts.verbose_level())
+                        )?;
+                    }
                     display_recurring_tracker(
                         pool,
                         config,
@@ -172,6 +192,13 @@ pub async fn handle_tracker<W: Write>(
                     .await?;
                 } else {
                     // Custom tracker: display score dots
+                    if opts.verbose() {
+                        writeln!(
+                            out,
+                            "{}",
+                            grid_title(id_str, period, opts.verbose_level())
+                        )?;
+                    }
                     display_custom_tracker(
                         pool,
                         config,
@@ -179,6 +206,7 @@ pub async fn handle_tracker<W: Write>(
                         start_epoch,
                         end_epoch,
                         period,
+                        opts,
                         out,
                         None,
                     )
@@ -189,6 +217,16 @@ pub async fn handle_tracker<W: Write>(
     }
 
     Ok(())
+}
+
+/// Grid section title: the bare label at `-v` (e.g. `Moods`, `idea`,
+/// `@name`); the ` ({period:?})` suffix only at `-vv` and above.
+fn grid_title(label: &str, period: TrackerPeriod, verbose_level: u8) -> String {
+    if verbose_level >= 2 {
+        format!("{label} ({period:?})")
+    } else {
+        label.to_string()
+    }
 }
 
 async fn display_mood_tracker<W: Write>(
@@ -242,13 +280,8 @@ async fn display_mood_tracker<W: Write>(
         }
     }
 
-    // Print header
-    let header = match period {
-        TrackerPeriod::Week => "Week",
-        TrackerPeriod::Month => "Month",
-        TrackerPeriod::Year => "Year",
-    };
-    writeln!(out, "Mood tracker ({})", header)?;
+    // The grid body follows; the section title (if any) is printed by
+    // handle_tracker.
 
     // Year grids always use the heatmap layout: one column per week, one
     // row per weekday (rows start at grid.week_start), dots from the
@@ -374,6 +407,7 @@ async fn display_custom_tracker<W: Write>(
     start_epoch: i64,
     end_epoch: i64,
     period: TrackerPeriod,
+    opts: &CliOpts,
     out: &mut W,
     wrap: Option<usize>,
 ) -> Result<()> {
@@ -397,13 +431,25 @@ async fn display_custom_tracker<W: Write>(
         return Ok(());
     }
 
-    writeln!(out, "Tracker '{}' ({:?}):", tracker_type, period)?;
-
-    // Text trackers list their entries as indented lines instead of dots.
+    // Text trackers list their entries as indented lines instead of dots;
+    // at -v each line gains the entry's own timestamp in Darkgray.
     if tracker.kind == TrackerType::Text {
         for entry in &entries {
             write!(out, "{}", "> ".with(CtColor::DarkGrey))?;
-            writeln!(out, "{}", entry.score)?;
+            write!(out, "{}", entry.score)?;
+            if opts.verbose() {
+                writeln!(
+                    out,
+                    "{}",
+                    format!(
+                        " [{}]",
+                        crate::date::format_datetime_short(entry.time)
+                    )
+                    .with(CtColor::DarkGrey)
+                )?;
+            } else {
+                writeln!(out)?;
+            }
         }
         return Ok(());
     }
@@ -585,10 +631,7 @@ async fn display_recurring_tracker<W: Write>(
             }
         }
 
-        writeln!(out, "Task '{}' ({:?})", name, period)?;
         for (i, sum) in interval_sums.iter().enumerate() {
-            // 0% (interval sum 0) → uncolored ◯, otherwise ● colored by binning.
-            // Year grids are dense, so empty intervals use the compact · glyph.
             let (ch, color) = completion_badge(config, *sum, target_count);
             let d = if ch == '◯' && period == TrackerPeriod::Year {
                 "·".to_string()
@@ -618,7 +661,6 @@ async fn display_recurring_tracker<W: Write>(
             return Ok(());
         }
 
-        writeln!(out, "Task '{}' completions ({:?})", name, period)?;
         for completion in &completions {
             let count = completion.count;
             let (ch, color) = completion_badge(config, count, target_count);
@@ -992,4 +1034,20 @@ pub async fn handle_view<W: Write>(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grid_title() {
+        // Bare label at -v; period suffix from -vv (and -vvv).
+        assert_eq!(grid_title("Moods", TrackerPeriod::Week, 0), "Moods");
+        assert_eq!(grid_title("Moods", TrackerPeriod::Week, 1), "Moods");
+        assert_eq!(grid_title("Moods", TrackerPeriod::Week, 2), "Moods (Week)");
+        assert_eq!(grid_title("idea", TrackerPeriod::Month, 2), "idea (Month)");
+        assert_eq!(grid_title("@run", TrackerPeriod::Year, 3), "@run (Year)");
+        assert_eq!(grid_title("idea", TrackerPeriod::Month, 1), "idea");
+    }
 }
