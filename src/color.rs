@@ -17,7 +17,7 @@ use oklab::Oklab;
 use sqlx::SqlitePool;
 
 use crate::color_conversion::rgb_to_oklab;
-use crate::config::MoodConfig;
+use crate::config::{ColorAxesSettings, MoodEndpoint};
 use crate::embed::Embedder;
 use crate::sql::FeelingRow;
 use crate::utils::Percentage;
@@ -66,24 +66,27 @@ pub struct MoodWeights {
 }
 
 impl ColorAxes {
-    /// Build basis vectors from config endpoint pairs using SQLite cached embeddings.
+    /// Build basis vectors from the given endpoint pairs using SQLite cached
+    /// embeddings. The `color_axes` cache check lives in the caller
+    /// (`MoodConfig::init_with`) — this only builds.
     pub async fn build_async(
         pool: &sqlx::SqlitePool,
         embedder: &Embedder,
-        config: &MoodConfig,
+        settings: &ColorAxesSettings,
+        pairs: &[MoodEndpoint],
     ) -> Result<Self> {
-        assert!(!config.pairs.is_empty() && config.color_axes.is_none());
+        assert!(!pairs.is_empty());
 
         let v_base =
-            crate::embed::get_or_embed_cached(pool, embedder, &config.base_string, "").await?;
+            crate::embed::get_or_embed_cached(pool, embedder, &settings.base_string, "").await?;
 
-        let mut basis_moods = Vec::with_capacity(config.pairs.len());
-        for pair in &config.pairs {
+        let mut basis_moods = Vec::with_capacity(pairs.len());
+        for pair in pairs {
             let s = crate::embed::get_or_embed_cached(
                 pool,
                 embedder,
                 &pair.mood,
-                &config.prefix_string,
+                &settings.prefix_string,
             )
             .await?;
             let diff: Vec<f32> = s.iter().zip(&v_base).map(|(x, y)| x - y).collect();
@@ -108,13 +111,13 @@ impl ColorAxes {
         Ok(Self {
             basis_moods,
             base_vector: v_base,
-            steepness: config.blend_steepness.max(1.0),
-            min_contribution: config.min_contribution,
-            top_k: config.top_k,
-            baseline_oklab_l: config.baseline_oklab_l,
-            emotional_saliency_gate: config.effective_saliency_gate,
-            prefix_string: config.prefix_string.clone(),
-            base_string: config.base_string.clone(),
+            steepness: settings.blend_steepness.max(1.0),
+            min_contribution: settings.min_contribution,
+            top_k: settings.top_k,
+            baseline_oklab_l: settings.baseline_oklab_l,
+            emotional_saliency_gate: settings.effective_saliency_gate,
+            prefix_string: settings.prefix_string.clone(),
+            base_string: settings.base_string.clone(),
             gram_matrix,
         })
     }

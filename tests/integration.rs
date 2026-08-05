@@ -2229,8 +2229,8 @@ async fn test_prune_clears_embedding_cache() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
-    let key1 = format!("{}happy", config.moods.prefix_string);
-    let key2 = format!("{}obsolete_mood", config.moods.prefix_string);
+    let key1 = format!("{}happy", config.moods.axes.prefix_string);
+    let key2 = format!("{}obsolete_mood", config.moods.axes.prefix_string);
 
     // Populate the embedding cache with two entries
     sqlx::query("INSERT INTO embedding_cache (text, embedding) VALUES ($1, x'00000000')")

@@ -306,7 +306,7 @@ async fn handle_entry(pool: &SqlitePool, config: &Config, _opts: &CliOpts, entry
         None
     } else {
         crate::embed::global_embedder()
-            .embed(&feeling, &config.moods.prefix_string)
+            .embed(&feeling, &config.moods.axes.prefix_string)
             .ok()
             .map(|v| crate::embed::embedding_to_blob(&v))
     };
@@ -832,14 +832,20 @@ pub fn handle_embed<R: BufRead, W: Write>(reader: &mut R, out: &mut W) -> Result
 /// configured `moods.prefix_string`, run it through the full three-step mood-color
 /// pipeline, and print intermediate values at each stage plus the final
 /// Oklab / sRGB colour (with a terminal swatch of the final colour).
-pub fn handle_color<W: Write>(mood: &str, config: &Config, _opts: &CliOpts, out: &mut W) -> Result<()> {
+pub fn handle_color<W: Write>(mood: &str, config: &Config, opts: &CliOpts, out: &mut W) -> Result<()> {
     let embedder = crate::embed::global_embedder();
     let mood = mood.trim();
     let axes = config.moods.color_axes.as_ref().unwrap();
 
+    // Verbose: dump the full axes settings up front; the per-value lines that
+    // used to follow are gone — the dump carries them.
+    if opts.verbose() {
+        dbg!(&config.moods.axes);
+    }
+
     // Embed the mood with the same prefix as the production pipeline.
     let embedding = embedder
-        .embed(mood, &config.moods.prefix_string)
+        .embed(mood, &config.moods.axes.prefix_string)
         .context("Failed to embed mood")?;
 
     let weights = axes.regression_weights(&embedding, embedder, mood);
@@ -877,10 +883,6 @@ pub fn handle_color<W: Write>(mood: &str, config: &Config, _opts: &CliOpts, out:
     )?;
     writeln!(out, "saliency score    : {saliency:.4}",)?;
     writeln!(out, "effective saliency: {s_eff:.4}")?;
-    writeln!(out, "blend_steepness   : {}", config.moods.blend_steepness)?;
-    writeln!(out, "min_contribution  : {}", config.moods.min_contribution)?;
-    writeln!(out, "top_k             : {}", config.moods.top_k)?;
-    writeln!(out, "baseline_oklab_l  : {}", config.moods.baseline_oklab_l)?;
 
     // Regression weights: raw NNLS weights and the rescaled (power-weighted,
     // normalized) weights used for the Oklab blend, per contributing mood.

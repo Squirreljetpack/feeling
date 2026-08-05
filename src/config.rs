@@ -202,14 +202,13 @@ pub struct TodayViewConfig {
     pub include_overdue: bool,
 }
 
-/// Config for sentence-embedding mood colors via NNLS regression & saliency scaling.
-///
-/// `color_axes` caches the built [`crate::color::ColorAxes`] struct (computed at init
-/// via `init_with`, skipped by serde) so subsequent color projections skip MiniLM forward passes.
+/// Settings consumed by [`crate::color::ColorAxes`] when building the mood
+/// color pipeline. Flattened into [`MoodConfig`] so the `[moods]` TOML keys
+/// stay exactly as they are.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
-pub struct MoodConfig {
+pub struct ColorAxesSettings {
     /// Text anchor prefixed to a mood before embedding ("person says: "), so
     /// the embedding encodes the mood as a statement.
     pub prefix_string: String,
@@ -232,6 +231,35 @@ pub struct MoodConfig {
 
     /// Neutral baseline Oklab lightness (0-100), default 65.
     pub baseline_oklab_l: Percentage,
+}
+
+impl Default for ColorAxesSettings {
+    fn default() -> Self {
+        Self {
+            prefix_string: "person says: ".to_string(),
+            base_string: "this person feels:".to_string(),
+            blend_steepness: 2.0,
+            top_k: 5,
+            min_contribution: Percentage::new(7),
+            effective_saliency_gate: Percentage::new(50),
+            baseline_oklab_l: Percentage::new(65),
+        }
+    }
+}
+
+/// Config for sentence-embedding mood colors via NNLS regression & saliency scaling.
+///
+/// `color_axes` caches the built [`crate::color::ColorAxes`] struct (computed at init
+/// via `init_with`, skipped by serde) so subsequent color projections skip MiniLM forward passes.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+#[derive(Default)]
+pub struct MoodConfig {
+    /// Settings consumed by the color axes (flattened — the `[moods]` TOML
+    /// keys for these live directly on the table).
+    #[serde(flatten)]
+    pub axes: ColorAxesSettings,
 
     pub pairs: Vec<MoodEndpoint>,
 
@@ -239,21 +267,6 @@ pub struct MoodConfig {
     pub color_axes: Option<crate::color::ColorAxes>,
 }
 
-impl Default for MoodConfig {
-    fn default() -> Self {
-        Self {
-            prefix_string: "person says: ".to_string(),
-            base_string: "this person feels:".to_string(),
-            pairs: Vec::new(),
-            blend_steepness: 2.0,
-            min_contribution: Percentage::new(7),
-            top_k: 5,
-            baseline_oklab_l: Percentage::new(65),
-            effective_saliency_gate: Percentage::new(50),
-            color_axes: None,
-        }
-    }
-}
 
 impl MoodConfig {
     /// Embed each pair's mood using SQLite cache and store the built [`crate::color::ColorAxes`] struct.
@@ -269,7 +282,7 @@ impl MoodConfig {
         if self.pairs.is_empty() {
             self.pairs = default_pairs();
         }
-        let axes = crate::color::ColorAxes::build_async(pool, embedder, self).await?;
+        let axes = crate::color::ColorAxes::build_async(pool, embedder, &self.axes, &self.pairs).await?;
         self.color_axes = Some(axes);
         Ok(())
     }
@@ -398,5 +411,42 @@ mod tests {
         // Explicit true is honored.
         let cfg: Config = toml::from_str("[editor]\nhint = true\n").expect("hint=true parses");
         assert!(cfg.editor.hint);
+    }
+
+    #[test]
+    fn test_moods_flatten_serde_roundtrip() {
+        // [moods] with only `pairs` (all settings missing) → settings default.
+        let cfg: Config = toml::from_str(
+            "[moods]\n[[moods.pairs]]\nmood = \"happy\"\ncolor = \"#FF0000\"\n",
+        )
+        .expect("[moods] with only pairs parses");
+        assert_eq!(cfg.moods.axes.prefix_string, "person says: ");
+        assert_eq!(cfg.moods.axes.blend_steepness, 2.0);
+        assert_eq!(cfg.moods.pairs.len(), 1);
+        assert_eq!(cfg.moods.pairs[0].mood, "happy");
+
+        // Explicit settings are honored through the flatten.
+        let cfg: Config = toml::from_str(
+            "[moods]\nblend_steepness = 3.5\ntop_k = 8\n[[moods.pairs]]\nmood = \"sad\"\ncolor = \"blue\"\n",
+        )
+        .expect("[moods] with settings parses");
+        assert_eq!(cfg.moods.axes.blend_steepness, 3.5);
+        assert_eq!(cfg.moods.axes.top_k, 8);
+        assert_eq!(cfg.moods.pairs.len(), 1);
+        assert_eq!(cfg.moods.pairs[0].mood, "sad");
+
+        // Unknown keys under [moods] are rejected (deny_unknown_fields holds
+        // through the flattened ColorAxesSettings).
+        assert!(
+            toml::from_str::<Config>("[moods]\nbogus_key = 1\n").is_err(),
+            "unknown [moods] key must be rejected"
+        );
+
+        // Full round-trip: serialize then re-parse keeps pairs + settings.
+        let serialized = toml::to_string(&cfg).expect("serializes");
+        let reparsed: Config = toml::from_str(&serialized).expect("re-parses");
+        assert_eq!(reparsed.moods.axes.blend_steepness, 3.5);
+        assert_eq!(reparsed.moods.pairs.len(), 1);
+        assert_eq!(reparsed.moods.pairs[0].color, cfg.moods.pairs[0].color);
     }
 }
