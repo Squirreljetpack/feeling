@@ -29,9 +29,11 @@ pub async fn handle_command<W: Write>(
             include_completed,
             include_scheduled,
         } => {
-            // Both flags are always false from the CLI (no flags to set
-            // them yet). The TUI starts with scheduled tasks visible when
-            // the command flag is set or the config asks for it.
+            // Both flags are env-only: the INCLUDE_COMPLETED /
+            // INCLUDE_SCHEDULED vars (applied in main.rs) are the only way
+            // to turn them on per run — there are no CLI flags. The TUI
+            // starts with scheduled tasks visible when the command flag is
+            // set or the config asks for it.
             if tui {
                 let show_scheduled = include_scheduled || config.tasks_view.include_scheduled;
                 crate::render::tasks::TasksApp::new(

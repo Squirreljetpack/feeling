@@ -1,5 +1,5 @@
-/// Shared logic for task completion checks.
-/// Used by both oneshot and recurring tasks.
+//! Shared logic for task completion checks.
+//! Used by both oneshot and recurring tasks.
 
 use sqlx::SqlitePool;
 
@@ -264,7 +264,10 @@ mod tests {
         // now exactly one interval later → second interval starts at start+day
         assert_eq!(current_interval_start(start, day, start + day), start + day);
         // now mid-second-interval → boundary is start+day
-        assert_eq!(current_interval_start(start, day, start + day + 50), start + day);
+        assert_eq!(
+            current_interval_start(start, day, start + day + 50),
+            start + day
+        );
         // now before task start → boundary clamps to task start
         assert_eq!(current_interval_start(start, day, start - 10), start);
         // now many intervals later
@@ -334,12 +337,30 @@ mod tests {
         // Once-only and target-1 tasks just toggle: not done → Complete,
         // done → Reset (no modal).
         let now = 1_000_000i64;
-        assert_eq!(enter_action(None, false, 0, None, None, now), EnterAction::Complete);
-        assert_eq!(enter_action(Some(0), false, 0, None, None, now), EnterAction::Complete);
-        assert_eq!(enter_action(Some(1), false, 0, None, None, now), EnterAction::Reset);
-        assert_eq!(enter_action(None, false, 1, None, None, now), EnterAction::Complete);
-        assert_eq!(enter_action(Some(1), false, 1, None, None, now), EnterAction::Reset);
-        assert_eq!(enter_action(Some(0), false, 1, None, None, now), EnterAction::Complete);
+        assert_eq!(
+            enter_action(None, false, 0, None, None, now),
+            EnterAction::Complete
+        );
+        assert_eq!(
+            enter_action(Some(0), false, 0, None, None, now),
+            EnterAction::Complete
+        );
+        assert_eq!(
+            enter_action(Some(1), false, 0, None, None, now),
+            EnterAction::Reset
+        );
+        assert_eq!(
+            enter_action(None, false, 1, None, None, now),
+            EnterAction::Complete
+        );
+        assert_eq!(
+            enter_action(Some(1), false, 1, None, None, now),
+            EnterAction::Reset
+        );
+        assert_eq!(
+            enter_action(Some(0), false, 1, None, None, now),
+            EnterAction::Complete
+        );
     }
 
     #[test]
@@ -347,10 +368,25 @@ mod tests {
         // target_count > 1: prompt paths — CompleteModal when not complete,
         // ResetConfirm when complete.
         let now = 1_000_000i64;
-        assert_eq!(enter_action(None, false, 5, None, None, now), EnterAction::CompletePrompt);
-        assert_eq!(enter_action(Some(0), false, 5, None, None, now), EnterAction::CompletePrompt);
-        assert_eq!(enter_action(Some(2), false, 5, None, None, now), EnterAction::CompletePrompt);
-        assert_eq!(enter_action(Some(5), false, 5, None, None, now), EnterAction::ResetConfirm);
-        assert_eq!(enter_action(Some(7), false, 5, None, None, now), EnterAction::ResetConfirm);
+        assert_eq!(
+            enter_action(None, false, 5, None, None, now),
+            EnterAction::CompletePrompt
+        );
+        assert_eq!(
+            enter_action(Some(0), false, 5, None, None, now),
+            EnterAction::CompletePrompt
+        );
+        assert_eq!(
+            enter_action(Some(2), false, 5, None, None, now),
+            EnterAction::CompletePrompt
+        );
+        assert_eq!(
+            enter_action(Some(5), false, 5, None, None, now),
+            EnterAction::ResetConfirm
+        );
+        assert_eq!(
+            enter_action(Some(7), false, 5, None, None, now),
+            EnterAction::ResetConfirm
+        );
     }
 }

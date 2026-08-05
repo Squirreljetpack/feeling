@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 //! Mood color computation via NNLS basis-ray regression & saliency scaling.
 //!
 //! Mood strings are embedded with the nomic-embed-text-v1.5 model, projected onto a

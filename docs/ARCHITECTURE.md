@@ -249,11 +249,6 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `:color <mood>` | `Color` — full mood-color pipeline diagnostic |
 | `:clear [@date]` | `Clear` — deletes that day's mood entries (interactive confirm) |
 
-`View.include_completed` controls whether completed tasks appear in the
-`@done` view. It **always parses to `false`** today (no CLI flag yet); the
-field exists so a future flag can turn it on. Both the TUI and CLI paths honor
-the same flag, so they never diverge.
-
 Custom tracker names cannot begin with `@` (reserved for recurring ids).
 Tabs in mood/name fields are an error (output is tab-separated); whitespace in
 recurring task names is allowed (the `@` prefix disambiguates).
@@ -348,7 +343,8 @@ views.rs, render/tasks.rs and render/today.rs (no shared const — queries are
 intentionally duplicated). Single-row fetches use a correlated `(SELECT
 SUM(count) ...)` subquery with the same boundary condition.
 
-Per-mode filters (all governed by `include_completed`, always `false` today):
+Per-mode filters (all governed by `include_completed`, `false` unless the
+`INCLUDE_COMPLETED` env var is set):
 `@` = recurring, not done in the current interval, `end_time > now`, then a
 Rust availability-window check; `@done` = completed tasks (oneshot only at
 `include_completed=false`); `@due` = oneshot, `start_time <= today_end`; `!` =
@@ -650,8 +646,9 @@ real editor.
 
 - **`:score`** — stub (`todo!()`).
 - **`:g` grid view** — parser bails "Grid view (:g) is not yet implemented".
-- **`include_completed`** — always `false`; no CLI flag to set it yet (by design,
-  the plumbing is in place).
+- **CLI flags for `include_completed` / `include_scheduled`** — intentionally
+  absent: the `INCLUDE_COMPLETED` / `INCLUDE_SCHEDULED` env vars (applied in
+  main.rs via `apply_envs`) are the resolution; no flags will be added.
 - **No DB migrations** — schema changes are CREATE TABLE edits only; the dev DB
   (`~/.local/state/feeling/feeling.db`) must be deleted manually when the schema
   changes.
