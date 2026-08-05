@@ -102,7 +102,7 @@ pub(crate) fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> 
 /// column regardless of label length.
 pub(crate) fn print_rows(rows: &[(String, String)]) {
     for (label, value) in rows {
-        println!("{}:\t{value}", format!("{label:<13}"));
+        println!("{label:<13}:\t{value}");
     }
 }
 

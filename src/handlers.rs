@@ -305,17 +305,23 @@ async fn handle_entry(pool: &SqlitePool, config: &Config, opts: &CliOpts, entry:
         });
     }
 
-    // Resolve the mood embedding before opening the transaction. Journal-only
-    // entries (empty mood) never embed; the model is bundled into the binary, so
-    // the embedder is always available — a per-text embedding failure (e.g. an
-    // un-tokenizable string) stores no embedding rather than losing the entry.
-    let embedding_blob = if feeling.is_empty() {
-        None
+    // Resolve the mood embedding and its saliency score before opening the
+    // transaction. Journal-only entries (empty mood) never embed; the model
+    // is bundled into the binary, so the embedder is always available — a
+    // per-text embedding failure (e.g. an un-tokenizable string) stores no
+    // embedding rather than losing the entry. The score is computed here so
+    // color passes later skip the ONNX saliency prediction.
+    let embedder = crate::embed::global_embedder();
+    let (embedding_blob, score) = if feeling.is_empty() {
+        (None, None)
     } else {
-        crate::embed::global_embedder()
-            .embed(&feeling, &config.moods.axes.prefix_string)
-            .ok()
-            .map(|v| crate::embed::embedding_to_blob(&v))
+        match embedder.embed(&feeling, &config.moods.axes.prefix_string) {
+            Ok(v) => (
+                Some(crate::embed::embedding_to_blob(&v)),
+                Some(crate::color::predict_saliency(embedder, &feeling)),
+            ),
+            Err(_) => (None, None),
+        }
     };
 
     let entry_obj = EntryObject {
@@ -323,6 +329,7 @@ async fn handle_entry(pool: &SqlitePool, config: &Config, opts: &CliOpts, entry:
         body,
         time: time_epoch,
         embedding: embedding_blob,
+        score,
         customs: custom_objects,
     };
 
@@ -465,7 +472,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
             handle_recurring_task_creation(pool, config, opts, prefill, body, open_editor).await?;
         }
         TaskType::Scheduled => {
-            // Scheduled task creation: `! @<time> [:description] [@<duration>]`.
+            // Scheduled task creation: `! @<time> [:description] [%<duration>]`.
             // The start time parsed from the command line must succeed before
             // any interactive prompt. Creation happens immediately only when
             // the start time, name and duration all came from the command
@@ -476,7 +483,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                     || {
                         format!(
                             "Invalid scheduled task start time: '{}' \
-                             (description starts with ':', duration with '@')",
+                             (description starts with ':', duration with '%')",
                             d
                         )
                     },
@@ -671,7 +678,7 @@ async fn handle_recurring_task_creation(
     Ok(())
 }
 
-/// Interactive scheduled creation flow (`! @<time> [:description] [@<duration>]`
+/// Interactive scheduled creation flow (`! @<time> [:description] [%<duration>]`
 /// with anything missing from the command line). Mirrors the recurring flow:
 /// required name (unique, re-prompt on duplicates) and start time, then the
 /// available duration (blank → 1 hour), then priority. Scheduled tasks always

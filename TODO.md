@@ -35,9 +35,10 @@ store body files in folder, named by mood/time-mood_summary-disambiguating_numbe
 	mood_summary: use our model to do some kind of summarization somehow or allow configuring a set of categories.
 recommend using fs with rg to search through all notes.
 
+
 # Lowpri
 config value, confirm before accepting scheduled
-
+interactive todo creation requires opening editor, a bit odd but not sure how to signal to enable easily.
 :query for a variety of items, categories, filters, output null seperated items
 
 

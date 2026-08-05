@@ -44,8 +44,13 @@ pub(crate) enum Modal {
     /// Numeric completion-count prompt for tasks with a target_count.
     Complete(CompleteModal),
     /// Confirm before deleting the selected task. `cursor` selects the
-    /// navigable button (0 = Yes, 1 = No).
-    DeleteConfirm { name: String, cursor: usize },
+    /// navigable button (0 = Yes, 1 = No — the default for deletes);
+    /// `is_recurring` shows the "This task will stop recurring!" warning.
+    DeleteConfirm {
+        name: String,
+        is_recurring: bool,
+        cursor: usize,
+    },
     /// @done view: confirm before resetting the selected task's completion
     /// progress (recurring tasks: current interval only).
     ResetConfirm {
@@ -419,6 +424,7 @@ impl Render for TasksApp {
                 if let Some(task) = self.tasks.get(self.selected) {
                     self.modal = Some(Modal::DeleteConfirm {
                         name: task.name.clone(),
+                        is_recurring: task.is_recurring(),
                         // Default to the safe option (No).
                         cursor: 1,
                     });
@@ -627,19 +633,30 @@ fn render_app_modal(f: &mut Frame, app: &TasksApp) {
             }
             (Some("Update".to_string()), lines, None)
         }
-        Modal::DeleteConfirm { name, cursor } => {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled(
-                        "Delete",
-                        Style::default()
-                            .fg(Color::Red)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                    Span::raw(format!(" '{}'?", name)),
-                ]),
-                Line::from(""),
-            ];
+        Modal::DeleteConfirm {
+            name,
+            is_recurring,
+            cursor,
+        } => {
+            let mut lines = vec![Line::from(vec![
+                Span::styled(
+                    "Delete",
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                Span::raw(format!(" '{}'?", name)),
+            ])];
+            // Recurring tasks warn that deleting stops the recurrence.
+            if *is_recurring {
+                lines.push(Line::from(Span::styled(
+                    "  This task will stop recurring!",
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::ITALIC),
+                )));
+            }
+            lines.push(Line::from(""));
             (None, lines, Some(confirm_buttons(*cursor)))
         }
         Modal::ResetConfirm { name, cursor, .. } => {

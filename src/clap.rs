@@ -369,10 +369,10 @@ fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
         return parse_recurring_task(args);
     }
 
-    // `! @<time> [:description] [@<duration>] [.. [body]]` → scheduled task
+    // `! @<time> [:description] [%<duration>] [.. [body]]` → scheduled task
     // creation. The first '@' word is the start time (multi-word forms like
     // `@2024-03-20 14:30` survive shell word-splitting); a word beginning
-    // with ':' starts the description, a word beginning with '@' starts the
+    // with ':' starts the description, a word beginning with '%' starts the
     // duration. Note the space discriminator: `! @ 10pm` is a recurring
     // task named "10pm", while `! @10pm` is a scheduled task.
     if args[0].starts_with('@') {
@@ -510,22 +510,17 @@ fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
     }))
 }
 
-/// Parse `! @<time>[; description][; @<duration>][.. body]` — scheduled
-/// task creation. The argument stream is joined and split on `;` into
-/// fields: the first field is the start time (leading `@` of the first
-/// word stripped), later fields are the description (plain words) or the
-/// duration (a field whose first word starts with `@`, all its words
-/// joined). The description must come before the duration, and only one
-/// duration is allowed. The duration is validated here so a bad duration
+/// `! @<time> [:description] [%<duration>] [.. [body]]` → scheduled task
+/// creation. Marker state machine over the words: plain words extend the
+/// current field (multi-word times, durations and descriptions survive
+/// shell word-splitting); a word beginning with `:` switches to / continues
+/// the description, a word beginning with `%` switches to the duration
+/// (there is deliberately no escape hatch — a `%`-word is always the
+/// duration marker). The duration is validated here so a bad duration
 /// fails fast; the start time is validated in the handler (it needs the
 /// configured date dialect) before any interactive prompt. `..` switches
 /// to body text (empty body → body editor).
 fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
-    // Marker state machine over the words (the `;` separators are gone):
-    // plain words extend the current field, so multi-word times, durations
-    // and descriptions survive shell word-splitting; a word beginning with
-    // `:` switches to / continues the description, a word beginning with
-    // `@` switches to the duration.
     enum Field {
         Time,
         Description,
@@ -562,21 +557,22 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
                     if !rest.is_empty() {
                         name_parts.push(rest.to_string());
                     }
-                } else if word.starts_with('@') {
+                } else if word.starts_with('%') {
                     field = Field::Duration;
-                    duration = Some(word.strip_prefix('@').unwrap_or(word).to_string());
+                    duration = Some(word.strip_prefix('%').unwrap_or(word).to_string());
                 } else {
                     // Plain words extend the start time (e.g. `@2024-03-20
                     // 14:30`, or `@10pm meeting` — the handler then fails
                     // the datetime parse rather than treating them as a
-                    // description).
+                    // description). @-words are plain here too: only the
+                    // first word carries the scheduled marker.
                     date_parts.push(word.clone());
                 }
             }
             Field::Description => {
-                if word.starts_with('@') {
+                if word.starts_with('%') {
                     field = Field::Duration;
-                    duration = Some(word.strip_prefix('@').unwrap_or(word).to_string());
+                    duration = Some(word.strip_prefix('%').unwrap_or(word).to_string());
                 } else if let Some(rest) = word.strip_prefix(':') {
                     if !rest.is_empty() {
                         name_parts.push(rest.to_string());
@@ -586,19 +582,19 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
                 }
             }
             Field::Duration => {
-                if word.starts_with('@') {
+                if word.starts_with('%') {
                     anyhow::bail!(
-                        "Only one @<duration> is allowed per scheduled task \
-                         (description starts with ':', duration with '@')"
+                        "Only one %<duration> is allowed per scheduled task \
+                         (description starts with ':', duration with '%')"
                     );
                 }
                 if word.starts_with(':') {
                     anyhow::bail!(
                         "Description must come before the duration in a scheduled task \
-                         (description starts with ':', duration with '@')"
+                         (description starts with ':', duration with '%')"
                     );
                 }
-                // Plain words extend a multi-word duration ("@2 hours").
+                // Plain words extend a multi-word duration ("%2 hours").
                 let parts = duration.get_or_insert_with(String::new);
                 if !parts.is_empty() {
                     parts.push(' ');
@@ -653,18 +649,14 @@ fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
         "@done" => ViewMode::DoneTasks,
         "@due" => ViewMode::DueTasks,
         // Any other @-word is a today-view date: `feeling @2024-03-20`.
-        // The parse-time gate uses the default (Uk) dialect — the CLI
-        // parser has no config — and the handler re-parses with
-        // config.date.dialect, so a slash form whose interpretation flips
-        // between Uk/Us could pass here and still fail there.
+        // Parsing itself happens in the handler with the configured date
+        // dialect (the CLI parser has no config), so an unparseable date
+        // fails there with a clear error rather than here.
         _ => {
             let rest = first.strip_prefix('@').unwrap_or(first);
-            if crate::date::parse_date(rest, crate::date::DateDialect::Uk).is_ok() {
-                return Ok(Command::Today {
-                    date: Some(rest.to_string()),
-                });
-            }
-            anyhow::bail!("Unknown view command: {}", first);
+            return Ok(Command::Today {
+                date: Some(rest.to_string()),
+            });
         }
     };
 
@@ -1099,7 +1091,7 @@ mod tests {
     #[test]
     fn test_parse_task_scheduled_duration() {
         // `! @10pm @2 hours` → start time + duration, no description.
-        let cmd = parse_from(args(&["!", "@10pm", "@2", "hours"])).unwrap();
+        let cmd = parse_from(args(&["!", "@10pm", "%2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
@@ -1114,7 +1106,7 @@ mod tests {
     #[test]
     fn test_parse_task_scheduled_description_and_duration() {
         // `! @10pm :meeting @2 hours` → all three fields.
-        let cmd = parse_from(args(&["!", "@10pm", ":meeting", "@2", "hours"])).unwrap();
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting", "%2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
@@ -1129,18 +1121,18 @@ mod tests {
     #[test]
     fn test_parse_task_scheduled_description_after_duration_rejected() {
         // Description must come before the duration.
-        assert!(parse_from(args(&["!", "@10pm", "@2", "hours", ":meeting"])).is_err());
+        assert!(parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting"])).is_err());
     }
 
     #[test]
     fn test_parse_task_scheduled_duplicate_duration_rejected() {
-        assert!(parse_from(args(&["!", "@10pm", "@2", "hours", "@30", "minutes"])).is_err());
+        assert!(parse_from(args(&["!", "@10pm", "%2", "hours", "%30", "minutes"])).is_err());
     }
 
     #[test]
     fn test_parse_task_scheduled_bad_duration_rejected() {
         // A malformed duration fails fast at parse time.
-        assert!(parse_from(args(&["!", "@10pm", "@2", "elephants"])).is_err());
+        assert!(parse_from(args(&["!", "@10pm", "%2", "elephants"])).is_err());
     }
 
     #[test]
@@ -1735,7 +1727,10 @@ mod tests {
         assert_eq!(cmd, Command::Today { date: None });
 
         // The same through parse_cli, with or without a leading flag.
-        assert_eq!(parse_cli(vec![]).unwrap().cmd, Command::Today { date: None });
+        assert_eq!(
+            parse_cli(vec![]).unwrap().cmd,
+            Command::Today { date: None }
+        );
         assert_eq!(
             parse_cli(args(&["-q"])).unwrap().cmd,
             Command::Today { date: None }
@@ -1768,8 +1763,16 @@ mod tests {
         let cmd = parse_from(args(&["@yesterday"])).unwrap();
         assert!(matches!(cmd, Command::Today { date: Some(_) }));
 
-        // Garbage dates are rejected as unknown view commands.
-        assert!(parse_from(args(&["@bogus"])).is_err());
+        // Unparseable dates still parse at the CLI level (the handler is
+        // the authority, using the config dialect) — assert the date is
+        // carried through.
+        let cmd = parse_from(args(&["@bogus"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Today {
+                date: Some("bogus".to_string()),
+            }
+        );
 
         // The task views are untouched.
         assert!(matches!(

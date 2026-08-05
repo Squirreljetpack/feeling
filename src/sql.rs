@@ -69,6 +69,9 @@ pub struct EntryObject {
     pub body: String,
     pub time: i64,
     pub embedding: Option<Vec<u8>>,
+    /// Cached emotional-saliency score for the mood text, computed at entry
+    /// creation (`None` for journal-only rows or failed embeddings).
+    pub score: Option<f32>,
     pub customs: Vec<CustomObject>,
 }
 
@@ -593,21 +596,23 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
     let feeling_id: Option<i64> = if insert_feeling {
         let id: i64 = if let Some(blob) = &entry.embedding {
             sqlx::query(
-                "INSERT INTO feeling (mood, body, time, embedding) VALUES (?, ?, ?, ?) RETURNING id",
+                "INSERT INTO feeling (mood, body, time, embedding, score) VALUES (?, ?, ?, ?, ?) RETURNING id",
             )
             .bind(&entry.mood)
             .bind(&entry.body)
             .bind(entry.time)
             .bind(blob)
+            .bind(entry.score)
             .fetch_one(&mut *tx)
             .await
             .context("Failed to insert feeling")?
             .get("id")
         } else {
-            sqlx::query("INSERT INTO feeling (mood, body, time) VALUES (?, ?, ?) RETURNING id")
+            sqlx::query("INSERT INTO feeling (mood, body, time, score) VALUES (?, ?, ?, ?) RETURNING id")
                 .bind(&entry.mood)
                 .bind(&entry.body)
                 .bind(entry.time)
+                .bind(entry.score)
                 .fetch_one(&mut *tx)
                 .await
                 .context("Failed to insert feeling")?

@@ -1002,21 +1002,32 @@ async fn test_feeling_score_roundtrip() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
-    // Create a feeling via the CLI path.
+    // CLI-created entries compute the saliency at insert time.
     let cmd = parse_from(vec!["vivid".to_string()]).unwrap();
     handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
         .await
         .unwrap();
-
-    // Fresh rows have no score.
     let rows = feeling::sql::fetch_feelings_between(&pool, 0, i64::MAX)
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].score, None);
+    assert!(
+        rows[0].score.is_some(),
+        "CLI-created entries carry their computed saliency"
+    );
 
-    // update_feeling_score persists; fetch reads it back.
+    // Rows without a score (e.g. seed_db inserts) read back as None and
+    // round-trip through update_feeling_score.
     let id = rows[0].id;
+    sqlx::query("UPDATE feeling SET score = NULL WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rows = feeling::sql::fetch_feelings_between(&pool, 0, i64::MAX)
+        .await
+        .unwrap();
+    assert_eq!(rows[0].score, None);
     feeling::sql::update_feeling_score(&pool, id, 0.42).await.unwrap();
     let rows = feeling::sql::fetch_feelings_between(&pool, 0, i64::MAX)
         .await
@@ -1051,6 +1062,13 @@ async fn test_today_view_backfills_feeling_score() {
         .unwrap();
     feeling::sql::update_feeling_score(&pool, glum_id, 0.5).await.unwrap();
 
+    // A directly-inserted row (no score) exercises the backfill path.
+    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('dull', '', ?)")
+        .bind(feeling::date::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
     // A fresh render pass (new color cache) runs the pipeline and backfills.
     let mut out = Vec::new();
     feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out)
@@ -1061,12 +1079,16 @@ async fn test_today_view_backfills_feeling_score() {
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(scores.len(), 2);
+    assert_eq!(scores.len(), 3);
     assert!(
         scores[0].is_some(),
-        "fresh mood row must be backfilled with a score"
+        "CLI-created row carries its computed score"
     );
     assert_eq!(scores[1], Some(0.5), "pre-seeded score must be unchanged");
+    assert!(
+        scores[2].is_some(),
+        "directly-inserted row must be backfilled with a score"
+    );
 }
 
 #[tokio::test]

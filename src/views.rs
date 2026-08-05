@@ -39,14 +39,13 @@ impl TodayHorizon {
     }
 
     /// End of the horizon (inclusive) as epoch seconds, relative to the
-    /// anchored day (its day-start). `Week` covers the Monday-aligned week
-    /// containing the day (mirrors [`crate::date::week_sunday`], so the
-    /// default anchored-today behavior is unchanged).
+    /// anchored day (its day-start). `Week` is always the next 7 days from
+    /// the anchored day.
     pub fn end_epoch(&self, day_start: i64) -> i64 {
         match self {
             TodayHorizon::Today => date::day_end(day_start),
             TodayHorizon::Tomorrow => date::day_end(day_start + 86400),
-            TodayHorizon::Week => date::week_end_for(day_start),
+            TodayHorizon::Week => date::day_end(day_start + 6 * 86400),
         }
     }
 }

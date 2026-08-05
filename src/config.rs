@@ -99,7 +99,6 @@ fn is_valid_tracker_name(name: &str) -> bool {
 }
 
 /// `[grid]` section — tracker grid options (`:` / `:week` / `:month` / `:year`).
-/// `[grid]` section — tracker grid options (`, :week`, `:month`, `:year`).
 ///
 /// "Rolling" grids are anchored to today (a fixed-size window); non-rolling
 /// grids start at the calendar period boundary (week_start / month start).
@@ -255,10 +254,8 @@ impl Default for ColorAxesSettings {
 ///
 /// `color_axes` caches the built [`crate::color::ColorAxes`] struct (computed at init
 /// via `init_with`, skipped by serde) so subsequent color projections skip MiniLM forward passes.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-#[serde(deny_unknown_fields)]
-#[derive(Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MoodConfig {
     /// Settings consumed by the color axes (flattened — the `[moods]` TOML
     /// keys for these live directly on the table).
@@ -270,7 +267,6 @@ pub struct MoodConfig {
     #[serde(skip)]
     pub color_axes: Option<crate::color::ColorAxes>,
 }
-
 
 impl MoodConfig {
     /// Embed each pair's mood using SQLite cache and store the built [`crate::color::ColorAxes`] struct.
@@ -286,7 +282,8 @@ impl MoodConfig {
         if self.pairs.is_empty() {
             self.pairs = default_pairs();
         }
-        let axes = crate::color::ColorAxes::build_async(pool, embedder, &self.axes, &self.pairs).await?;
+        let axes =
+            crate::color::ColorAxes::build_async(pool, embedder, &self.axes, &self.pairs).await?;
         self.color_axes = Some(axes);
         Ok(())
     }
@@ -420,10 +417,9 @@ mod tests {
     #[test]
     fn test_moods_flatten_serde_roundtrip() {
         // [moods] with only `pairs` (all settings missing) → settings default.
-        let cfg: Config = toml::from_str(
-            "[moods]\n[[moods.pairs]]\nmood = \"happy\"\ncolor = \"#FF0000\"\n",
-        )
-        .expect("[moods] with only pairs parses");
+        let cfg: Config =
+            toml::from_str("[moods]\n[[moods.pairs]]\nmood = \"happy\"\ncolor = \"#FF0000\"\n")
+                .expect("[moods] with only pairs parses");
         assert_eq!(cfg.moods.axes.prefix_string, "person says: ");
         assert_eq!(cfg.moods.axes.blend_steepness, 2.0);
         assert_eq!(cfg.moods.pairs.len(), 1);

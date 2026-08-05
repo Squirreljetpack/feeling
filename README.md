@@ -24,7 +24,7 @@ Usage:
   feeling ! <name> [@<time>] [.. [body]]              create a oneshot task
   feeling ! @ [name]                                  create a recurring task (interactive)
   feeling ! @<time> [:name]                           create a scheduled task
-    [@duration] [.. [body]]                             (interactive unless all 3 fields are specified)
+    [%duration] [.. [body]]                             (interactive unless all 3 fields are specified)
   feeling [@date]                                     today view
   feeling @ / @done / @due                            view recurring / done / due tasks
   feeling - query_words [count]                       update completion of a task

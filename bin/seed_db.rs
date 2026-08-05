@@ -338,6 +338,7 @@ async fn seed_entry(
         body: body.to_string(),
         time,
         embedding: None,
+        score: None,
         customs,
     };
     create_entry(pool, &entry).await?;

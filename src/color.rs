@@ -65,6 +65,27 @@ pub struct MoodWeights {
     pub saliency: f32,
 }
 
+/// Predict the emotional saliency score for un-prefixed raw mood text,
+/// falling back to 1.0 on any failure (embedding, session run, extraction).
+/// Shared by [`ColorAxes::regression_weights`] and entry creation
+/// (`handle_entry` computes the score at insert time).
+pub fn predict_saliency(embedder: &Embedder, mood_text: &str) -> f32 {
+    let trimmed_text = mood_text.trim();
+    if trimmed_text.is_empty() {
+        return 1.0;
+    }
+    match embedder
+        .embed(trimmed_text, "")
+        .and_then(|raw_emb| embedder.predict_saliency(&raw_emb))
+    {
+        Ok(s) => s,
+        Err(err) => {
+            log::error!("Saliency prediction failed for {:?}: {err:#}", trimmed_text);
+            1.0
+        }
+    }
+}
+
 impl ColorAxes {
     /// Build basis vectors from the given endpoint pairs using SQLite cached
     /// embeddings. The `color_axes` cache check lives in the caller
@@ -221,29 +242,11 @@ impl ColorAxes {
         };
 
         // 6. Emotional saliency: a caller-supplied override (the row's
-        // cached feeling.score) skips the ONNX saliency pass; otherwise
-        // predict from the un-prefixed raw text. Any failure (embedding,
-        // session run, extraction) falls back to 1.0 with a log message.
-        let trimmed_text = mood_text.trim();
+        // cached feeling.score) skips the prediction; otherwise predict
+        // from the un-prefixed raw text (see [`predict_saliency`]).
         let saliency = match saliency {
             Some(s) => s,
-            None if !trimmed_text.is_empty() => {
-                let res = embedder
-                    .embed(trimmed_text, "")
-                    .and_then(|raw_emb| embedder.predict_saliency(&raw_emb));
-                match res {
-                    Ok(s) => s,
-                    Err(err) => {
-                        cba::wbog!(
-                            "color";
-                            "Saliency prediction failed for {:?}: {err:#}, falling back to 1.0",
-                            trimmed_text
-                        );
-                        1.0
-                    }
-                }
-            }
-            None => 1.0,
+            None => predict_saliency(embedder, mood_text),
         };
 
         Some(MoodWeights {
@@ -318,6 +321,8 @@ impl ColorAxes {
     /// (`feeling.score`) is passed as the regression override when present
     /// (skips the ONNX saliency pass); rows without one are backfilled via
     /// [`crate::sql::update_feeling_score`].
+    ///
+    ///
     ///
     /// Returns `None` for empty moods or when embedding fails.
     pub async fn mood_color_cached(
