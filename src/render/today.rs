@@ -38,8 +38,8 @@ pub struct TodayApp {
 pub(crate) enum Modal {
     /// Numeric completion-count prompt for tasks with a target_count.
     Complete(CompleteModal),
-    /// Confirm before deleting the selected feeling entry. `cursor` selects
-    /// the navigable button (0 = Yes, 1 = No).
+    /// Confirm before deleting the selected entry (feeling / custom / task).
+    /// `cursor` selects the navigable button (0 = Yes, 1 = No).
     DeleteConfirm { name: String, cursor: usize },
     /// Confirm before resetting a completed task's progress (target_count
     /// > 1 done, or any done task in the tasks app's @done view). Default Yes.

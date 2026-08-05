@@ -51,8 +51,10 @@ pub(crate) enum Modal {
         is_recurring: bool,
         cursor: usize,
     },
-    /// @done view: confirm before resetting the selected task's completion
-    /// progress (recurring tasks: current interval only).
+    /// Confirm before resetting a completed task's progress. Opened for
+    /// `target_count > 1` tasks that are complete (any view) and for any
+    /// done task in the tasks app's @done view; recurring tasks reset only
+    /// the current interval. Default Yes.
     ResetConfirm {
         id: i64,
         name: String,

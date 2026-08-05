@@ -742,7 +742,6 @@ pub(crate) fn completion_badge_text(count: i64, target_count: i32) -> String {
     }
 }
 
-/// Handle today view: displays today's feelings, custom entries, and task activity.
 /// Fetch all today-view entries within the given horizon.
 pub async fn fetch_today_entries(
     pool: &SqlitePool,
