@@ -464,6 +464,11 @@ fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
 /// `..`) pre-fills the name prompt, and text after `..` becomes the body
 /// (empty body → body editor).
 fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
+    // `! @ <description>` — the description is free text that pre-fills the
+    // name prompt. @-words inside it (e.g. `! @ buy milk @x`) stay literal:
+    // they are part of the description, never parsed as a time (unlike the
+    // oneshot/scheduled @-word handling). To keep a literal `@` at the start
+    // of a word, use `..` as the escape.
     let mut desc_parts: Vec<String> = Vec::new();
     let mut body_parts: Vec<String> = Vec::new();
     let mut has_dotdot = false;

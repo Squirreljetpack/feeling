@@ -2263,6 +2263,59 @@ async fn test_prune_clears_embedding_cache() {
     assert_eq!(cache_after, 0, "prune should clear the whole embedding cache");
 }
 
+// ---- Invalid timestamps must fail task creation ----
+
+/// Garbage `@<time>` values (and invalid calendar dates) must fail task
+/// creation — oneshot and scheduled — rather than silently landing in the
+/// task name.
+#[tokio::test]
+async fn test_task_creation_invalid_timestamps_fail() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    // Oneshot with a garbage date: `! task @x`.
+    let cmd = parse_from(vec!["!".to_string(), "task".to_string(), "@x".to_string()]).unwrap();
+    let err = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Failed to parse datetime"),
+        "unexpected error: {err:#}"
+    );
+
+    // Invalid calendar date: `! task @2024-99-99`.
+    let cmd = parse_from(vec![
+        "!".to_string(),
+        "task".to_string(),
+        "@2024-99-99".to_string(),
+    ])
+    .unwrap();
+    let err = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Failed to parse datetime"),
+        "unexpected error: {err:#}"
+    );
+
+    // Scheduled with a garbage start: `! @x`.
+    let cmd = parse_from(vec!["!".to_string(), "@x".to_string()]).unwrap();
+    let err = handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Failed to parse datetime"),
+        "unexpected error: {err:#}"
+    );
+
+    // Nothing was created by any of the failures.
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM todos")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
 // ---- FK cascade on delete (CASCADE propagation to todo_completions) ----
 
 /// Deleting a task must remove its `todo_completions` rows via the
