@@ -23,6 +23,10 @@ pub struct TodayApp {
     pub(crate) entries: Vec<crate::views::TodayEntry>,
     pub(crate) selected: usize,
     pub(crate) horizon: crate::views::TodayHorizon,
+    /// Day the view is anchored to (`None` = today). `feeling @<date>`.
+    day_epoch: Option<i64>,
+    /// Title label for the anchored day: "Today" / "Yesterday" / DD-MM-YY.
+    day_label: String,
     pub(crate) sort_by_priority: bool,
     should_quit: bool,
     pub(crate) modal: Option<Modal>,
@@ -63,22 +67,26 @@ pub(crate) struct EditTrackerModal {
 }
 
 impl TodayApp {
-    pub async fn new(pool: &SqlitePool, config: crate::config::Config) -> Self {
+    pub async fn new(pool: &SqlitePool, config: crate::config::Config, day_epoch: Option<i64>) -> Self {
         let mut color_cache = std::collections::HashMap::new();
         let entries = crate::views::fetch_today_entries(
             pool,
             &config,
             crate::views::TodayHorizon::Today,
+            day_epoch,
             &mut color_cache,
         )
         .await
         .unwrap_or_default();
+        let day_label = day_label_for(day_epoch);
         let mut app = Self {
             pool: pool.clone(),
             config,
             entries,
             selected: 0,
             horizon: crate::views::TodayHorizon::Today,
+            day_epoch,
+            day_label,
             sort_by_priority: false,
             should_quit: false,
             modal: None,
@@ -95,6 +103,7 @@ impl TodayApp {
             &self.pool,
             &self.config,
             self.horizon,
+            self.day_epoch,
             &mut self.color_cache,
         )
         .await
@@ -506,6 +515,16 @@ impl Render for TodayApp {
     }
 }
 
+/// Title label for the anchored day: "Today" / "Yesterday" / DD-MM-YY.
+fn day_label_for(day_epoch: Option<i64>) -> String {
+    match day_epoch {
+        None => "Today".to_string(),
+        Some(ts) if ts == crate::date::today_start() => "Today".to_string(),
+        Some(ts) if ts == crate::date::today_start() - 86400 => "Yesterday".to_string(),
+        Some(ts) => crate::date::format_date_dmy(ts),
+    }
+}
+
 fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
     let sort_indicator = if app.sort_by_priority {
         "priority"
@@ -518,7 +537,7 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
     } else {
         format!(" ({})", app.horizon.label())
     };
-    let title = format!(" Today{horizon_suffix} [sort: {sort_indicator}] ");
+    let title = format!(" {}{} [sort: {}] ", app.day_label, horizon_suffix, sort_indicator);
 
     // Last column width = area.width minus the fixed time (6) and dot (4) columns.
     let entry_col_width = area.width.saturating_sub(10) as usize;
@@ -737,5 +756,23 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
             popup.x + 1 + COUNT_LABEL.len() as u16 + modal.input.len() as u16,
             popup.y + 1,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_day_label() {
+        let today = crate::date::today_start();
+        // Anchored today (explicit or implicit) → "Today".
+        assert_eq!(day_label_for(None), "Today");
+        assert_eq!(day_label_for(Some(today)), "Today");
+        // Yesterday.
+        assert_eq!(day_label_for(Some(today - 86400)), "Yesterday");
+        // Any other day → DD-MM-YY.
+        let other = crate::date::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
+        assert_eq!(day_label_for(Some(crate::date::day_start(other))), "15-03-24");
     }
 }

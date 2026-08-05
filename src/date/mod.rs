@@ -17,8 +17,8 @@ pub mod parse_duration;
 pub type Epoch = i64;
 
 // Re-export sub-module functions at the crate::date level.
-pub use format::{format_date, format_date_time, format_duration, format_time};
-pub use parse::{parse_datetime, DateDialect};
+pub use format::{format_date, format_date_dmy, format_date_time, format_duration, format_time};
+pub use parse::{parse_date, parse_datetime, DateDialect};
 pub use parse_duration::parse_duration_secs;
 
 /// Current Unix epoch timestamp (seconds).
@@ -181,6 +181,20 @@ pub fn day_end(ts: Epoch) -> Epoch {
 pub fn week_sunday() -> Epoch {
     let monday = week_monday();
     day_end(monday + 6 * 86400)
+}
+
+/// Epoch seconds for the Sunday that ends the week containing `day_start`
+/// (23:59:59), Monday-aligned — same shape as [`week_sunday`] but anchored
+/// to an arbitrary day for the `feeling @<date>` today view.
+pub fn week_end_for(day_start: Epoch) -> Epoch {
+    use chrono::Datelike;
+    let dt = chrono::Local
+        .timestamp_opt(day_start, 0)
+        .earliest()
+        .unwrap_or_else(chrono::Local::now);
+    let day_offset = dt.weekday().num_days_from_monday() as i64;
+    let ahead = (6 - day_offset).rem_euclid(7); // days until the week's Sunday
+    day_end(day_start + ahead * 86400)
 }
 
 // ── internal helpers ─────────────────────────────────────────────────

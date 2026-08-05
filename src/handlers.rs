@@ -81,19 +81,26 @@ pub async fn handle_command<W: Write>(
             // handle_score(&start, &end, &mut reader, out)
         }
 
-        Command::Today => {
+        Command::Today { date } => {
             let mut config = config.clone();
             config
                 .moods
                 .init_with(pool, crate::embed::global_embedder())
                 .await?;
+            // `feeling @<date>` anchors the view to that day; re-parse with
+            // the configured dialect (the parse-time gate in clap.rs only
+            // checks the default Uk dialect).
+            let day_epoch = match &date {
+                Some(d) => Some(crate::date::parse_date(d, config.date.dialect)?),
+                None => None,
+            };
             if tui {
-                crate::render::today::TodayApp::new(pool, config)
+                crate::render::today::TodayApp::new(pool, config, day_epoch)
                     .await
                     .run()
                     .await
             } else {
-                crate::views::handle_today(pool, &config, opts, out).await
+                crate::views::handle_today(pool, &config, day_epoch, opts, out).await
             }
         }
 

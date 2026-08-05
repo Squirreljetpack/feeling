@@ -37,6 +37,17 @@ pub fn format_date_time(ts: Epoch) -> String {
         .unwrap_or_else(|| "--".to_string())
 }
 
+/// Format an epoch timestamp as `DD-MM-YY` (e.g. `15-03-26`) — the TodayApp
+/// title label for anchored days that are neither today nor yesterday.
+pub fn format_date_dmy(ts: Epoch) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(ts, 0)
+        .earliest()
+        .map(|dt| dt.format("%d-%m-%y").to_string())
+        .unwrap_or_else(|| "--".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +65,11 @@ mod tests {
         let ts = parse::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
         let s = format_date_time(ts);
         assert!(s.starts_with("2024-03-15 00:00"), "got {}", s);
+    }
+
+    #[test]
+    fn test_format_date_dmy() {
+        let ts = parse::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
+        assert_eq!(format_date_dmy(ts), "15-03-24");
     }
 }

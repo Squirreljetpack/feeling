@@ -64,8 +64,12 @@ pub enum Command {
         start: String,
         end: String,
     },
-    /// `feeling` with no args — today view. `feeling -` (bare) is TasksEdit.
-    Today,
+    /// `feeling` with no args — today view; `feeling @<date>` anchors it to
+    /// an arbitrary day (any date string that parses). `feeling -` (bare)
+    /// is TasksEdit.
+    Today {
+        date: Option<String>,
+    },
     /// `feeling -` (bare) — tasks-edit entry point. The handler is a stub
     /// for now: `handle_tasks_edit` bails "not yet implemented" (interactive
     /// task editing is future work, see TODO.md).
@@ -198,7 +202,7 @@ pub fn parse_from(args: Vec<String>) -> anyhow::Result<Command> {
     // parse_cli (`-h` / `--help`, initial position only) — parse_from treats
     // a `-h`-style token as entry text.
     if args.is_empty() {
-        return Ok(Command::Today);
+        return Ok(Command::Today { date: None });
     }
 
     let first = &args[0];
@@ -648,7 +652,20 @@ fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
         "@" => ViewMode::RecurringTasks,
         "@done" => ViewMode::DoneTasks,
         "@due" => ViewMode::DueTasks,
-        _ => anyhow::bail!("Unknown view command: {}", first),
+        // Any other @-word is a today-view date: `feeling @2024-03-20`.
+        // The parse-time gate uses the default (Uk) dialect — the CLI
+        // parser has no config — and the handler re-parses with
+        // config.date.dialect, so a slash form whose interpretation flips
+        // between Uk/Us could pass here and still fail there.
+        _ => {
+            let rest = first.strip_prefix('@').unwrap_or(first);
+            if crate::date::parse_date(rest, crate::date::DateDialect::Uk).is_ok() {
+                return Ok(Command::Today {
+                    date: Some(rest.to_string()),
+                });
+            }
+            anyhow::bail!("Unknown view command: {}", first);
+        }
     };
 
     Ok(Command::View {
@@ -1664,7 +1681,7 @@ mod tests {
         // flag alone → Today (same as no args)
         let cli = parse_cli(args(&["-q"])).unwrap();
         assert_eq!(cli.opts.qv, [1, 0]);
-        assert_eq!(cli.cmd, Command::Today);
+        assert_eq!(cli.cmd, Command::Today { date: None });
 
         // no flags
         let cli = parse_cli(args(&["ok"])).unwrap();
@@ -1715,11 +1732,53 @@ mod tests {
     fn test_parse_empty_returns_today() {
         // `feeling` with no args → Today view.
         let cmd = parse_from(vec![]).unwrap();
-        assert_eq!(cmd, Command::Today);
+        assert_eq!(cmd, Command::Today { date: None });
 
         // The same through parse_cli, with or without a leading flag.
-        assert_eq!(parse_cli(vec![]).unwrap().cmd, Command::Today);
-        assert_eq!(parse_cli(args(&["-q"])).unwrap().cmd, Command::Today);
+        assert_eq!(parse_cli(vec![]).unwrap().cmd, Command::Today { date: None });
+        assert_eq!(
+            parse_cli(args(&["-q"])).unwrap().cmd,
+            Command::Today { date: None }
+        );
+    }
+
+    #[test]
+    fn test_parse_today_with_date() {
+        // `feeling @2024-03-20` → today view anchored to that date.
+        let cmd = parse_from(args(&["@2024-03-20"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Today {
+                date: Some("2024-03-20".to_string()),
+            }
+        );
+
+        // Multi-word datetimes still work through the @ token.
+        let cmd = parse_from(args(&["@2024-03-20", "14:30"])).unwrap();
+        match cmd {
+            Command::Today { date } => {
+                // Only the first token is the date; the rest is ignored by
+                // the view dispatcher (parse_from sees the full args).
+                assert_eq!(date, Some("2024-03-20".to_string()));
+            }
+            _ => panic!("Expected Today command"),
+        }
+
+        // Relative dates parse too.
+        let cmd = parse_from(args(&["@yesterday"])).unwrap();
+        assert!(matches!(cmd, Command::Today { date: Some(_) }));
+
+        // Garbage dates are rejected as unknown view commands.
+        assert!(parse_from(args(&["@bogus"])).is_err());
+
+        // The task views are untouched.
+        assert!(matches!(
+            parse_from(args(&["@done"])).unwrap(),
+            Command::View {
+                mode: ViewMode::DoneTasks,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1736,7 +1795,6 @@ mod tests {
         let cli = parse_cli(args(&["-q", "-h"])).unwrap();
         assert_eq!(cli.opts.qv, [1, 0]);
         assert_eq!(cli.cmd, Command::Help);
-
         // After a non-flag token, -h is entry text (a tracker needing a
         // value), not help.
         assert!(parse_cli(args(&["ok", "-h"])).is_err());

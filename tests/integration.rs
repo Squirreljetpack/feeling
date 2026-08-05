@@ -862,7 +862,7 @@ async fn test_today_view_no_data() {
         .unwrap();
     // handle_today should succeed even with no data
     let mut out = Vec::new();
-    let result = feeling::views::handle_today(&pool, &config, &CliOpts::default(), &mut out).await;
+    let result = feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
     assert!(result.is_ok());
     let output = String::from_utf8(out).unwrap();
     assert!(
@@ -950,12 +950,50 @@ async fn test_today_view_with_data() {
 
     // handle_today should succeed with data and emit tab-separated rows
     let mut out = Vec::new();
-    let result = feeling::views::handle_today(&pool, &config, &CliOpts::default(), &mut out).await;
+    let result = feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
     assert!(result.is_ok());
     let output = String::from_utf8(out).unwrap();
     assert!(output.contains("good"), "output: {output:?}");
     assert!(output.contains("due today"), "output: {output:?}");
     assert!(output.contains('\t'), "output: {output:?}");
+}
+
+/// `feeling @<date>` anchors the today view to an arbitrary day.
+#[tokio::test]
+async fn test_today_view_with_date() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    config
+        .moods
+        .init_with(&pool, feeling::embed::global_embedder())
+        .await
+        .unwrap();
+
+    // Seed a feeling on a fixed past date directly.
+    let target = feeling::date::parse_datetime("2024-03-15 09:00", Default::default()).unwrap();
+    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('ancient', '', ?)")
+        .bind(target)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // `feeling @2024-03-15` lists it.
+    let cmd = parse_from(vec!["@2024-03-15".to_string()]).unwrap();
+    let mut out = Vec::new();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
+        .await
+        .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    assert!(output.contains("ancient"), "output: {output:?}");
+
+    // Plain `feeling` (today) does not.
+    let cmd = parse_from(vec![]).unwrap();
+    let mut out = Vec::new();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
+        .await
+        .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    assert!(!output.contains("ancient"), "output: {output:?}");
 }
 
 #[tokio::test]
@@ -2831,6 +2869,7 @@ async fn test_fetch_today_entries_carries_custom_ids() {
         &pool,
         &config,
         feeling::views::TodayHorizon::Today,
+        None,
         &mut color_cache,
     )
     .await
@@ -2886,6 +2925,7 @@ async fn test_fetch_today_entries_completion_carries_task_id() {
         &pool,
         &config,
         feeling::views::TodayHorizon::Today,
+        None,
         &mut color_cache,
     )
     .await

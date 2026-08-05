@@ -38,12 +38,15 @@ impl TodayHorizon {
         }
     }
 
-    /// End of the horizon (inclusive) as epoch seconds.
-    pub fn end_epoch(&self) -> i64 {
+    /// End of the horizon (inclusive) as epoch seconds, relative to the
+    /// anchored day (its day-start). `Week` covers the Monday-aligned week
+    /// containing the day (mirrors [`crate::date::week_sunday`], so the
+    /// default anchored-today behavior is unchanged).
+    pub fn end_epoch(&self, day_start: i64) -> i64 {
         match self {
-            TodayHorizon::Today => date::today_end(),
-            TodayHorizon::Tomorrow => date::day_end(date::today_start() + 86400),
-            TodayHorizon::Week => date::day_end(date::week_sunday()),
+            TodayHorizon::Today => date::day_end(day_start),
+            TodayHorizon::Tomorrow => date::day_end(day_start + 86400),
+            TodayHorizon::Week => date::week_end_for(day_start),
         }
     }
 }
@@ -703,11 +706,13 @@ pub async fn fetch_today_entries(
     pool: &SqlitePool,
     config: &Config,
     horizon: TodayHorizon,
+    day_epoch: Option<i64>,
     color_cache: &mut std::collections::HashMap<String, oklab::Oklab>,
 ) -> Result<Vec<TodayEntry>> {
-    let day_start_epoch = date::today_start();
-    let day_end_epoch = date::today_end();
-    let horizon_end = horizon.end_epoch();
+    // `feeling @<date>` anchors the day; bare `feeling` is today.
+    let day_start_epoch = day_epoch.unwrap_or_else(date::today_start);
+    let day_end_epoch = date::day_end(day_start_epoch);
+    let horizon_end = horizon.end_epoch(day_start_epoch);
 
     let mut entries: Vec<TodayEntry> = Vec::new();
 
@@ -944,11 +949,14 @@ pub async fn fetch_today_entries(
 pub async fn handle_today<W: Write>(
     pool: &SqlitePool,
     config: &Config,
+    day_epoch: Option<i64>,
     _opts: &CliOpts,
     out: &mut W,
 ) -> Result<()> {
     let mut color_cache = std::collections::HashMap::new();
-    let entries = fetch_today_entries(pool, config, TodayHorizon::Today, &mut color_cache).await?;
+    let entries =
+        fetch_today_entries(pool, config, TodayHorizon::Today, day_epoch, &mut color_cache)
+            .await?;
 
     if entries.is_empty() {
         writeln!(out, "Nothing logged today.")?;

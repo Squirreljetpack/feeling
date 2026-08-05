@@ -46,6 +46,12 @@ pub fn parse_datetime(s: &str, dialect: DateDialect) -> Result<Epoch> {
     Ok(dt.timestamp())
 }
 
+/// Parse a date string and align to the start of that day (for the
+/// `feeling @<date>` today view). Defers to [`parse_datetime`] for now.
+pub fn parse_date(s: &str, dialect: DateDialect) -> Result<Epoch> {
+    Ok(crate::date::day_start(parse_datetime(s, dialect)?))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::date::format;
@@ -57,6 +63,18 @@ mod tests {
         let ts = parse_datetime("2024-03-15", DateDialect::Uk).unwrap();
         let formatted = format::format_date_time(ts);
         assert!(formatted.starts_with("2024-03-15"), "got {}", formatted);
+    }
+
+    #[test]
+    fn test_parse_date_aligns_to_day_start() {
+        // A datetime mid-day aligns to that day's start (the @<date>
+        // today-view anchor).
+        let ts = parse_date("2024-03-15 14:30", DateDialect::Uk).unwrap();
+        assert_eq!(ts, crate::date::day_start(ts));
+        assert_eq!(format::format_date_time(ts), "2024-03-15 00:00");
+
+        // A bare date is already day-aligned; garbage still fails.
+        assert!(parse_date("bogus", DateDialect::Uk).is_err());
     }
 
     #[test]
