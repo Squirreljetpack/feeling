@@ -162,6 +162,9 @@ pub struct FeelingRow {
     pub body: String,
     pub time: i64,
     pub embedding: Option<Vec<u8>>,
+    /// Cached emotional-saliency score for the mood text, backfilled by
+    /// `ColorAxes::mood_color_cached`; `None` until first computed.
+    pub score: Option<f32>,
 }
 
 /// A custom-tracker row with the score decoded as text (the `score` column
@@ -706,7 +709,7 @@ pub async fn fetch_feelings_between(
     end: i64,
 ) -> Result<Vec<FeelingRow>> {
     let rows = sqlx::query(
-        "SELECT id, mood, body, time, embedding FROM feeling WHERE time >= ? AND time <= ? ORDER BY time ASC",
+        "SELECT id, mood, body, time, embedding, score FROM feeling WHERE time >= ? AND time <= ? ORDER BY time ASC",
     )
     .bind(start)
     .bind(end)
@@ -722,6 +725,7 @@ pub async fn fetch_feelings_between(
             body: row.get("body"),
             time: row.get("time"),
             embedding: row.get("embedding"),
+            score: row.get("score"),
         })
         .collect())
 }
@@ -1449,6 +1453,18 @@ pub async fn update_feeling_embedding(pool: &SqlitePool, id: i64, blob: &[u8]) -
         .execute(pool)
         .await
         .context("Failed to update feeling embedding")?;
+    Ok(res.rows_affected())
+}
+
+/// Persist a mood's cached saliency score (backfilled by
+/// `ColorAxes::mood_color_cached` on the first render pass).
+pub async fn update_feeling_score(pool: &SqlitePool, id: i64, score: f32) -> Result<u64> {
+    let res = sqlx::query("UPDATE feeling SET score = ? WHERE id = ?")
+        .bind(score)
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to update feeling score")?;
     Ok(res.rows_affected())
 }
 

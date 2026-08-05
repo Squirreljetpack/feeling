@@ -996,6 +996,79 @@ async fn test_today_view_with_date() {
     assert!(!output.contains("ancient"), "output: {output:?}");
 }
 
+/// `feeling.score` round-trips through the sql layer (nullable REAL column).
+#[tokio::test]
+async fn test_feeling_score_roundtrip() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    // Create a feeling via the CLI path.
+    let cmd = parse_from(vec!["vivid".to_string()]).unwrap();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap();
+
+    // Fresh rows have no score.
+    let rows = feeling::sql::fetch_feelings_between(&pool, 0, i64::MAX)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].score, None);
+
+    // update_feeling_score persists; fetch reads it back.
+    let id = rows[0].id;
+    feeling::sql::update_feeling_score(&pool, id, 0.42).await.unwrap();
+    let rows = feeling::sql::fetch_feelings_between(&pool, 0, i64::MAX)
+        .await
+        .unwrap();
+    assert!((rows[0].score.unwrap() - 0.42).abs() < 1e-6);
+}
+
+/// The first render pass backfills `feeling.score` (mood saliency); a
+/// pre-seeded score is left untouched (read-back path).
+#[tokio::test]
+async fn test_today_view_backfills_feeling_score() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    config
+        .moods
+        .init_with(&pool, feeling::embed::global_embedder())
+        .await
+        .unwrap();
+
+    // Two moods: one fresh, one pre-seeded.
+    let cmd = parse_from(vec!["vivid".to_string()]).unwrap();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap();
+    let cmd = parse_from(vec!["glum".to_string()]).unwrap();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut Vec::new(), false)
+        .await
+        .unwrap();
+    let glum_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'glum'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    feeling::sql::update_feeling_score(&pool, glum_id, 0.5).await.unwrap();
+
+    // A fresh render pass (new color cache) runs the pipeline and backfills.
+    let mut out = Vec::new();
+    feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out)
+        .await
+        .unwrap();
+
+    let scores: Vec<Option<f32>> = sqlx::query_scalar("SELECT score FROM feeling ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(scores.len(), 2);
+    assert!(
+        scores[0].is_some(),
+        "fresh mood row must be backfilled with a score"
+    );
+    assert_eq!(scores[1], Some(0.5), "pre-seeded score must be unchanged");
+}
+
 #[tokio::test]
 async fn test_view_done_tasks() {
     let pool = test_pool().await.unwrap();

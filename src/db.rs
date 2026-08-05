@@ -65,7 +65,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             mood TEXT NOT NULL,
             body TEXT NOT NULL DEFAULT '',
             time INTEGER NOT NULL DEFAULT (unixepoch()),
-            embedding BLOB
+            embedding BLOB,
+            -- Cached emotional-saliency score for the mood text (nullable;
+            -- backfilled by mood_color_cached). No migration: an existing
+            -- DB without the column is deleted by the user.
+            score REAL
         )
         "#,
     )
