@@ -449,14 +449,22 @@ async fn handle_task(pool: &SqlitePool, config: &Config, _opts: &CliOpts, task: 
             handle_recurring_task_creation(pool, config, prefill, body, open_editor).await?;
         }
         TaskType::Scheduled => {
-            // Scheduled task creation: `! @<time>[; description][; @<duration>]`.
+            // Scheduled task creation: `! @<time> [:description] [@<duration>]`.
             // The start time parsed from the command line must succeed before
             // any interactive prompt. Creation happens immediately only when
             // the start time, name and duration all came from the command
             // line; otherwise the flow goes interactive with whatever was
             // given pre-filled (a pre-filled value skips its prompt).
             let start_epoch = match &date {
-                Some(d) => Some(crate::date::parse_datetime(d, config.date.dialect)?),
+                Some(d) => Some(crate::date::parse_datetime(d, config.date.dialect).with_context(
+                    || {
+                        format!(
+                            "Invalid scheduled task start time: '{}' \
+                             (description starts with ':', duration with '@')",
+                            d
+                        )
+                    },
+                )?),
                 None => None,
             };
             let duration_secs = task

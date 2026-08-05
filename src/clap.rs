@@ -365,12 +365,12 @@ fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
         return parse_recurring_task(args);
     }
 
-    // `! @<time>[; description][; @<duration>][.. body]` → scheduled task
+    // `! @<time> [:description] [@<duration>] [.. [body]]` → scheduled task
     // creation. The first '@' word is the start time (multi-word forms like
-    // `@2024-03-20 14:30` survive shell word-splitting); ';' separates the
-    // optional description and @-duration fields. Note the space
-    // discriminator: `! @ 10pm` is a recurring task named "10pm", while
-    // `! @10pm` is a scheduled task.
+    // `@2024-03-20 14:30` survive shell word-splitting); a word beginning
+    // with ':' starts the description, a word beginning with '@' starts the
+    // duration. Note the space discriminator: `! @ 10pm` is a recurring
+    // task named "10pm", while `! @10pm` is a scheduled task.
     if args[0].starts_with('@') {
         return parse_scheduled_task(args);
     }
@@ -512,64 +512,97 @@ fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
 /// configured date dialect) before any interactive prompt. `..` switches
 /// to body text (empty body → body editor).
 fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
-    let joined = args.join(" ");
+    // Marker state machine over the words (the `;` separators are gone):
+    // plain words extend the current field, so multi-word times, durations
+    // and descriptions survive shell word-splitting; a word beginning with
+    // `:` switches to / continues the description, a word beginning with
+    // `@` switches to the duration.
+    enum Field {
+        Time,
+        Description,
+        Duration,
+    }
 
+    let mut field = Field::Time;
+    let mut date_seen = false;
     let mut date_parts: Vec<String> = Vec::new();
     let mut name_parts: Vec<String> = Vec::new();
     let mut duration: Option<String> = None;
     let mut body_parts: Vec<String> = Vec::new();
     let mut has_dotdot = false;
 
-    for (seg_idx, segment) in joined.split(';').enumerate() {
-        let segment = segment.trim();
-        if segment.is_empty() {
+    for word in args {
+        if has_dotdot {
+            body_parts.push(word.clone());
+            continue;
+        }
+        if word == ".." {
+            has_dotdot = true;
             continue;
         }
 
-        // Field content up to `..`, which switches the rest of the segment
-        // (and any later words) to body text.
-        let mut in_body = false;
-        let mut words: Vec<&str> = Vec::new();
-        for word in segment.split_whitespace() {
-            if in_body {
-                body_parts.push(word.to_string());
-            } else if word == ".." {
-                has_dotdot = true;
-                in_body = true;
-            } else {
-                words.push(word);
+        match field {
+            Field::Time => {
+                if !date_seen {
+                    // The first word is always the start time; the
+                    // dispatcher guarantees it starts with '@'.
+                    date_parts.push(word.strip_prefix('@').unwrap_or(word).to_string());
+                    date_seen = true;
+                } else if let Some(rest) = word.strip_prefix(':') {
+                    field = Field::Description;
+                    if !rest.is_empty() {
+                        name_parts.push(rest.to_string());
+                    }
+                } else if word.starts_with('@') {
+                    field = Field::Duration;
+                    duration = Some(word.strip_prefix('@').unwrap_or(word).to_string());
+                } else {
+                    // Plain words extend the start time (e.g. `@2024-03-20
+                    // 14:30`, or `@10pm meeting` — the handler then fails
+                    // the datetime parse rather than treating them as a
+                    // description).
+                    date_parts.push(word.clone());
+                }
+            }
+            Field::Description => {
+                if word.starts_with('@') {
+                    field = Field::Duration;
+                    duration = Some(word.strip_prefix('@').unwrap_or(word).to_string());
+                } else if let Some(rest) = word.strip_prefix(':') {
+                    if !rest.is_empty() {
+                        name_parts.push(rest.to_string());
+                    }
+                } else {
+                    name_parts.push(word.clone());
+                }
+            }
+            Field::Duration => {
+                if word.starts_with('@') {
+                    anyhow::bail!(
+                        "Only one @<duration> is allowed per scheduled task \
+                         (description starts with ':', duration with '@')"
+                    );
+                }
+                if word.starts_with(':') {
+                    anyhow::bail!(
+                        "Description must come before the duration in a scheduled task \
+                         (description starts with ':', duration with '@')"
+                    );
+                }
+                // Plain words extend a multi-word duration ("@2 hours").
+                let parts = duration.get_or_insert_with(String::new);
+                if !parts.is_empty() {
+                    parts.push(' ');
+                }
+                parts.push_str(word);
             }
         }
-        if words.is_empty() {
-            continue;
-        }
+    }
 
-        if seg_idx == 0 {
-            // First field: the start time. The leading '@' of the first
-            // word is the scheduled marker.
-            let first = words[0].strip_prefix('@').unwrap_or(words[0]);
-            date_parts.push(first.to_string());
-            date_parts.extend(words[1..].iter().map(|w| w.to_string()));
-        } else if words[0].starts_with('@') {
-            // Duration field: the '@'-prefixed first word plus any
-            // following words ("@2 hours"), joined into one string.
-            if duration.is_some() {
-                anyhow::bail!("Only one @<duration> is allowed per scheduled task");
-            }
-            let first = words[0].strip_prefix('@').unwrap_or(words[0]);
-            let mut parts = vec![first.to_string()];
-            parts.extend(words[1..].iter().map(|w| w.to_string()));
-            let duration_str = parts.join(" ");
-            crate::date::parse_duration_secs(&duration_str)
-                .with_context(|| format!("Invalid scheduled task duration: '{}'", duration_str))?;
-            duration = Some(duration_str);
-        } else {
-            // Description field — must come before the duration.
-            if duration.is_some() {
-                anyhow::bail!("Description must come before the duration in a scheduled task");
-            }
-            name_parts.extend(words.iter().map(|w| w.to_string()));
-        }
+    // The duration is validated at parse time so a bad value fails fast.
+    if let Some(d) = &duration {
+        crate::date::parse_duration_secs(d)
+            .with_context(|| format!("Invalid scheduled task duration: '{}'", d))?;
     }
 
     let date = if date_parts.is_empty() {
@@ -997,7 +1030,7 @@ mod tests {
 
     #[test]
     fn test_parse_task_scheduled_date_with_extra_words_is_all_date() {
-        // `! @10pm meeting` (no ';') keeps the whole first field as the
+        // `! @10pm meeting` (no markers) keeps the whole first field as the
         // date — it is validated (and fails) in the handler, never
         // becoming a description.
         let cmd = parse_from(args(&["!", "@10pm", "meeting"])).unwrap();
@@ -1013,8 +1046,8 @@ mod tests {
 
     #[test]
     fn test_parse_task_scheduled_description() {
-        // `! '@10pm; meeting'` → start time + description.
-        let cmd = parse_from(args(&["!", "@10pm;", "meeting"])).unwrap();
+        // `! @10pm :meeting` → start time + description.
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
@@ -1027,9 +1060,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_task_scheduled_multiword_description() {
+        // `! @10pm :a :b` → description words join; a `:`-word mid-
+        // description just continues it.
+        let cmd = parse_from(args(&["!", "@10pm", ":a", ":b"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.name, Some("a b".to_string()));
+                assert_eq!(task.date, Some("10pm".to_string()));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
     fn test_parse_task_scheduled_duration() {
-        // `! '@10pm; @2 hours'` → start time + duration, no description.
-        let cmd = parse_from(args(&["!", "@10pm;", "@2", "hours"])).unwrap();
+        // `! @10pm @2 hours` → start time + duration, no description.
+        let cmd = parse_from(args(&["!", "@10pm", "@2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
@@ -1043,8 +1091,8 @@ mod tests {
 
     #[test]
     fn test_parse_task_scheduled_description_and_duration() {
-        // `! '@10pm; meeting; @2 hours'` → all three fields.
-        let cmd = parse_from(args(&["!", "@10pm;", "meeting;", "@2", "hours"])).unwrap();
+        // `! @10pm :meeting @2 hours` → all three fields.
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting", "@2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
@@ -1059,24 +1107,24 @@ mod tests {
     #[test]
     fn test_parse_task_scheduled_description_after_duration_rejected() {
         // Description must come before the duration.
-        assert!(parse_from(args(&["!", "@10pm;", "@2", "hours;", "meeting"])).is_err());
+        assert!(parse_from(args(&["!", "@10pm", "@2", "hours", ":meeting"])).is_err());
     }
 
     #[test]
     fn test_parse_task_scheduled_duplicate_duration_rejected() {
-        assert!(parse_from(args(&["!", "@10pm;", "@2", "hours;", "@30", "minutes"])).is_err());
+        assert!(parse_from(args(&["!", "@10pm", "@2", "hours", "@30", "minutes"])).is_err());
     }
 
     #[test]
     fn test_parse_task_scheduled_bad_duration_rejected() {
         // A malformed duration fails fast at parse time.
-        assert!(parse_from(args(&["!", "@10pm;", "@2", "elephants"])).is_err());
+        assert!(parse_from(args(&["!", "@10pm", "@2", "elephants"])).is_err());
     }
 
     #[test]
     fn test_parse_task_scheduled_body() {
-        // `! '@10pm; meeting .. take notes'` → body after `..`.
-        let cmd = parse_from(args(&["!", "@10pm;", "meeting", "..", "take", "notes"])).unwrap();
+        // `! @10pm :meeting .. take notes` → body after `..`.
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting", "..", "take", "notes"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
@@ -1090,7 +1138,7 @@ mod tests {
 
     #[test]
     fn test_parse_task_scheduled_bare_dotdot_opens_editor() {
-        let cmd = parse_from(args(&["!", "@10pm;", "meeting", ".."])).unwrap();
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting", ".."])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
