@@ -184,7 +184,7 @@ async fn handle_clear(
 /// writer. Foreign-key cascades (see `db.rs`: `todo_completions.todo_id`
 /// has `ON DELETE CASCADE`) drop the matching completion rows
 /// automatically.
-async fn handle_prune(pool: &SqlitePool, config: &Config) -> Result<()> {
+async fn handle_prune(pool: &SqlitePool, _config: &Config) -> Result<()> {
     let now = date::now();
     let pruned = crate::sql::prune_tasks(pool, now).await?;
 
@@ -201,20 +201,7 @@ async fn handle_prune(pool: &SqlitePool, config: &Config) -> Result<()> {
         }
     }
 
-    // Prune entries from embedding_cache that are not an endpoint of any active pair or base text
-    let pairs = if config.moods.pairs.is_empty() {
-        crate::config::default_pairs()
-    } else {
-        config.moods.pairs.clone()
-    };
-
-    let mut valid_keys = std::collections::HashSet::new();
-    valid_keys.insert(config.moods.base_string.clone());
-    for pair in &pairs {
-        valid_keys.insert(format!("{}{}", config.moods.prefix_string, pair.mood));
-    }
-
-    let pruned_cache_count = crate::sql::prune_embedding_cache(pool, &valid_keys).await?;
+    let pruned_cache_count = crate::sql::prune_embedding_cache(pool).await?;
     if pruned_cache_count > 0 {
         cba::ibog!("prune"; "pruned {} stale cached embedding(s)", pruned_cache_count);
     }
@@ -855,7 +842,7 @@ pub fn handle_color<W: Write>(mood: &str, config: &Config, out: &mut W) -> Resul
         .context("Failed to embed mood")?;
 
     let weights = axes.regression_weights(&embedding, embedder, mood);
-    let final_oklab = axes.project_full(&embedding, embedder, mood);
+    let final_oklab = axes.weights_to_color(&embedding, embedder, mood);
     let rgb = final_oklab.to_srgb();
 
     let raw_emb = embedder.embed(mood, "").unwrap_or_default();

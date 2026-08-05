@@ -309,22 +309,23 @@ pub async fn delete_task(pool: &SqlitePool, id: i64) -> Result<u64> {
 pub async fn update_task(pool: &SqlitePool, todo_id: i64, delta: i32) -> Result<i32> {
     // Determine the current interval boundary for recurring tasks so we never
     // touch completion events from before the current interval started.
-    let interval_start: Option<i64> = sqlx::query(
-        "SELECT start_time, interval_secs FROM todos WHERE id = ?",
-    )
-    .bind(todo_id)
-    .fetch_optional(pool)
-    .await?
-    .and_then(|row| {
-        let start: Option<i64> = row.get("start_time");
-        let interval: Option<i64> = row.get("interval_secs");
-        match (start, interval) {
-            (Some(st), Some(iv)) if iv > 0 => {
-                Some(crate::task::current_interval_start(st, iv, crate::date::now()))
-            }
-            _ => None,
-        }
-    });
+    let interval_start: Option<i64> =
+        sqlx::query("SELECT start_time, interval_secs FROM todos WHERE id = ?")
+            .bind(todo_id)
+            .fetch_optional(pool)
+            .await?
+            .and_then(|row| {
+                let start: Option<i64> = row.get("start_time");
+                let interval: Option<i64> = row.get("interval_secs");
+                match (start, interval) {
+                    (Some(st), Some(iv)) if iv > 0 => Some(crate::task::current_interval_start(
+                        st,
+                        iv,
+                        crate::date::now(),
+                    )),
+                    _ => None,
+                }
+            });
 
     if delta > 0 {
         sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
@@ -380,15 +381,13 @@ pub async fn update_task(pool: &SqlitePool, todo_id: i64, delta: i32) -> Result<
     // Return the new total: within the current interval for recurring tasks,
     // the full sum otherwise.
     let total: i32 = match interval_start {
-        Some(boundary) => {
-            sqlx::query_scalar(
-                "SELECT COALESCE(SUM(count), 0) FROM todo_completions WHERE todo_id = ? AND time >= ?",
-            )
-            .bind(todo_id)
-            .bind(boundary)
-            .fetch_one(pool)
-            .await?
-        }
+        Some(boundary) => sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM todo_completions WHERE todo_id = ? AND time >= ?",
+        )
+        .bind(todo_id)
+        .bind(boundary)
+        .fetch_one(pool)
+        .await?,
         None => {
             sqlx::query_scalar(
                 "SELECT COALESCE(SUM(count), 0) FROM todo_completions WHERE todo_id = ?",
@@ -437,31 +436,13 @@ pub async fn prune_tasks(pool: &SqlitePool, now: i64) -> Result<Vec<PrunedTask>>
         .collect())
 }
 
-/// Delete `embedding_cache` rows whose key is not an endpoint of any active
-/// color axis. Returns the number of deleted rows.
-pub async fn prune_embedding_cache(
-    pool: &SqlitePool,
-    valid_keys: &std::collections::HashSet<String>,
-) -> Result<u64> {
-    let mut pruned = 0u64;
-    if let Ok(cache_rows) = sqlx::query("SELECT text FROM embedding_cache")
-        .fetch_all(pool)
-        .await
-    {
-        for row in cache_rows {
-            let key: String = row.get("text");
-            if !valid_keys.contains(&key)
-                && sqlx::query("DELETE FROM embedding_cache WHERE text = ?")
-                    .bind(&key)
-                    .execute(pool)
-                    .await
-                    .is_ok()
-            {
-                pruned += 1;
-            }
-        }
-    }
-    Ok(pruned)
+pub async fn prune_embedding_cache(pool: &SqlitePool) -> Result<u64> {
+    let rows_affected = sqlx::query("DELETE FROM embedding_cache")
+        .execute(pool)
+        .await?
+        .rows_affected();
+
+    Ok(rows_affected)
 }
 
 /// Allocate the smallest free positive short id (>= 1) — the first gap in
@@ -518,21 +499,21 @@ pub async fn sync_short_id(pool: &SqlitePool, todo_id: i64) -> Result<()> {
     let short_id: Option<i64> = row.get("short_id");
 
     let boundary = match (start_time, interval_secs) {
-        (Some(st), Some(iv)) if iv > 0 => {
-            Some(crate::task::current_interval_start(st, iv, crate::date::now()))
-        }
+        (Some(st), Some(iv)) if iv > 0 => Some(crate::task::current_interval_start(
+            st,
+            iv,
+            crate::date::now(),
+        )),
         _ => None,
     };
     let sum: i32 = match boundary {
-        Some(b) => {
-            sqlx::query_scalar(
-                "SELECT COALESCE(SUM(count), 0) FROM todo_completions WHERE todo_id = ? AND time >= ?",
-            )
-            .bind(todo_id)
-            .bind(b)
-            .fetch_one(pool)
-            .await?
-        }
+        Some(b) => sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM todo_completions WHERE todo_id = ? AND time >= ?",
+        )
+        .bind(todo_id)
+        .bind(b)
+        .fetch_one(pool)
+        .await?,
         None => {
             sqlx::query_scalar(
                 "SELECT COALESCE(SUM(count), 0) FROM todo_completions WHERE todo_id = ?",
@@ -690,12 +671,13 @@ pub async fn clear_moods(
     end_time: i64,
     delete: bool,
 ) -> Result<usize> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling WHERE time >= ? AND time <= ?")
-        .bind(start_time)
-        .bind(end_time)
-        .fetch_one(pool)
-        .await
-        .context("Failed to count mood entries")?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM feeling WHERE time >= ? AND time <= ?")
+            .bind(start_time)
+            .bind(end_time)
+            .fetch_one(pool)
+            .await
+            .context("Failed to count mood entries")?;
 
     if !delete {
         return Ok(count as usize);
@@ -942,10 +924,7 @@ pub fn recurring_available(task: &TaskRow, now: i64) -> bool {
 
 /// Active recurring tasks with completions scoped to the current interval,
 /// filtered to those currently within their availability window.
-pub async fn fetch_active_recurring_tasks(
-    pool: &SqlitePool,
-    now: i64,
-) -> Result<Vec<TaskRow>> {
+pub async fn fetch_active_recurring_tasks(pool: &SqlitePool, now: i64) -> Result<Vec<TaskRow>> {
     let tasks = sqlx::query_as::<_, TaskRow>(
         r#"SELECT t.*, SUM(tc.count) AS completions
            FROM todos t
@@ -1525,11 +1504,7 @@ pub async fn delete_feeling(pool: &SqlitePool, id: i64) -> Result<()> {
 /// (early, or auto-completed by window elapse), 0 = failed (marked as
 /// missed). Runs in a transaction so the replace is atomic, then syncs the
 /// short id (a completed task loses its short id; a failed one keeps it).
-pub async fn set_scheduled_completion(
-    pool: &SqlitePool,
-    todo_id: i64,
-    value: i32,
-) -> Result<()> {
+pub async fn set_scheduled_completion(pool: &SqlitePool, todo_id: i64, value: i32) -> Result<()> {
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
 
     sqlx::query("DELETE FROM todo_completions WHERE todo_id = ?")
@@ -1555,27 +1530,19 @@ pub async fn set_scheduled_completion(
 /// Clear a task's completion progress. For recurring tasks only completions
 /// at/after `floor` (the current interval start) are removed, preserving
 /// history from earlier intervals. Returns affected rows.
-pub async fn reset_task_completions(
-    pool: &SqlitePool,
-    id: i64,
-    floor: Option<i64>,
-) -> Result<u64> {
+pub async fn reset_task_completions(pool: &SqlitePool, id: i64, floor: Option<i64>) -> Result<u64> {
     let res = match floor {
-        Some(floor) => {
-            sqlx::query("DELETE FROM todo_completions WHERE todo_id = ? AND time >= ?")
-                .bind(id)
-                .bind(floor)
-                .execute(pool)
-                .await
-                .context("Failed to reset task progress")?
-        }
-        None => {
-            sqlx::query("DELETE FROM todo_completions WHERE todo_id = ?")
-                .bind(id)
-                .execute(pool)
-                .await
-                .context("Failed to reset task progress")?
-        }
+        Some(floor) => sqlx::query("DELETE FROM todo_completions WHERE todo_id = ? AND time >= ?")
+            .bind(id)
+            .bind(floor)
+            .execute(pool)
+            .await
+            .context("Failed to reset task progress")?,
+        None => sqlx::query("DELETE FROM todo_completions WHERE todo_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("Failed to reset task progress")?,
     };
     // Removing completion rows may untoggle a completed task — sync its
     // short id (a not-done task is reassigned the smallest free id).

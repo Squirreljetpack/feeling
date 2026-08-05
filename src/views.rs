@@ -106,12 +106,6 @@ pub async fn handle_tracker<W: Write>(
     items: Vec<TrackerItem>,
     out: &mut W,
 ) -> Result<()> {
-    let mut config = config.clone();
-    config
-        .moods
-        .init_with(pool, crate::embed::global_embedder())
-        .await?;
-    let config = &config;
     // Grid ranges follow config.grid. Non-rolling grids anchor the start
     // to the calendar period (week_start / month start) and end at today;
     // rolling grids use a fixed-size window — the full week (always 7 dots) or
@@ -351,7 +345,11 @@ fn render_year_heatmap<W: Write>(
                     } else if !day_has_entry[day] {
                         write!(out, "·")?;
                     } else if let Some(oklab) = crate::color::average_oklab(&day_colors[day]) {
-                        write!(out, "{}", "●".with(crate::color_conversion::oklab_to_crossterm(oklab)))?;
+                        write!(
+                            out,
+                            "{}",
+                            "●".with(crate::color_conversion::oklab_to_crossterm(oklab))
+                        )?;
                     } else {
                         write!(out, "●")?;
                     }
@@ -383,8 +381,8 @@ async fn display_custom_tracker<W: Write>(
     })?;
 
     // Fetch all entries in the period
-    let entries = crate::sql::fetch_customs_for_tracker(pool, tracker_type, start_epoch, end_epoch)
-        .await?;
+    let entries =
+        crate::sql::fetch_customs_for_tracker(pool, tracker_type, start_epoch, end_epoch).await?;
 
     if entries.is_empty() {
         writeln!(
@@ -456,8 +454,7 @@ async fn display_custom_tracker<W: Write>(
                             // Inverted range (min > max): lower score → success
                             ((min - slot_sums[i]) / (min - max)).clamp(0.0, 1.0)
                         };
-                        let idx = ((t * (config.tasks.colors.len() as f64 - 1.0)).round()
-                            as usize)
+                        let idx = ((t * (config.tasks.colors.len() as f64 - 1.0)).round() as usize)
                             .min(config.tasks.colors.len() - 1);
                         config.tasks.colors[idx]
                     }
@@ -501,8 +498,7 @@ async fn display_custom_tracker<W: Write>(
                         // Inverted range (min > max): lower score → success
                         ((min - score) / (min - max)).clamp(0.0, 1.0)
                     };
-                    let idx = ((t * (config.tasks.colors.len() as f64 - 1.0)).round()
-                        as usize)
+                    let idx = ((t * (config.tasks.colors.len() as f64 - 1.0)).round() as usize)
                         .min(config.tasks.colors.len() - 1);
                     config.tasks.colors[idx]
                 }
@@ -520,7 +516,11 @@ async fn display_custom_tracker<W: Write>(
 
 /// Map a custom-tracker score to a color by binning it across task_color.colors.
 /// Handles inverted ranges (max < min → smaller values get the success color).
-fn bin_score_color(config: &Config, tracker: &crate::config::TrackerSetting, score: f64) -> CtColor {
+fn bin_score_color(
+    config: &Config,
+    tracker: &crate::config::TrackerSetting,
+    score: f64,
+) -> CtColor {
     let colors = &config.tasks.colors;
 
     let (min, max) = (tracker.min, tracker.max);
@@ -672,7 +672,9 @@ pub(crate) fn scheduled_badge(
         Some(c) if c > 0 => ('●', *colors.last().unwrap_or(&CtColor::Reset)),
         Some(_) => ('●', *colors.first().unwrap_or(&CtColor::Reset)),
         None => match (start_time, available_duration) {
-            (Some(st), Some(dur)) if st + dur < now => ('●', *colors.last().unwrap_or(&CtColor::Reset)),
+            (Some(st), Some(dur)) if st + dur < now => {
+                ('●', *colors.last().unwrap_or(&CtColor::Reset))
+            }
             _ => ('◯', CtColor::Reset),
         },
     }
@@ -802,8 +804,7 @@ pub async fn fetch_today_entries(
     } else {
         day_start_epoch
     };
-    let due_tasks =
-        crate::sql::fetch_due_oneshot_tasks(pool, horizon_end, overdue_floor).await?;
+    let due_tasks = crate::sql::fetch_due_oneshot_tasks(pool, horizon_end, overdue_floor).await?;
 
     for task in &due_tasks {
         let urgency = match task.start_time {
@@ -940,11 +941,6 @@ pub async fn fetch_today_entries(
 /// entries, and task activity as tab-separated rows. TUI dispatch is handled by
 /// [`crate::handlers::handle_command`].
 pub async fn handle_today<W: Write>(pool: &SqlitePool, config: &Config, out: &mut W) -> Result<()> {
-    let mut config = config.clone();
-    config
-        .moods
-        .init_with(pool, crate::embed::global_embedder())
-        .await?;
     let mut color_cache = std::collections::HashMap::new();
     let entries = fetch_today_entries(pool, &config, TodayHorizon::Today, &mut color_cache).await?;
 
@@ -967,8 +963,8 @@ pub async fn handle_view<W: Write>(
     include_scheduled: bool,
     out: &mut W,
 ) -> Result<()> {
-    let tasks = crate::sql::fetch_tasks_for_view(pool, mode, include_completed, include_scheduled)
-        .await?;
+    let tasks =
+        crate::sql::fetch_tasks_for_view(pool, mode, include_completed, include_scheduled).await?;
 
     if tasks.is_empty() {
         writeln!(out, "No tasks found for view: {:?}", mode)?;
@@ -983,4 +979,3 @@ pub async fn handle_view<W: Write>(
 
     Ok(())
 }
-

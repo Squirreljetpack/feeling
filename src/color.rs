@@ -72,12 +72,7 @@ impl ColorAxes {
         embedder: &Embedder,
         config: &MoodConfig,
     ) -> Result<Self> {
-        if let Some(axes) = &config.color_axes {
-            return Ok(axes.clone());
-        }
-        if config.pairs.is_empty() {
-            anyhow::bail!("moods.pairs must contain at least one mood pair");
-        }
+        assert!(!config.pairs.is_empty() && config.color_axes.is_none());
 
         let v_base =
             crate::embed::get_or_embed_cached(pool, embedder, &config.base_string, "").await?;
@@ -253,7 +248,7 @@ impl ColorAxes {
     /// Compute the final Oklab color for an embedding, using raw text & the
     /// embedder for saliency prediction (computed inside
     /// [`Self::regression_weights`]).
-    pub fn project_full(&self, embedding: &[f32], embedder: &Embedder, mood_text: &str) -> Oklab {
+    pub fn weights_to_color(&self, embedding: &[f32], embedder: &Embedder, mood_text: &str) -> Oklab {
         let l_neutral = self.baseline_oklab_l.to_float();
         let Some(reg) = self.regression_weights(embedding, embedder, mood_text) else {
             return Oklab {
@@ -304,14 +299,6 @@ impl ColorAxes {
         gated_saliency(saliency, self.emotional_saliency_gate.to_float())
     }
 
-    /// Compute the final Oklab color for a mood string from its (already
-    /// computed) prefix-anchored embedding. Uncached — use
-    /// [`Self::mood_color_cached`] when running a render loop so repeated
-    /// moods run the pipeline once.
-    pub fn mood_color(&self, embedder: &Embedder, embedding: &[f32], mood: &str) -> Oklab {
-        self.project_full(embedding, embedder, mood)
-    }
-
     /// Resolve a feeling row to its final Oklab color within a single render
     /// run, caching the color per mood so repeated moods run the pipeline
     /// once.
@@ -345,13 +332,14 @@ impl ColorAxes {
             None => match embedder.embed(mood, &self.prefix_string) {
                 Ok(emb) => {
                     let blob_bytes = crate::embed::embedding_to_blob(&emb);
-                    let _ = crate::sql::update_feeling_embedding(pool, feeling.id, &blob_bytes).await;
+                    let _ =
+                        crate::sql::update_feeling_embedding(pool, feeling.id, &blob_bytes).await;
                     emb
                 }
                 Err(_) => return None,
             },
         };
-        let oklab = self.mood_color(embedder, &embedding, mood);
+        let oklab = self.weights_to_color(&embedding, embedder, mood);
         cache.insert(mood.to_string(), oklab);
         Some(oklab)
     }

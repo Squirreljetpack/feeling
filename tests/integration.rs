@@ -1634,43 +1634,6 @@ async fn test_config_view_sections_deserialize() {
 }
 
 #[tokio::test]
-async fn test_color_axes_config_deserializes() {
-    // New `[[moods.axes]]` array-of-tables format deserializes; defaults
-    // give empty axes (intentional — `MoodConfig::init_with` populates
-    // default_axes() when axes.is_empty()); serde(skip) fields stay unset.
-    let toml_with_pairs = r##"
-        [moods]
-        prefix_string = "feeling "
-        blend_steepness = 2.0
-
-        [[moods.pairs]]
-        mood = "happy"
-        color = "#A5F69C"
-
-        [[moods.pairs]]
-        mood = "sad"
-        color = "#00327F"
-
-        [[moods.pairs]]
-        mood = "drained"
-        color = "#495057"
-        "##;
-    let cfg: Config = toml::from_str(toml_with_pairs).unwrap();
-    assert_eq!(cfg.moods.pairs.len(), 3);
-    assert_eq!(cfg.moods.pairs[0].mood, "happy");
-    assert_eq!(cfg.moods.pairs[1].mood, "sad");
-    assert_eq!(cfg.moods.pairs[2].mood, "drained");
-    assert!(
-        cfg.moods.color_axes.is_none(),
-        "serde(skip) field stays unset on load"
-    );
-
-    let default: Config = toml::from_str("").unwrap();
-    assert_eq!(default.moods.pairs.len(), 0);
-    assert!(default.moods.color_axes.is_none());
-}
-
-#[tokio::test]
 async fn test_priority_capped_at_max_priority_constant() {
     // The MAX_PRIORITY constant is the single source of truth for the
     // priority validation bound; ensure it stays at 999. Helpers (the

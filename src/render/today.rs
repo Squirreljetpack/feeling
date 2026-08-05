@@ -64,11 +64,6 @@ pub(crate) struct EditTrackerModal {
 
 impl TodayApp {
     pub async fn new(pool: &SqlitePool, mut config: crate::config::Config) -> Self {
-        config
-            .moods
-            .init_with(pool, crate::embed::global_embedder())
-            .await
-            .unwrap();
         let mut color_cache = std::collections::HashMap::new();
         let entries = crate::views::fetch_today_entries(
             pool,
@@ -137,11 +132,10 @@ impl TodayApp {
             _ => return,
         };
         let Some(task_id) = entry.task_id else { return };
-        self.selected_task =
-            crate::sql::fetch_task_by_id(&self.pool, task_id, crate::date::now())
-                .await
-                .ok()
-                .flatten();
+        self.selected_task = crate::sql::fetch_task_by_id(&self.pool, task_id, crate::date::now())
+            .await
+            .ok()
+            .flatten();
     }
 
     async fn mark_selected_complete(&mut self) {
