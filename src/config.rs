@@ -121,23 +121,20 @@ fn is_valid_tracker_name(name: &str) -> bool {
 pub struct GridViewConfig {
     /// `true`: the last 7 days, always ending today (7 cells).
     /// `false`: the current calendar week, from `week_start` through today.
-    /// Defaults to `false`.
     #[serde(default)]
     pub week_rolling: bool,
 
     /// `true`: the last 4 weeks, ending today.
     /// `false`: the current calendar month, from its first day through today.
-    /// Defaults to `true`.
     pub month_rolling: bool,
 
     /// `true`: the calendar year, aligned back to the nearest `week_start`
     /// before January 1 so the grid never opens with blank cells.
     /// `false`: the calendar year from January 1 through today.
-    /// Defaults to `true`.
     pub year_rolling: bool,
 
     /// The day each week starts on for the grids, and the alignment day for
-    /// the rolling month and year windows. Defaults to Monday.
+    /// the rolling month and year windows.
     pub week_start: chrono::Weekday,
 }
 
@@ -157,7 +154,7 @@ impl Default for GridViewConfig {
 #[serde(deny_unknown_fields)]
 pub struct DateConfig {
     /// chrono-english dialect for natural-language date parsing: `"uk"`
-    /// (day-first, default) or `"us"` (month-first). Affects ambiguous
+    /// (day-first) or `"us"` (month-first). Affects ambiguous
     /// slash forms like `3/5/2024` only; ISO dates and relative phrases
     /// ("yesterday", "3 days ago") are unaffected.
     #[serde(default)]
@@ -177,8 +174,7 @@ impl Default for DateConfig {
 #[serde(deny_unknown_fields)]
 pub struct TasksViewConfig {
     /// Start the TUI tasks app with scheduled tasks included in the `!`,
-    /// `@`, `@done` and `@due` views (`Ctrl+a` toggles this live). Defaults
-    /// to false.
+    /// `@`, `@done` and `@due` views (`Ctrl+a` toggles this live).
     #[serde(default)]
     pub include_scheduled: bool,
 }
@@ -188,7 +184,7 @@ pub struct TasksViewConfig {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct EditorConfig {
-    /// When `true` (default), the body editor opens with a
+    /// When `true`, the body editor opens with a
     /// `# additional notes below` hint line; type below it and the hint is
     /// stripped when the file is saved. When `false`, the file starts empty
     /// and the first line you type is kept verbatim.
@@ -213,8 +209,8 @@ impl EditorConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TodayViewConfig {
-    /// Include overdue oneshot tasks (due before today) in the today view.
-    /// Defaults to false: only tasks due within the horizon are shown.
+    /// Include overdue oneshot tasks (due before today) in the today view;
+    /// when false, only tasks due within the horizon are shown.
     #[serde(default)]
     pub include_overdue: bool,
     /// Glyph shown next to journal-only entries (a feeling with no mood
@@ -231,35 +227,34 @@ pub struct TodayViewConfig {
 #[serde(deny_unknown_fields)]
 pub struct ColorAxesSettings {
     /// A short phrase prepended to every anchor mood before it is converted
-    /// to a color, so the anchors read as statements about a person
-    /// (default `"person says: "`). Keep it in sync with `base_string`.
+    /// to a color, so the anchors read as statements about a person. Keep it
+    /// in sync with `base_string`.
     pub prefix_string: String,
 
     /// A neutral phrase standing for "no particular mood"; anchor colors are
     /// measured from this baseline, so moods far from it produce more vivid
-    /// colors (default `"this person feels:"`).
+    /// colors.
     pub base_string: String,
 
     /// How decisively the strongest anchor mood wins the final color:
     /// `1.0` mixes the contributing moods evenly, higher values let the
-    /// strongest mood's color dominate (default `2.0`).
+    /// strongest mood's color dominate.
     pub blend_steepness: f32,
 
     /// The maximum number of anchor moods that may contribute to a single
-    /// color, strongest first (default `5`).
+    /// color, strongest first.
     pub top_k: usize,
 
     /// An anchor mood must make up at least this percentage of the color
-    /// mix to be included at all (default `7`).
+    /// mix to be included at all.
     pub min_contribution: Percentage,
 
     /// How much emotional intensity (saliency) moves a color away from
-    /// neutral: `0` disables it entirely, `100` keeps the full effect
-    /// (default `50`).
+    /// neutral: `0` disables it entirely, `100` keeps the full effect.
     pub effective_saliency_gate: Percentage,
 
     /// The lightness of the neutral color used when no anchor mood matches
-    /// (0–100, default `65`).
+    /// (0–100).
     pub baseline_oklab_l: Percentage,
 }
 
@@ -326,15 +321,14 @@ impl MoodConfig {
 #[serde(deny_unknown_fields)]
 pub struct TasksConfig {
     /// Default priority (1–999) for new oneshot and recurring tasks when
-    /// none is given (default 5).
+    /// none is given.
     pub default_priority: i32,
     /// Default priority for scheduled tasks created without an explicit one
-    /// (`! @<time> :name %<duration>`, immediate or interactive) (default 10).
+    /// (`! @<time> :name %<duration>`, immediate or interactive).
     #[serde(default = "TasksConfig::default_scheduled_priority")]
     pub default_scheduled_priority: i32,
     /// Colors for the completion badge (`◯`/`●`) shown in task lists, from
-    /// lowest to highest progress (default dark red, dark yellow, dark
-    /// green).
+    /// lowest to highest progress.
     pub colors: ColorBins,
 }
 
@@ -364,14 +358,13 @@ pub struct TrackerSetting {
     /// How often the tracker is expected to be logged, e.g. `"1 day"` or
     /// `"1 week"`. With an interval, re-logging the same tracker within the
     /// same period replaces the previous entry; without one, every log adds
-    /// a new entry (default: none).
+    /// a new entry.
     #[serde(
         default,
         deserialize_with = "crate::date::deserialize::deserialize_duration"
     )]
     pub interval: Option<i64>,
-    /// What kind of value the tracker stores: `text`, `number`, or `float`
-    /// (default `text`).
+    /// What kind of value the tracker stores: `text`, `number`, or `float`.
     pub kind: TrackerType,
     /// Upper bound for the tracker's values, used to pick the entry's color
     /// in tracker grids (`number`/`float` trackers only).

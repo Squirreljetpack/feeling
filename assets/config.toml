@@ -127,7 +127,6 @@ mood = "hungry"
 color = "#c12222"
 
 
-
 [tasks]
 colors = ["dark_red", "dark_yellow", "dark_green"]
 default_priority = 5                               # 1..=999
