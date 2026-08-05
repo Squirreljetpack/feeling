@@ -10,14 +10,35 @@ use crate::types::{Entry, Task};
 /// `qv`) so a `-tracker` token is never ambiguous with a flag.
 pub const FLAG_CHARACTERS: &str = "qv";
 
+/// Counts of the leading `-q` / `-v` flag characters. `qv[0]` = number of
+/// `q` chars, `qv[1]` = number of `v` chars (combined tokens like `-qv`
+/// count once each). Order is not tracked — the logger and handlers only
+/// care about presence/counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CliOpts {
+    pub qv: [u8; 2],
+}
+
+impl CliOpts {
+    pub fn quiet(&self) -> bool {
+        self.qv[0] > 0
+    }
+    pub fn verbose(&self) -> bool {
+        self.qv[1] > 0
+    }
+    /// `-vv`-gated output (e.g. the WP7 grid period suffix).
+    pub fn verbose_level(&self) -> u8 {
+        self.qv[1]
+    }
+}
+
 /// A parsed command line: the flags given in the initial position (`-q` /
-/// `-v`, in order) plus the command they apply to. For now the flags only
-/// drive log verbosity in `main.rs` (`init_logger([q, v], …)`); `cmd` is
-/// what `handle_command` dispatches on.
+/// `-v`, as counts) plus the command they apply to. The flags drive log
+/// verbosity in `main.rs` and quiet/verbose output in the handlers;
+/// `cmd` is what `handle_command` dispatches on.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cli {
-    /// The initial-position flags, in the order given: `'q'` and/or `'v'`.
-    pub qv: Vec<char>,
+    pub opts: CliOpts,
     pub cmd: Command,
 }
 
@@ -116,7 +137,7 @@ pub enum TaskType {
 }
 
 /// Parse the full command line from `env::args` (skipping argv[0]) into a
-/// [`Cli`]: leading `-q` / `-v` flags are stripped into `qv`, the rest is
+/// [`Cli`]: leading `-q` / `-v` flags are stripped into `opts`, the rest is
 /// parsed as a [`Command`].
 pub fn parse_args() -> anyhow::Result<Cli> {
     let raw: Vec<String> = args().skip(1).collect();
@@ -129,8 +150,8 @@ pub fn parse_cli(args: Vec<String>) -> anyhow::Result<Cli> {
     // token shows up, everything after it is the command's own arguments
     // (so `feeling ok -q` treats `-q` as entry text, not a flag). A flag
     // token is `-` followed by flag characters only (`-q`, `-v`, `-qv`, …);
-    // each character is recorded in `qv`, in order.
-    let mut initial_flags: Vec<char> = Vec::new();
+    // each character increments the matching count in `opts.qv`.
+    let mut opts = CliOpts::default();
     let mut rest: Vec<String> = Vec::new();
 
     let mut in_flags = true;
@@ -143,14 +164,20 @@ pub fn parse_cli(args: Vec<String>) -> anyhow::Result<Cli> {
             // `-word`.
             if arg == "-h" || arg == "--help" {
                 return Ok(Cli {
-                    qv: initial_flags,
+                    opts,
                     cmd: Command::Help,
                 });
             }
             match arg.strip_prefix('-') {
                 Some(s) if !s.is_empty() && s.chars().all(|c| FLAG_CHARACTERS.contains(c)) => {
-                    initial_flags.extend(s.chars());
-                    continue;
+                    for c in s.chars() {
+                        match c {
+                            'q' => opts.qv[0] += 1,
+                            'v' => opts.qv[1] += 1,
+                            _ => unreachable!(), // all() guard above
+                        }
+                    }
+                    continue; // stays in_flags
                 }
                 _ => in_flags = false,
             }
@@ -159,7 +186,7 @@ pub fn parse_cli(args: Vec<String>) -> anyhow::Result<Cli> {
     }
 
     Ok(Cli {
-        qv: initial_flags,
+        opts,
         cmd: parse_from(rest)?,
     })
 }
@@ -1539,7 +1566,7 @@ mod tests {
     fn test_parse_cli_strips_initial_flags() {
         // -q before the command
         let cli = parse_cli(args(&["-q", "ok"])).unwrap();
-        assert_eq!(cli.qv, vec!['q']);
+        assert_eq!(cli.opts.qv, [1, 0]);
         assert_eq!(
             cli.cmd,
             Command::Entry(Entry {
@@ -1552,7 +1579,7 @@ mod tests {
 
         // -v before a task view
         let cli = parse_cli(args(&["-v", "!"])).unwrap();
-        assert_eq!(cli.qv, vec!['v']);
+        assert_eq!(cli.opts.qv, [0, 1]);
         assert!(matches!(
             cli.cmd,
             Command::View {
@@ -1561,29 +1588,34 @@ mod tests {
             }
         ));
 
-        // both flags, in order, before a tracker view
+        // both flags, before a tracker view
         let cli = parse_cli(args(&["-q", "-v", ":week"])).unwrap();
-        assert_eq!(cli.qv, vec!['q', 'v']);
+        assert_eq!(cli.opts.qv, [1, 1]);
         assert!(matches!(cli.cmd, Command::Tracker { .. }));
 
-        // combined token: -qv sets both, in order
+        // combined token: -qv sets both
         let cli = parse_cli(args(&["-qv", "ok"])).unwrap();
-        assert_eq!(cli.qv, vec!['q', 'v']);
+        assert_eq!(cli.opts.qv, [1, 1]);
         assert!(matches!(cli.cmd, Command::Entry(_)));
 
-        // order is preserved across separate and combined tokens
+        // order is not tracked: -vq is the same counts as -qv
         let cli = parse_cli(args(&["-vq", "-", "ok"])).unwrap();
-        assert_eq!(cli.qv, vec!['v', 'q']);
+        assert_eq!(cli.opts.qv, [1, 1]);
         assert!(matches!(cli.cmd, Command::Update { .. }));
+
+        // repeated flags stack up as counts (-vvq → 1 quiet, 2 verbose)
+        let cli = parse_cli(args(&["-vvq", "ok"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 2]);
+        assert!(matches!(cli.cmd, Command::Entry(_)));
 
         // flag alone → Today (same as no args)
         let cli = parse_cli(args(&["-q"])).unwrap();
-        assert_eq!(cli.qv, vec!['q']);
+        assert_eq!(cli.opts.qv, [1, 0]);
         assert_eq!(cli.cmd, Command::Today);
 
         // no flags
         let cli = parse_cli(args(&["ok"])).unwrap();
-        assert!(cli.qv.is_empty());
+        assert_eq!(cli.opts.qv, [0, 0]);
         assert!(matches!(cli.cmd, Command::Entry(_)));
     }
 
@@ -1595,12 +1627,12 @@ mod tests {
 
         // A combined -qv token is a flag now, not entry text.
         let cli = parse_cli(args(&["-qv", "ok"])).unwrap();
-        assert_eq!(cli.qv, vec!['q', 'v']);
+        assert_eq!(cli.opts.qv, [1, 1]);
         assert!(matches!(cli.cmd, Command::Entry(_)));
 
         // A bare dash is the update/today command, never a flag.
         let cli = parse_cli(args(&["-", "-q"])).unwrap();
-        assert!(cli.qv.is_empty());
+        assert_eq!(cli.opts.qv, [0, 0]);
         assert!(matches!(cli.cmd, Command::Update { .. }));
 
         // Tokens with non-flag characters stop the flag run (-q5 is entry
@@ -1641,7 +1673,7 @@ mod tests {
     fn test_parse_help_is_cli_level_only() {
         // `-h` / `--help` are handled in parse_cli (initial position only).
         let cli = parse_cli(args(&["-h"])).unwrap();
-        assert!(cli.qv.is_empty());
+        assert_eq!(cli.opts.qv, [0, 0]);
         assert_eq!(cli.cmd, Command::Help);
 
         let cli = parse_cli(args(&["--help"])).unwrap();
@@ -1649,7 +1681,7 @@ mod tests {
 
         // Help wins over other initial-position flags.
         let cli = parse_cli(args(&["-q", "-h"])).unwrap();
-        assert_eq!(cli.qv, vec!['q']);
+        assert_eq!(cli.opts.qv, [1, 0]);
         assert_eq!(cli.cmd, Command::Help);
 
         // After a non-flag token, -h is entry text (a tracker needing a

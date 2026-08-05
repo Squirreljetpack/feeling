@@ -4,7 +4,7 @@ use crossterm::style::Stylize;
 use sqlx::SqlitePool;
 use std::io::{BufRead, Write};
 
-use crate::clap::{Command, TaskType, UpdateTarget};
+use crate::clap::{CliOpts, Command, TaskType, UpdateTarget};
 use crate::config::{Config, TrackerType, DEFAULT_CONFIG};
 use crate::date;
 use crate::editor::{open_editor_at, open_editor_for_body};
@@ -17,11 +17,12 @@ pub async fn handle_command<W: Write>(
     cmd: Command,
     pool: &SqlitePool,
     config: &Config,
+    opts: &CliOpts,
     out: &mut W,
     tui: bool,
 ) -> Result<()> {
     match cmd {
-        Command::Entry(entry) => handle_entry(pool, config, _dbg!(entry)).await,
+        Command::Entry(entry) => handle_entry(pool, config, opts, _dbg!(entry)).await,
 
         Command::View {
             mode,
@@ -62,12 +63,12 @@ pub async fn handle_command<W: Write>(
                 .moods
                 .init_with(pool, crate::embed::global_embedder())
                 .await?;
-            crate::views::handle_tracker(pool, &config, period, items, out).await
+            crate::views::handle_tracker(pool, &config, opts, period, items, out).await
         }
 
-        Command::Task(task) => handle_task(pool, config, _dbg!(task)).await,
+        Command::Task(task) => handle_task(pool, config, opts, _dbg!(task)).await,
 
-        Command::Update { target, count } => handle_update(pool, target, count).await,
+        Command::Update { target, count } => handle_update(pool, opts, target, count).await,
 
         Command::Embed => {
             let stdin = std::io::stdin();
@@ -92,7 +93,7 @@ pub async fn handle_command<W: Write>(
                     .run()
                     .await
             } else {
-                crate::views::handle_today(pool, &config, out).await
+                crate::views::handle_today(pool, &config, opts, out).await
             }
         }
 
@@ -117,7 +118,7 @@ pub async fn handle_command<W: Write>(
                 .moods
                 .init_with(pool, crate::embed::global_embedder())
                 .await?;
-            handle_color(&mood, &config, out)
+            handle_color(&mood, &config, opts, out)
         }
 
         Command::Clear { date } => handle_clear(pool, config, date, tui).await,
@@ -246,7 +247,7 @@ async fn handle_config() -> Result<()> {
     open_editor_at(path)
 }
 
-async fn handle_entry(pool: &SqlitePool, config: &Config, entry: Entry) -> Result<()> {
+async fn handle_entry(pool: &SqlitePool, config: &Config, _opts: &CliOpts, entry: Entry) -> Result<()> {
     let feeling = entry.feeling;
     let customs = entry.customs;
     let body = entry.body;
@@ -380,7 +381,7 @@ fn interval_slot(time_epoch: i64, interval_secs: i64) -> (i64, i64) {
     (slot_start, slot_start + interval_secs)
 }
 
-async fn handle_task(pool: &SqlitePool, config: &Config, task: Task) -> Result<()> {
+async fn handle_task(pool: &SqlitePool, config: &Config, _opts: &CliOpts, task: Task) -> Result<()> {
     let task_type = task.task_type;
     let name = task.name;
     let body = task.body;
@@ -729,7 +730,7 @@ async fn prompt_unique_name(pool: &SqlitePool, given: Option<&str>) -> Result<St
     }
 }
 
-async fn handle_update(pool: &SqlitePool, target: UpdateTarget, count: Option<i64>) -> Result<()> {
+async fn handle_update(pool: &SqlitePool, _opts: &CliOpts, target: UpdateTarget, count: Option<i64>) -> Result<()> {
     match target {
         UpdateTarget::OneShot(short_id) => {
             // `feeling - <id> [count]`: the id is the user-facing short id
@@ -831,7 +832,7 @@ pub fn handle_embed<R: BufRead, W: Write>(reader: &mut R, out: &mut W) -> Result
 /// configured `moods.prefix_string`, run it through the full three-step mood-color
 /// pipeline, and print intermediate values at each stage plus the final
 /// Oklab / sRGB colour (with a terminal swatch of the final colour).
-pub fn handle_color<W: Write>(mood: &str, config: &Config, out: &mut W) -> Result<()> {
+pub fn handle_color<W: Write>(mood: &str, config: &Config, _opts: &CliOpts, out: &mut W) -> Result<()> {
     let embedder = crate::embed::global_embedder();
     let mood = mood.trim();
     let axes = config.moods.color_axes.as_ref().unwrap();

@@ -5,7 +5,7 @@ use ratatui::style::Color as RatColor;
 use sqlx::SqlitePool;
 use std::io::Write;
 
-use crate::clap::{TrackerItem, TrackerPeriod, ViewMode};
+use crate::clap::{CliOpts, TrackerItem, TrackerPeriod, ViewMode};
 use crate::config::{Config, TrackerType};
 use crate::date;
 
@@ -102,6 +102,7 @@ fn effective_range(
 pub async fn handle_tracker<W: Write>(
     pool: &SqlitePool,
     config: &Config,
+    _opts: &CliOpts,
     period: TrackerPeriod,
     items: Vec<TrackerItem>,
     out: &mut W,
@@ -940,9 +941,14 @@ pub async fn fetch_today_entries(
 /// Handle today view (non-terminal output): displays today's feelings, custom
 /// entries, and task activity as tab-separated rows. TUI dispatch is handled by
 /// [`crate::handlers::handle_command`].
-pub async fn handle_today<W: Write>(pool: &SqlitePool, config: &Config, out: &mut W) -> Result<()> {
+pub async fn handle_today<W: Write>(
+    pool: &SqlitePool,
+    config: &Config,
+    _opts: &CliOpts,
+    out: &mut W,
+) -> Result<()> {
     let mut color_cache = std::collections::HashMap::new();
-    let entries = fetch_today_entries(pool, &config, TodayHorizon::Today, &mut color_cache).await?;
+    let entries = fetch_today_entries(pool, config, TodayHorizon::Today, &mut color_cache).await?;
 
     if entries.is_empty() {
         writeln!(out, "Nothing logged today.")?;

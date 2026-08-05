@@ -63,7 +63,7 @@ pub(crate) struct EditTrackerModal {
 }
 
 impl TodayApp {
-    pub async fn new(pool: &SqlitePool, mut config: crate::config::Config) -> Self {
+    pub async fn new(pool: &SqlitePool, config: crate::config::Config) -> Self {
         let mut color_cache = std::collections::HashMap::new();
         let entries = crate::views::fetch_today_entries(
             pool,
