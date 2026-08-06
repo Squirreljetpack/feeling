@@ -44,6 +44,7 @@ color = "#FFC107"
 [tasks]
 colors = ["dark_red", "dark_yellow", "dark_green"]
 default_priority = 5                               # 1..=999
+default_recurring_priority = 5                    # 1..=999 (recurring tasks)
 default_scheduled_priority = 10                    # 1..=999 (scheduled tasks)
 
 [grid]

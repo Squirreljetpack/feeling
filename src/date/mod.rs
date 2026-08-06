@@ -16,6 +16,8 @@ pub mod parse_duration;
 /// Type alias for Unix epoch seconds.
 pub type Epoch = i64;
 
+// cba::define_transparent_wrapper!(Epoch: i64);
+
 // Re-export sub-module functions at the crate::date level.
 pub use format::{
     format_date, format_date_time, format_datetime_short, format_duration, format_time,

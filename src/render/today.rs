@@ -90,7 +90,7 @@ pub(crate) struct EditTrackerModal {
     pub(crate) tracker_type: String,
     /// Payload kind: Number (i64) or Float (f64). Text trackers don't use
     /// this modal — they open the external editor.
-    pub(crate) kind: crate::config::TrackerType,
+    pub(crate) kind: crate::config::TrackerKind,
     pub(crate) input: String,
     pub(crate) error: Option<String>,
 }
@@ -470,9 +470,9 @@ impl TodayApp {
         let kind = m.kind;
         let input = m.input.trim().to_string();
         let valid = match kind {
-            crate::config::TrackerType::Number => input.parse::<i64>().is_ok(),
-            crate::config::TrackerType::Float => input.parse::<f64>().is_ok(),
-            crate::config::TrackerType::Text => true,
+            crate::config::TrackerKind::Number => input.parse::<i64>().is_ok(),
+            crate::config::TrackerKind::Float => input.parse::<f64>().is_ok(),
+            crate::config::TrackerKind::Text => true,
         };
         if !valid {
             let m = self.modal.as_mut().expect("modal");
@@ -482,9 +482,9 @@ impl TodayApp {
             m.error = Some(format!(
                 "must be a valid {}",
                 match kind {
-                    crate::config::TrackerType::Number => "number",
-                    crate::config::TrackerType::Float => "float",
-                    crate::config::TrackerType::Text => "text",
+                    crate::config::TrackerKind::Number => "number",
+                    crate::config::TrackerKind::Float => "float",
+                    crate::config::TrackerKind::Text => "text",
                 }
             ));
             return;
@@ -562,9 +562,9 @@ impl TodayApp {
                     .tracker
                     .get(tracker_type)
                     .map(|t| t.kind)
-                    .unwrap_or(crate::config::TrackerType::Float);
+                    .unwrap_or(crate::config::TrackerKind::Float);
                 match kind {
-                    crate::config::TrackerType::Text => {
+                    crate::config::TrackerKind::Text => {
                         if let Some(new_value) =
                             edit_with_editor(tui, controller, rx, current).await
                         {
@@ -572,7 +572,7 @@ impl TodayApp {
                             self.refresh().await;
                         }
                     }
-                    crate::config::TrackerType::Number | crate::config::TrackerType::Float => {
+                    crate::config::TrackerKind::Number | crate::config::TrackerKind::Float => {
                         self.modal = Some(Modal::EditTracker(EditTrackerModal {
                             custom_id,
                             tracker_type: tracker_type.to_string(),
@@ -603,7 +603,7 @@ impl TodayApp {
         let _ = crate::sql::update_feeling_body(&self.pool, id, body).await;
     }
 
-    async fn update_custom_score(&self, id: i64, kind: crate::config::TrackerType, value: &str) {
+    async fn update_custom_score(&self, id: i64, kind: crate::config::TrackerKind, value: &str) {
         let _ = crate::sql::update_custom_score(&self.pool, id, kind, value).await;
     }
 }
@@ -869,9 +869,9 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
         }
         Modal::EditTracker(modal) => {
             let kind_label = match modal.kind {
-                crate::config::TrackerType::Number => "number",
-                crate::config::TrackerType::Float => "float",
-                crate::config::TrackerType::Text => "text",
+                crate::config::TrackerKind::Number => "number",
+                crate::config::TrackerKind::Float => "float",
+                crate::config::TrackerKind::Text => "text",
             };
             let mut lines = vec![
                 Line::from(Span::styled(

@@ -142,9 +142,9 @@ impl TasksApp {
             // Pending view: date key = the unified task timestamp
             // (`views::task_entry_time`): done rows sort by last completion
             // entry, pending rows by their kind-specific time (scheduled →
-            // start_time, recurring → current-interval availability-window
-            // end, oneshot → due time). Nearest date first; priority as
-            // tiebreak (descending).
+            // start_time, recurring → current-interval window end while
+            // still open, else the next interval's start, oneshot → due
+            // time). Nearest date first; priority as tiebreak (descending).
             let now = crate::date::now();
             let date_key = |t: &TaskRow| crate::views::task_entry_time(t, now);
             if self.sort_by_due {

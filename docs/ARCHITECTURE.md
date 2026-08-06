@@ -364,7 +364,8 @@ re-sorts in Rust with the shared view keys — `views::task_done_time` for
 `start_time + duration` for auto-completed scheduled, `start_time` for
 zero-entry recurring history), `views::task_entry_time` for pending lists
 and the today view (done rows by last completion entry, scheduled →
-`start_time`, recurring → current-interval availability-window end, oneshot
+`start_time`, recurring → current-interval window end while still open,
+else the start of the *next* interval, oneshot
 → due time), and `fetch_today_entries` always ends in `today_sort`. The SQL
 order only survives where the Rust keys tie (the sorts are stable).
 

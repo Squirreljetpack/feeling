@@ -35,7 +35,7 @@ impl Default for ColorBins {
 /// integer, `Float` a decimal. min/max apply to `Number` and `Float`; they are
 /// ignored for `Text`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-pub enum TrackerType {
+pub enum TrackerKind {
     #[default]
     #[serde(rename = "text")]
     Text,

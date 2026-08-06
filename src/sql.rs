@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use sqlx::{FromRow, Row, SqlitePool};
 
 use crate::clap::{ShowVariant, ViewMode};
-use crate::config::TrackerType;
+use crate::config::TrackerKind;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -1455,14 +1455,14 @@ pub async fn update_feeling_body(pool: &SqlitePool, id: i64, body: &str) -> Resu
 pub async fn update_custom_score(
     pool: &SqlitePool,
     id: i64,
-    kind: TrackerType,
+    kind: TrackerKind,
     value: &str,
 ) -> Result<u64> {
     let mut q = sqlx::query("UPDATE custom SET score = ? WHERE id = ?");
     q = match kind {
-        TrackerType::Text => q.bind(value),
-        TrackerType::Number => q.bind(value.parse::<i64>().unwrap_or(0)),
-        TrackerType::Float => q.bind(value.parse::<f64>().unwrap_or(0.0)),
+        TrackerKind::Text => q.bind(value),
+        TrackerKind::Number => q.bind(value.parse::<i64>().unwrap_or(0)),
+        TrackerKind::Float => q.bind(value.parse::<f64>().unwrap_or(0.0)),
     };
     let res = q
         .bind(id)

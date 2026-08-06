@@ -7,7 +7,7 @@ use std::io::Write;
 
 use crate::badge::completion_badge;
 use crate::clap::{CliOpts, ShowVariant, TrackerItem, TrackerPeriod, ViewMode};
-use crate::config::{Config, TrackerType};
+use crate::config::{Config, TrackerKind};
 use crate::date;
 use crate::sql::TaskRow;
 
@@ -471,7 +471,7 @@ async fn display_custom_tracker<W: Write>(
 
     // Text trackers list their entries as indented lines instead of dots;
     // at -v each line gains the entry's own timestamp in Darkgray.
-    if tracker.kind == TrackerType::Text {
+    if tracker.kind == TrackerKind::Text {
         for entry in &entries {
             write!(out, "{}", "> ".with(CtColor::DarkGrey))?;
             write!(out, "{}", entry.score)?;
@@ -491,6 +491,7 @@ async fn display_custom_tracker<W: Write>(
 
     // If the tracker defines an interval, render one dot per interval slot;
     // otherwise one dot per entry (newer entry wins the slot).
+    let colors = tracker.colors.as_ref().unwrap_or(&config.tasks.colors);
     if let Some(interval) = tracker.interval {
         let interval_secs = interval;
         let num_slots = ((end_epoch - start_epoch) / interval_secs + 1) as usize;
@@ -539,13 +540,13 @@ async fn display_custom_tracker<W: Write>(
                             // Inverted range (min > max): lower score → success
                             ((min - slot_sums[i]) / (min - max)).clamp(0.0, 1.0)
                         };
-                        let idx = ((t * (config.tasks.colors.len() as f64 - 1.0)).round() as usize)
-                            .min(config.tasks.colors.len() - 1);
-                        config.tasks.colors[idx]
+                        let idx = ((t * (colors.len() as f64 - 1.0)).round() as usize)
+                            .min(colors.len() - 1);
+                        colors[idx]
                     }
                     _ => {
                         // Both missing or min==max: use last color
-                        *config.tasks.colors.last().unwrap()
+                        *colors.last().unwrap()
                     }
                 };
                 write!(out, "{}", "●".with(color))?;
@@ -583,13 +584,13 @@ async fn display_custom_tracker<W: Write>(
                         // Inverted range (min > max): lower score → success
                         ((min - score) / (min - max)).clamp(0.0, 1.0)
                     };
-                    let idx = ((t * (config.tasks.colors.len() as f64 - 1.0)).round() as usize)
-                        .min(config.tasks.colors.len() - 1);
-                    config.tasks.colors[idx]
+                    let idx = ((t * (colors.len() as f64 - 1.0)).round() as usize)
+                        .min(colors.len() - 1);
+                    colors[idx]
                 }
                 _ => {
                     // Both missing or min==max: use last color
-                    *config.tasks.colors.last().unwrap()
+                    *colors.last().unwrap()
                 }
             };
             write!(out, "{}", "●".with(color))?;
@@ -599,14 +600,15 @@ async fn display_custom_tracker<W: Write>(
     Ok(())
 }
 
-/// Map a custom-tracker score to a color by binning it across task_color.colors.
-/// Handles inverted ranges (max < min → smaller values get the success color).
+/// Map a custom-tracker score to a color by binning it across the tracker's
+/// color override (if set) or the global task colors. Handles inverted ranges
+/// (max < min → smaller values get the success color).
 fn bin_score_color(
     config: &Config,
     tracker: &crate::config::TrackerSetting,
     score: f64,
 ) -> CtColor {
-    let colors = &config.tasks.colors;
+    let colors = tracker.colors.as_ref().unwrap_or(&config.tasks.colors);
 
     let (min, max) = (tracker.min, tracker.max);
 
@@ -734,9 +736,10 @@ fn today_time_label(time: i64, day_start_epoch: i64) -> String {
 /// shown in the time cell. Done tasks show their completion time (the last
 /// completion entry; an entry-less auto-completed scheduled task falls back
 /// to its window end — `start + duration`). Not-done: scheduled →
-/// `start_time`; recurring → the availability-window end of the current
-/// interval (the implicit next-interval start when there's no explicit
-/// duration — the untimed group); oneshot → the due time (`end_time`, else
+/// `start_time`; recurring → the current interval's availability-window end
+/// while it is still open, else the next interval's start (no explicit
+/// duration = the untimed group; a closed window defers to the next
+/// interval); oneshot → the due time (`end_time`, else
 /// untimed). Untimed rows return `i64::MAX` and sort after all timed
 /// entries (`today_sort` groups by empty time cell). Shared with the tasks
 /// app's pending-view sort (`render/tasks.rs`); the done view sorts by
@@ -806,21 +809,22 @@ fn task_time_label(task: &TaskRow, time: i64, day_start_epoch: i64) -> String {
     today_time_label(time, day_start_epoch)
 }
 
-/// End of the availability window in the current interval: `interval_start
-/// + available_duration_secs`; a task without an explicit duration is
-/// available for the whole interval, so its implicit window end is the
-/// next interval start.
+/// Entry time for a not-done recurring task: while the current interval's
+/// availability window is still open (`now < interval_start + dur`), the
+/// window end — otherwise the start of the *next* interval. The
+/// "otherwise" branch covers no explicit duration (the untimed group), a
+/// window that already closed, and a duration that would swallow the
+/// interval (`dur >= interval` — not enforced at ingestion).
 fn recurring_window_end(task: &TaskRow, now: i64) -> i64 {
-    match (
-        task.start_time,
-        task.interval_secs,
-        task.available_duration_secs,
-    ) {
-        (Some(st), Some(interval), Some(dur)) if dur < interval => {
-            crate::task::current_interval_start(st, interval, now) + dur
-        }
-        (Some(st), Some(interval), _) => {
-            crate::task::current_interval_start(st, interval, now) + interval
+    match (task.start_time, task.interval_secs) {
+        (Some(st), Some(interval)) => {
+            let interval_start = crate::task::current_interval_start(st, interval, now);
+            match task.available_duration_secs {
+                Some(dur) if dur < interval && now < interval_start + dur => {
+                    interval_start + dur
+                }
+                _ => interval_start + interval,
+            }
         }
         // Defensive: interval-less recurring row (the fetch guarantees
         // interval_secs IS NOT NULL) — fall back to the anchor.
@@ -933,12 +937,12 @@ pub async fn fetch_today_entries(
             })?;
             let (label, badge, score) = match tracker.kind {
                 // Text payloads have no score; they use the shared text badge.
-                TrackerType::Text => (
+                TrackerKind::Text => (
                     format!("{}: {}", tracker_type, row.score),
                     Some(TEXT_ENTRY_BADGE),
                     None,
                 ),
-                TrackerType::Number | TrackerType::Float => {
+                TrackerKind::Number | TrackerKind::Float => {
                     let score = score_f64(&row.score);
                     (
                         format!("{}: {}", tracker_type, score),
@@ -1051,7 +1055,8 @@ pub async fn fetch_today_entries(
             continue;
         }
         // Time: done → completion time (current-interval scoped); else the
-        // availability-window end rule.
+        // availability-window rule: window end while still open, otherwise
+        // the next interval's start.
         let time = task_entry_time(task, now_ts);
         let time_label = task_time_label(task, time, day_start_epoch);
         let (badge, color) = crate::badge::task_badge(task, config, false);
@@ -1273,8 +1278,9 @@ mod tests {
             assert_eq!(label, expect_label, "label for {}", task.name);
         };
 
-        // Recurring with an availability window: ends 09:00 in the current
-        // interval (16th), same day as the anchor — no weekday prefix.
+        // Recurring with an availability window (08:00-09:00), window
+        // already closed at 14:00: the next interval's start (17th 08:00),
+        // with a weekday prefix (outside the anchored day).
         check(
             &task_row(
                 Some(anchor),
@@ -1284,8 +1290,17 @@ mod tests {
                 None,
                 None,
             ),
+            at("2024-03-17 08:00"),
+            "Su 08:00",
+        );
+        // Same recurring window, still open (now 08:30, before the 09:00
+        // end): the window end of the current interval.
+        let open_now = at("2024-03-16 08:30");
+        let open = task_row(Some(anchor), Some(hour_secs), Some(day_secs), None, None, None);
+        assert_eq!(
+            task_entry_time(&open, open_now),
             at("2024-03-16 09:00"),
-            "09:00",
+            "window still open → window end"
         );
         // Recurring without one: implicit end = next interval start, empty
         // time cell (the untimed group).
@@ -1293,6 +1308,14 @@ mod tests {
             &task_row(Some(anchor), None, Some(day_secs), None, None, None),
             at("2024-03-17 08:00"),
             "",
+        );
+        // Recurring whose duration would swallow the whole interval
+        // (dur == interval — not enforced at ingestion): deferred to the
+        // next interval's start, like the untimed group.
+        check(
+            &task_row(Some(anchor), Some(day_secs), Some(day_secs), None, None, None),
+            at("2024-03-17 08:00"),
+            "Su 08:00",
         );
         // Scheduled, not done (window still open): the deadline.
         check(
@@ -1368,8 +1391,9 @@ mod tests {
         );
 
         // `@done:b` partial history: recurring with target 2, one entry ever
-        // — not done, so the pending key is the window end; the done-view
-        // key is the last completion entry.
+        // — not done, so the pending key is the next interval's start (the
+        // window closed at 09:00, before now); the done-view key is the
+        // last completion entry.
         let partial = TaskRow {
             name: "partial history".to_string(),
             target_count: 2,
@@ -1384,8 +1408,8 @@ mod tests {
         };
         assert_eq!(
             task_entry_time(&partial, now),
-            at("2024-03-16 09:00"),
-            "pending view: window end (not done)"
+            at("2024-03-17 08:00"),
+            "pending view: next interval start (window passed)"
         );
         assert_eq!(
             task_done_time(&partial),

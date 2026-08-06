@@ -88,6 +88,14 @@ Note: the two spellings use different defaults — `@due` starts at
 | `A` | Same but completed tasks filtered out; done rows dropped from regular task lists |
 | `B` | Tasks only — no trackers, no mood sections; otherwise the same as `All` (completed tasks and completion-today rows included) |
 
+Time cell: done rows show the completion time (an entry-less auto-completed
+scheduled task falls back to `start + duration`); not-done scheduled rows
+show `start_time`; not-done recurring rows show the current interval's
+availability-window end while the window is still open
+(`now < interval_start + dur`), otherwise the start of the *next* interval
+(a closed window defers to the next opportunity — a no-duration recurring
+row is untimed and shows no cell).
+
 ## Who sets the variant
 
 - **CLI**: `@` / `@done` start at `All`, with the `:o` / `:O` suffixes;

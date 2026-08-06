@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 use std::io::{BufRead, Write};
 
 use crate::clap::{CliOpts, Command, TaskType, UpdateTarget};
-use crate::config::{Config, TrackerType, DEFAULT_CONFIG};
+use crate::config::{Config, TrackerKind, DEFAULT_CONFIG};
 use crate::date::{self, format_duration};
 use crate::editor::{open_editor_at, open_editor_for_body};
 use crate::paths::default_config_path;
@@ -286,7 +286,7 @@ async fn handle_entry(
         let replace_slot = config
             .tracker
             .get(tracker_type)
-            .filter(|tracker| matches!(tracker.kind, TrackerType::Text | TrackerType::Float))
+            .filter(|tracker| matches!(tracker.kind, TrackerKind::Text | TrackerKind::Float))
             .and_then(|tracker| tracker.interval)
             .map(|interval_secs| interval_slot(time_epoch, interval_secs));
         custom_objects.push(CustomObject {
@@ -345,8 +345,8 @@ fn parse_custom_value(config: &Config, tracker_type: &str, raw: &str) -> Result<
     })?;
 
     match tracker.kind {
-        TrackerType::Text => Ok(CustomValue::Text(raw.to_string())),
-        TrackerType::Number => {
+        TrackerKind::Text => Ok(CustomValue::Text(raw.to_string())),
+        TrackerKind::Number => {
             let n: i64 = raw.parse().map_err(|_| {
                 anyhow::anyhow!(
                     "Cannot parse '{}' as an integer for tracker '{}'",
@@ -356,7 +356,7 @@ fn parse_custom_value(config: &Config, tracker_type: &str, raw: &str) -> Result<
             })?;
             Ok(CustomValue::Number(n))
         }
-        TrackerType::Float => {
+        TrackerKind::Float => {
             let f: f64 = raw.parse().map_err(|_| {
                 anyhow::anyhow!(
                     "Cannot parse '{}' as a number for tracker '{}'",
@@ -596,7 +596,7 @@ async fn handle_recurring_task_creation(
     let name = prompt_unique_name(pool, prefill.as_deref()).await?;
 
     // 2. Priority (1..=999 per validation; blank falls back to default).
-    let priority = crate::prompts::prompt_priority(config.tasks.default_priority)?;
+    let priority = crate::prompts::prompt_priority(config.tasks.default_recurring_priority)?;
 
     // 3. Start time (blank = the current moment, `date::now()`). This is the
     // recurrence anchor: interval boundaries are computed from it

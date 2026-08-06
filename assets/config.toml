@@ -128,21 +128,23 @@ color = "#c12222"
 
 
 [tasks]
-colors = ["dark_red", "dark_yellow", "dark_green"]
-default_priority = 5                               # 1..=999
-default_scheduled_priority = 10                    # 1..=999 (scheduled tasks)
+# colors = ["dark_red", "dark_yellow", "dark_green"]
+# default_priority = 5             # 1..=999
+# default_recurring_priority = 10
+# default_scheduled_priority = 15
 
 [grid]
-week_rolling = false
-month_rolling = true
-year_rolling = true
-week_start = "Monday"
+# week_rolling = false
+# month_rolling = true
+# year_rolling = true
+# week_start = "Monday"
 
 [today_view]
-include_overdue = false
+# include_overdue = false
+
 # Merge a task's adjacent completion entries into a single done row
-# in the today view (accepted for future use; no behavior yet).
-coalesce_completions = false
+# in the today view.
+coalesce_completions = true
 
 [tasks_view]
 # Keep a just-completed task visible in the pending view (@) for this many
@@ -155,16 +157,16 @@ persist_pending_seconds = 300
 # relative phrases ("yesterday", "3 days ago") are unaffected.
 dialect = "uk"
 
-[tracker]
-# example:
+[editor]
+# Display a hint at the top of the editor when writing entry bodies.
+hint = true
+
+# --- TRACKERS ---
+
 # [tracker.<name>]
 # interval = "1 day"
 # kind = "float"      # text | number | float
 # min = 0
 # max = 10
 
-[editor]
-# Write the "# additional notes below" hint line as the first line of the
-# body editor (feeling .. / feeling ! name ..). When disabled the temp file
-# starts empty and your first line is kept verbatim.
-hint = true
+

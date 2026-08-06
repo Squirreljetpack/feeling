@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use feeling::config::{Config, TrackerType};
+use feeling::config::{Config, TrackerKind};
 use mimalloc::MiMalloc;
 
 #[global_allocator]
@@ -606,13 +606,13 @@ fn custom_value(config: &Config, name: &str, raw: &str) -> Result<CustomValue> {
         .get(name)
         .with_context(|| format!("Unknown custom tracker type '{name}' not found in config"))?;
     Ok(match tracker.kind {
-        TrackerType::Text => CustomValue::Text(raw.to_string()),
-        TrackerType::Number => {
+        TrackerKind::Text => CustomValue::Text(raw.to_string()),
+        TrackerKind::Number => {
             CustomValue::Number(raw.parse().with_context(|| {
                 format!("Cannot parse '{raw}' as an integer for tracker '{name}'")
             })?)
         }
-        TrackerType::Float => {
+        TrackerKind::Float => {
             CustomValue::Float(raw.parse().with_context(|| {
                 format!("Cannot parse '{raw}' as a number for tracker '{name}'")
             })?)
@@ -631,7 +631,7 @@ fn replace_slot(config: &Config, name: &str, time: i64) -> Option<(i64, i64)> {
     config
         .tracker
         .get(name)
-        .filter(|t| matches!(t.kind, TrackerType::Text | TrackerType::Float))
+        .filter(|t| matches!(t.kind, TrackerKind::Text | TrackerKind::Float))
         .and_then(|t| t.interval)
         .map(|interval_secs| {
             let slot_start = (time / interval_secs) * interval_secs;

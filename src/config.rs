@@ -82,6 +82,21 @@ impl Config {
                 true
             }
         });
+        // Validate tracker-level color overrides: a palette with 2 or fewer
+        // entries can't produce meaningful binning, so clear it and warn.
+        for (name, setting) in self.tracker.iter_mut() {
+            if let Some(ref colors) = setting.colors {
+                if colors.len() <= 2 {
+                    wbog!(
+                        "config";
+                        "Tracker '{}' has colors with {} entries (<= 2), clearing the override",
+                        name,
+                        colors.len()
+                    );
+                    setting.colors = None;
+                }
+            }
+        }
         if self.tasks.colors.len() < 3 {
             wbog!(
                 "Less than 3 colors defined for config.tasks.colors, overriding with the default."
@@ -171,52 +186,36 @@ impl Default for DateConfig {
 
 /// `[tasks_view]` section — options for the task-list view (TUI tasks app).
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct TasksViewConfig {
     /// Keep a task visible in the pending view within this many seconds of
     /// its last completion entry, so a just-completed task doesn't vanish
-    /// mid-session. Applies to every pending variant, kind-scoped: `All` =
-    /// any task, `A` = oneshots, `B` = sched/recur tasks (D9).
-    #[serde(default = "TasksViewConfig::default_persist_pending_seconds")]
+    /// from the tui.
     pub persist_pending_seconds: i64,
 }
 
 impl Default for TasksViewConfig {
     fn default() -> Self {
         Self {
-            persist_pending_seconds: Self::default_persist_pending_seconds(),
+            persist_pending_seconds: 5 * 60,
         }
-    }
-}
-
-impl TasksViewConfig {
-    fn default_persist_pending_seconds() -> i64 {
-        5 * 60
     }
 }
 
 /// `[editor]` section — options for the external body editor (`..`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct EditorConfig {
     /// When `true`, the body editor opens with a
     /// `# additional notes below` hint line; type below it and the hint is
     /// stripped when the file is saved. When `false`, the file starts empty
     /// and the first line you type is kept verbatim.
-    #[serde(default = "EditorConfig::default_hint")]
     pub hint: bool,
 }
 
 impl Default for EditorConfig {
     fn default() -> Self {
         Self { hint: true }
-    }
-}
-
-impl EditorConfig {
-    fn default_hint() -> bool {
-        true
     }
 }
 
@@ -338,32 +337,25 @@ impl MoodConfig {
 /// `[tasks]` section — defaults for new tasks and the completion-badge
 /// colors.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct TasksConfig {
-    /// Default priority (1–999) for new oneshot and recurring tasks when
-    /// none is given.
+    /// Default priority (1–999) for new oneshot tasks.
     pub default_priority: i32,
-    /// Default priority for scheduled tasks created without an explicit one
-    /// (`! @<time> :name %<duration>`, immediate or interactive).
-    #[serde(default = "TasksConfig::default_scheduled_priority")]
+    /// Default priority for new recurring tasks.
+    pub default_recurring_priority: i32,
+    /// Default priority for new scheduled tasks.
     pub default_scheduled_priority: i32,
     /// Colors for the completion badge (`◯`/`●`) shown in task lists, from
     /// lowest to highest progress.
     pub colors: ColorBins,
 }
 
-impl TasksConfig {
-    fn default_scheduled_priority() -> i32 {
-        10
-    }
-}
-
 impl Default for TasksConfig {
     fn default() -> Self {
         Self {
-            default_priority: 5,
-            default_scheduled_priority: TasksConfig::default_scheduled_priority(),
+            default_priority: 10,
+            default_recurring_priority: 5,
+            default_scheduled_priority: 15,
             colors: Default::default(),
         }
     }
@@ -373,8 +365,7 @@ impl Default for TasksConfig {
 /// tracker's name, used as `-<name> <value>` when logging an entry (e.g.
 /// `-sleep 8` for a tracker named `sleep`).
 #[derive(Debug, Clone, Deserialize, Default, Serialize)]
-#[serde(default)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct TrackerSetting {
     /// How often the tracker is expected to be logged, e.g. `"1 day"` or
     /// `"1 week"`. With an interval, re-logging the same tracker within the
@@ -386,13 +377,55 @@ pub struct TrackerSetting {
     )]
     pub interval: Option<i64>,
     /// What kind of value the tracker stores: `text`, `number`, or `float`.
-    pub kind: TrackerType,
+    pub kind: TrackerKind,
     /// Upper bound for the tracker's values, used to pick the entry's color
     /// in tracker grids (`number`/`float` trackers only).
     pub max: Option<f64>,
     /// Lower bound for the tracker's values, used to pick the entry's color
     /// in tracker grids (`number`/`float` trackers only).
     pub min: Option<f64>,
+    /// Override color palette for this tracker's binning in grid/today views.
+    /// When `Some`, takes precedence over `config.tasks.colors`.
+    /// Must have more than 2 entries; otherwise cleared to `None` at init.
+    pub colors: Option<ColorBins>,
+}
+
+impl TrackerSetting {
+    /// Create a tracker setting for the given value kind; all optional
+    /// fields (`interval`, `min`/`max`, `colors`) default to `None`.
+    pub fn new(kind: TrackerKind) -> Self {
+        Self {
+            interval: None,
+            kind,
+            max: None,
+            min: None,
+            colors: None,
+        }
+    }
+
+    /// Set the expected logging interval, e.g. `86_400` for `"1 day"`.
+    pub fn with_interval(mut self, interval: i64) -> Self {
+        self.interval = Some(interval);
+        self
+    }
+
+    /// Set the upper bound for values (`number`/`float` trackers only).
+    pub fn with_max(mut self, max: f64) -> Self {
+        self.max = Some(max);
+        self
+    }
+
+    /// Set the lower bound for values (`number`/`float` trackers only).
+    pub fn with_min(mut self, min: f64) -> Self {
+        self.min = Some(min);
+        self
+    }
+
+    /// Override the color palette for grid/today binning.
+    pub fn with_colors(mut self, colors: ColorBins) -> Self {
+        self.colors = Some(colors);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -455,6 +488,58 @@ mod tests {
                 good
             );
         }
+    }
+
+    #[test]
+    fn test_init_clears_invalid_tracker_colors() {
+        let mut config = Config::default();
+
+        // colors with 1 entry (<= 2) should be cleared and a warning emitted
+        config.tracker.insert(
+            "bad_colors".to_string(),
+            TrackerSetting {
+                colors: Some(ColorBins::from(vec![crossterm::style::Color::DarkRed])),
+                ..Default::default()
+            },
+        );
+        // colors with exactly 2 entries should also be cleared
+        config.tracker.insert(
+            "bad_colors2".to_string(),
+            TrackerSetting {
+                colors: Some(ColorBins::from(vec![
+                    crossterm::style::Color::DarkRed,
+                    crossterm::style::Color::DarkGreen,
+                ])),
+                ..Default::default()
+            },
+        );
+        // colors with 3+ entries should be kept
+        config.tracker.insert(
+            "good_colors".to_string(),
+            TrackerSetting {
+                colors: Some(ColorBins::from(vec![
+                    crossterm::style::Color::DarkRed,
+                    crossterm::style::Color::DarkYellow,
+                    crossterm::style::Color::DarkGreen,
+                ])),
+                ..Default::default()
+            },
+        );
+        // None colors should be left as None
+        config
+            .tracker
+            .insert("no_colors".to_string(), TrackerSetting::default());
+
+        config.init();
+
+        assert!(config.tracker["bad_colors"].colors.is_none());
+        assert!(config.tracker["bad_colors2"].colors.is_none());
+        assert!(config.tracker["good_colors"].colors.is_some());
+        assert_eq!(
+            config.tracker["good_colors"].colors.as_ref().unwrap().len(),
+            3
+        );
+        assert!(config.tracker["no_colors"].colors.is_none());
     }
 
     #[test]

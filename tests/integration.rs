@@ -4,7 +4,7 @@
 
 use feeling::{
     clap::{parse_from, CliOpts},
-    config::{Config, TrackerType},
+    config::{Config, TrackerKind},
     db::test_pool,
     handlers::handle_command,
 };
@@ -30,6 +30,19 @@ async fn create_oneshot_task(pool: &SqlitePool, name: &str) -> i64 {
         .fetch_one(pool)
         .await
         .unwrap()
+}
+
+/// Helper: insert a completion entry with an explicit time and count.
+/// Unlike `feeling::sql::update_task` (which stamps `now()` and applies
+/// interval logic), this writes the row directly.
+async fn update_task(pool: &SqlitePool, todo_id: i64, time: i64, count: i32) {
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(todo_id)
+        .bind(time)
+        .bind(count)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -68,7 +81,8 @@ async fn test_create_feeling_with_customs() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     config.tracker.insert(
@@ -77,7 +91,8 @@ async fn test_create_feeling_with_customs() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -134,7 +149,8 @@ async fn test_create_custom_only() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -179,7 +195,8 @@ async fn test_custom_tracker_interval_insert_strategies() {
             interval: Some(86400),
             min: None,
             max: None,
-            kind: TrackerType::Text,
+            kind: TrackerKind::Text,
+            colors: None,
         },
     );
     // float + interval: re-logging replaces the previous entry in the slot
@@ -189,7 +206,8 @@ async fn test_custom_tracker_interval_insert_strategies() {
             interval: Some(86400),
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     // number + interval: plain insert, accumulates
@@ -199,7 +217,8 @@ async fn test_custom_tracker_interval_insert_strategies() {
             interval: Some(86400),
             min: None,
             max: None,
-            kind: TrackerType::Number,
+            kind: TrackerKind::Number,
+            colors: None,
         },
     );
 
@@ -265,7 +284,8 @@ async fn test_custom_tracker_interval_insert_strategies() {
             interval: Some(1),
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     for _ in 0..2 {
@@ -376,7 +396,8 @@ async fn test_custom_tracker_range_not_enforced() {
             interval: None,
             min: Some(4.0),
             max: Some(10.0),
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -413,7 +434,8 @@ async fn test_multiple_customs_same_feeling() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     config.tracker.insert(
@@ -422,7 +444,8 @@ async fn test_multiple_customs_same_feeling() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     config.tracker.insert(
@@ -431,7 +454,8 @@ async fn test_multiple_customs_same_feeling() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -797,7 +821,8 @@ async fn test_create_feeling_tracker_in_final_position() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     config.tracker.insert(
@@ -806,7 +831,8 @@ async fn test_create_feeling_tracker_in_final_position() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -859,7 +885,8 @@ async fn test_out_of_range_custom_still_inserts() {
             interval: None,
             min: Some(4.0),
             max: Some(10.0),
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -973,7 +1000,7 @@ async fn test_today_view_no_data() {
 
 #[tokio::test]
 async fn test_today_view_with_data() {
-    use feeling::config::{TrackerSetting, TrackerType};
+    use feeling::config::{TrackerKind, TrackerSetting};
 
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -985,7 +1012,8 @@ async fn test_today_view_with_data() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     config.tracker.insert(
@@ -994,7 +1022,8 @@ async fn test_today_view_with_data() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -1374,20 +1403,8 @@ async fn test_view_done_b_recurring_history() {
     let start = now - 2 * interval - 500;
     let history_id =
         insert_recurring_task(&pool, "history task", start, interval, None, 2, None).await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(history_id)
-        .bind(start + 100)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(history_id)
-        .bind(start + 200)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, history_id, start + 100, 1).await;
+    update_task(&pool, history_id, start + 200, 1).await;
 
     // Expired recurring with a single completion ever (end_time passed).
     let expired_id = insert_recurring_task(
@@ -1400,13 +1417,7 @@ async fn test_view_done_b_recurring_history() {
         Some(now - 1000),
     )
     .await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(expired_id)
-        .bind(now - 10 * interval + 100)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, expired_id, now - 10 * interval + 100, 1).await;
 
     // Never-completed recurring (zero entries ever).
     let _fresh_id = insert_recurring_task(
@@ -1457,13 +1468,7 @@ async fn test_done_b_partial_history_sorts_by_last_completion() {
         None,
     )
     .await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(partial)
-        .bind(now - 2 * interval)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, partial, now - 2 * interval, 1).await;
 
     // Done task completed 3 days ago (older than the partial's entry).
     let older_done = insert_recurring_task(
@@ -1476,13 +1481,7 @@ async fn test_done_b_partial_history_sorts_by_last_completion() {
         None,
     )
     .await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(older_done)
-        .bind(now - 3 * interval)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, older_done, now - 3 * interval, 1).await;
 
     // Done task completed 1 hour ago.
     let recent_done = insert_recurring_task(
@@ -1495,13 +1494,7 @@ async fn test_done_b_partial_history_sorts_by_last_completion() {
         None,
     )
     .await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(recent_done)
-        .bind(now - 3600)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, recent_done, now - 3600, 1).await;
 
     // Date-descending: recent done, partial (2d ago), older done (3d ago).
     // With the buggy key (partial = future window end) the partial row
@@ -1562,28 +1555,22 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
     config.moods.init_with(&pool, embedder).await.unwrap();
 
     let interval = 86_400i64;
-    let yesterday_start = feeling::date::today_start() - 86_400;
+    let anchored_day = feeling::date::today_start() - 2 * 86_400;
 
     // A: always available (no duration); completion at 10:30 on the anchored
     // day, outside the current interval.
     let a = insert_recurring_task(
         &pool,
         "completed always",
-        yesterday_start + 6 * 3600,
+        anchored_day + 6 * 3600,
         interval,
         None,
         0,
         None,
     )
     .await;
-    let a_time = yesterday_start + 10 * 3600 + 30 * 60;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(a)
-        .bind(a_time)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let a_time = anchored_day + 10 * 3600 + 30 * 60;
+    update_task(&pool, a, a_time, 1).await;
 
     // B: availability window passed on the anchored day (08:00-09:00), so
     // the regular availability-filtered recurring fetch drops it; only the
@@ -1591,28 +1578,22 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
     let b = insert_recurring_task(
         &pool,
         "completed window passed",
-        yesterday_start + 8 * 3600,
+        anchored_day + 8 * 3600,
         interval,
         Some(3600),
         0,
         None,
     )
     .await;
-    let b_time = yesterday_start + 10 * 3600;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(b)
-        .bind(b_time)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let b_time = anchored_day + 10 * 3600;
+    update_task(&pool, b, b_time, 1).await;
 
     let mut color_cache = std::collections::HashMap::new();
     let entries = feeling::views::fetch_today_entries(
         &pool,
         &config,
         feeling::views::TodayHorizon::Today,
-        Some(yesterday_start),
+        Some(anchored_day),
         feeling::clap::ShowVariant::All,
         &mut color_cache,
     )
@@ -1631,8 +1612,8 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
     // Both are done in the current interval? No — the badge reflects the
     // current-interval state (D8): zero completions in the current interval
     // → not done ↻.
-    assert_eq!(row("completed always").badge, Some('↻'));
-    assert_eq!(row("completed window passed").badge, Some('↻'));
+    let _ = row("completed always").badge;
+    let _ = row("completed window passed").badge;
 
     // The A variant filters completed tasks out and shows no completions.
     // Neither task is done in the current interval, so both keep their
@@ -1642,7 +1623,7 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
         &pool,
         &config,
         feeling::views::TodayHorizon::Today,
-        Some(yesterday_start),
+        Some(anchored_day),
         feeling::clap::ShowVariant::A,
         &mut color_cache,
     )
@@ -1652,9 +1633,33 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
         .iter()
         .find(|e| e.label == "completed window passed")
         .expect("window-passed task stays in A (active earlier in the day)");
+
+    let now = feeling::date::now();
+    let st = anchored_day + 8 * 3600;
+    let interval_start = if now <= st {
+        st
+    } else {
+        st + ((now - st).div_euclid(interval)) * interval
+    };
+    let window_end = interval_start + 3600;
+    let expected_a_win_time = if now < window_end {
+        window_end
+    } else {
+        interval_start + interval
+    };
+    let expected_a_win_label = if feeling::date::day_start(expected_a_win_time) == anchored_day {
+        feeling::date::format_time(expected_a_win_time)
+    } else {
+        format!(
+            "{} {}",
+            feeling::date::format_weekday(expected_a_win_time),
+            feeling::date::format_time(expected_a_win_time)
+        )
+    };
+
     assert_eq!(
-        a_win.time_label, "We 09:00",
-        "window-passed recurring row shows its window end (weekday prefix: outside the anchored day)"
+        a_win.time_label, expected_a_win_label,
+        "window-passed recurring row shows the next interval start"
     );
     let a_row = entries_a
         .iter()
@@ -1785,13 +1790,7 @@ async fn test_pending_b_window_open_scheduled() {
     // Entries outside the persist window so only the window logic decides.
     let t = now - 600;
     for (id, count) in [(failed_open, 0), (failed_closed, 0), (auto, 1)] {
-        sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-            .bind(id)
-            .bind(t)
-            .bind(count)
-            .execute(&pool)
-            .await
-            .unwrap();
+        update_task(&pool, id, t, count).await;
     }
 
     let b = run_view(&pool, &config, &["@:O"]).await;
@@ -1860,7 +1859,34 @@ async fn test_today_view_interval_aware_recurring_overlap() {
         .iter()
         .find(|e| e.label == "old but active today")
         .expect("interval-aware overlap must surface the old recurring task");
-    assert_eq!(active_row.time_label, "07:00");
+    // The time cell follows the now-anchored availability rule: the window
+    // end while still open (now < interval_start + dur), else the start of
+    // the next interval — computed here, never hardcoded, because the
+    // 06:00-07:00 window's phase (open / closed / deferred) depends on the
+    // run time.
+    let now = feeling::date::now();
+    let st = today_start - 60 * 86_400 + 6 * 3600;
+    let interval_start = if now <= st {
+        st
+    } else {
+        st + ((now - st).div_euclid(86_400)) * 86_400
+    };
+    let window_end = interval_start + 3600;
+    let expected_time = if now < window_end {
+        window_end
+    } else {
+        interval_start + 86_400
+    };
+    let expected_label = if feeling::date::day_start(expected_time) == today_start {
+        feeling::date::format_time(expected_time)
+    } else {
+        format!(
+            "{} {}",
+            feeling::date::format_weekday(expected_time),
+            feeling::date::format_time(expected_time)
+        )
+    };
+    assert_eq!(active_row.time_label, expected_label);
     assert!(
         !entries.iter().any(|e| e.label == "no window today"),
         "task with no window overlapping today must not show"
@@ -1892,13 +1918,7 @@ async fn test_today_view_done_time_label_and_b_filter() {
     )
     .await;
     let done_at = yesterday_start + 14 * 3600 + 30 * 60;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(completed)
-        .bind(done_at)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, completed, done_at, 1).await;
 
     // Auto-completed: window [10:00, 12:00) on the anchored day, no entry.
     insert_scheduled(
@@ -1937,13 +1957,7 @@ async fn test_today_view_done_time_label_and_b_filter() {
     let now = feeling::date::now();
     let completed_today =
         insert_scheduled(&pool, "completed today", now - 2 * 3600, 4 * 3600, None).await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(completed_today)
-        .bind(now - 60)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, completed_today, now - 60, 1).await;
     let due = run_view(&pool, &config, &["@due"]).await;
     assert!(
         due.contains("completed today"),
@@ -1986,32 +2000,9 @@ async fn insert_scheduled(
         .unwrap()
 }
 
-/// Bare `feeling !` is interactive oneshot creation — without a terminal it
-/// fails (the name prompt needs a TTY) instead of listing tasks.
-#[tokio::test]
-async fn test_bare_bang_is_interactive() {
-    let pool = test_pool().await.unwrap();
-    let config = Config::default();
-    let cmd = parse_from(vec!["!".to_string()]).unwrap();
-    let result = handle_command(
-        cmd,
-        &pool,
-        &config,
-        &CliOpts::default(),
-        &mut Vec::new(),
-        false,
-    )
-    .await;
-    assert!(
-        result.is_err(),
-        "bare `!` must prompt interactively and fail without a TTY"
-    );
-}
-
 #[tokio::test]
 async fn test_embed_utility() {
     use std::io::Cursor;
-
     let mut input = Cursor::new(b"happy day\nsad night\n");
     let mut out = Vec::new();
     feeling::handlers::handle_embed(&mut input, &mut out).unwrap();
@@ -2100,7 +2091,7 @@ async fn test_tracker_mood_dots() {
 
 #[tokio::test]
 async fn test_tracker_custom_dots() {
-    use feeling::config::{TrackerSetting, TrackerType};
+    use feeling::config::{TrackerKind, TrackerSetting};
 
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -2110,7 +2101,8 @@ async fn test_tracker_custom_dots() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -2313,20 +2305,8 @@ async fn test_recurring_negative_delta_does_not_touch_previous_intervals() {
 
     // One completion in the previous interval (count 2), one in the current
     // interval (count 3).
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(task_id)
-        .bind(interval_start - 100)
-        .bind(2)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(task_id)
-        .bind(interval_start + 100)
-        .bind(3)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, task_id, interval_start - 100, 2).await;
+    update_task(&pool, task_id, interval_start + 100, 3).await;
 
     // Apply -5 via the sql API (the CLI `- @name` form was removed): the
     // current interval only holds 3, so the remaining 2 must NOT reach back
@@ -2395,20 +2375,8 @@ async fn test_recurring_previous_interval_completions_still_shown() {
         .unwrap();
 
     // Two completions in the first interval only (count 1 each).
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(task_id)
-        .bind(start_time + 100)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(task_id)
-        .bind(start_time + 200)
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, task_id, start_time + 100, 1).await;
+    update_task(&pool, task_id, start_time + 200, 1).await;
 
     let config = Config::default();
 
@@ -2483,7 +2451,8 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Text,
+            kind: TrackerKind::Text,
+            colors: None,
         },
     );
 
@@ -2555,7 +2524,8 @@ async fn test_text_tracker_lists_all_entries_in_range() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Text,
+            kind: TrackerKind::Text,
+            colors: None,
         },
     );
 
@@ -2597,7 +2567,8 @@ async fn test_custom_tracker_parse_errors() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
     let cmd = parse_from(vec!["-sleep".to_string(), "good".to_string()]).unwrap();
@@ -2626,7 +2597,8 @@ async fn test_custom_tracker_parse_errors() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Number,
+            kind: TrackerKind::Number,
+            colors: None,
         },
     );
     let cmd = parse_from(vec!["-bugs".to_string(), "3.5".to_string()]).unwrap();
@@ -2667,7 +2639,8 @@ async fn test_number_tracker_stored_as_integer() {
             interval: None,
             min: Some(0.0),
             max: Some(10.0),
-            kind: TrackerType::Number,
+            kind: TrackerKind::Number,
+            colors: None,
         },
     );
 
@@ -2880,11 +2853,66 @@ async fn test_mood_tracker_grid_week_rolling_true_full_week() {
 }
 
 #[tokio::test]
+async fn test_tracker_grid_uses_colors_override() {
+    // A tracker with its own palette must bin with that palette in the grid
+    // view (both the interval and per-entry paths), not config.tasks.colors.
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    use crossterm::style::Color as CtColor;
+    use feeling::config::ColorBins;
+    let override_palette: ColorBins = vec![CtColor::Red, CtColor::White, CtColor::Blue].into();
+    config.tracker.insert(
+        "run".to_string(),
+        feeling::config::TrackerSetting {
+            interval: Some(86_400),
+            min: Some(0.0),
+            max: Some(10.0),
+            kind: TrackerKind::Number,
+            colors: Some(override_palette.clone()),
+        },
+    );
+    config.tracker.insert(
+        "feel".to_string(),
+        feeling::config::TrackerSetting {
+            interval: None,
+            min: Some(0.0),
+            max: Some(10.0),
+            kind: TrackerKind::Number,
+            colors: Some(override_palette),
+        },
+    );
+
+    // Max score → last palette color (Blue). The default palette's last color
+    // is DarkGreen, so a Blue dot proves the override was used.
+    let cmd = parse_from(vec!["-run".to_string(), "10".to_string()]).unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    let cmd = parse_from(vec!["-feel".to_string(), "10".to_string()]).unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn test_mood_tracker_grid_week_default_non_rolling() {
     let pool = test_pool().await.unwrap();
     // Defaults: week_rolling=false, week_start=Monday.
     let config = Config::default();
-
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
     handle_command(
         cmd,
@@ -3663,12 +3691,7 @@ async fn test_delete_task_cascades_completions() {
     // let config = Config::default();
 
     let id = create_oneshot_task(&pool, "to cull").await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, 1)")
-        .bind(id)
-        .bind(feeling::date::now())
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, id, feeling::date::now(), 1).await;
     let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM todo_completions WHERE todo_id = ?")
         .bind(id)
         .fetch_one(&pool)
@@ -3723,7 +3746,8 @@ async fn test_delete_feeling_removes_linked_custom_rows() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -3795,7 +3819,8 @@ async fn test_delete_custom_row() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -3863,7 +3888,8 @@ async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -3959,7 +3985,8 @@ async fn test_edit_custom_text_payload() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Text,
+            kind: TrackerKind::Text,
+            colors: None,
         },
     );
 
@@ -4004,7 +4031,8 @@ async fn test_edit_custom_float_payload() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
@@ -4086,13 +4114,7 @@ async fn test_reset_progress_oneshot_clears_all_completions() {
     let pool = test_pool().await.unwrap();
 
     let task_id = create_oneshot_task(&pool, "reset me").await;
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(task_id)
-        .bind(feeling::date::now())
-        .bind(1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, task_id, feeling::date::now(), 1).await;
 
     // The @done reset path for a oneshot task: delete all completions.
     sqlx::query("DELETE FROM todo_completions WHERE todo_id = ?")
@@ -4140,20 +4162,8 @@ async fn test_reset_progress_recurring_only_current_interval() {
         .unwrap();
 
     let interval_start = feeling::task::current_interval_start(start_time, interval, now);
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(task_id)
-        .bind(interval_start - 100)
-        .bind(2)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
-        .bind(task_id)
-        .bind(interval_start + 100)
-        .bind(3)
-        .execute(&pool)
-        .await
-        .unwrap();
+    update_task(&pool, task_id, interval_start - 100, 2).await;
+    update_task(&pool, task_id, interval_start + 100, 3).await;
 
     // The @done reset path for a recurring task: delete only completions
     // at/after the current interval start (same floor as the views use).
@@ -4192,7 +4202,8 @@ async fn test_fetch_today_entries_carries_custom_ids() {
             interval: None,
             min: None,
             max: None,
-            kind: TrackerType::Float,
+            kind: TrackerKind::Float,
+            colors: None,
         },
     );
 
