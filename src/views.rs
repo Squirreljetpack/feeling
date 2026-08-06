@@ -10,7 +10,7 @@ use crate::clap::{CliOpts, ShowVariant, TrackerItem, TrackerPeriod, ViewMode};
 use crate::config::{Config, TrackerKind};
 use crate::date;
 use crate::sql::TaskRow;
-use crate::task::TaskKind;
+use crate::types::TaskKind;
 
 /// Badge for text-payload tracker entries wherever a marker is needed
 /// (e.g. the today view). A named constant so the glyph can be adjusted later.

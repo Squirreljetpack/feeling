@@ -159,7 +159,7 @@ fn assemble(
 mod tests {
     use crate::db::test_pool;
     use crate::sql::{create_task, TaskObject};
-    use crate::task::TaskKind;
+    use crate::types::TaskKind;
 
     use super::*;
 
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(child_node.row.id, child);
         assert_eq!(child_node.row.body, "body of child");
         assert_eq!(child_node.row.target_count, 2);
-        assert_eq!(child_node.row.kind(), TaskKind::Threshold);
+        assert_eq!(child_node.row.kind(), TaskKind::Oneshot);
         assert_eq!(child_node.children.len(), 2);
         assert_eq!(child_node.children[0].row.id, grandchild);
         assert_eq!(child_node.children[0].row.kind(), TaskKind::Oneshot);

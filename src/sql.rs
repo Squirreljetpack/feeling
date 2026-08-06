@@ -8,8 +8,9 @@
 use anyhow::{Context, Result};
 use sqlx::{FromRow, Row, SqlitePool};
 
-use crate::clap::{ShowVariant, TaskType, ViewMode};
+use crate::clap::{ShowVariant, ViewMode};
 use crate::config::TrackerKind;
+use crate::types::TaskKind;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -137,19 +138,17 @@ impl TaskRow {
         self.interval_secs.is_none() && self.available_duration_secs.is_some()
     }
 
-    /// The task's [`TaskKind`](crate::task::TaskKind), derived from its
+    /// The task's [`TaskKind`](crate::types::TaskKind), derived from its
     /// scheduling fields: recurring (has an interval) > scheduled
-    /// (availability window, no interval) > threshold (`target_count > 0`)
-    /// > oneshot.
-    pub fn kind(&self) -> crate::task::TaskKind {
+    /// (availability window, no interval) > oneshot. A target count changes
+    /// completion behavior but does not change the task kind.
+    pub fn kind(&self) -> TaskKind {
         if self.is_recurring() {
-            crate::task::TaskKind::Recurring
+            TaskKind::Recurring
         } else if self.is_scheduled() {
-            crate::task::TaskKind::Scheduled
-        } else if self.target_count > 0 {
-            crate::task::TaskKind::Threshold
+            TaskKind::Scheduled
         } else {
-            crate::task::TaskKind::Oneshot
+            TaskKind::Oneshot
         }
     }
 
@@ -622,17 +621,17 @@ pub async fn fetch_task_id_by_short_id(pool: &SqlitePool, short_id: i64) -> Resu
 pub async fn task_name_exists(
     pool: &SqlitePool,
     name: &str,
-    task_type: Option<TaskType>,
+    task_type: Option<TaskKind>,
 ) -> Result<bool> {
     let query = match task_type {
         None => "SELECT COUNT(*) FROM todos WHERE name = ?",
-        Some(TaskType::Recurring) => {
+        Some(TaskKind::Recurring) => {
             "SELECT COUNT(*) FROM todos WHERE name = ? AND interval_secs IS NOT NULL"
         }
-        Some(TaskType::OneShot) => {
+        Some(TaskKind::Oneshot) => {
             "SELECT COUNT(*) FROM todos WHERE name = ? AND interval_secs IS NULL AND available_duration_secs IS NULL"
         }
-        Some(TaskType::Scheduled) => {
+        Some(TaskKind::Scheduled) => {
             "SELECT COUNT(*) FROM todos WHERE name = ? AND interval_secs IS NULL AND available_duration_secs IS NOT NULL"
         }
     };

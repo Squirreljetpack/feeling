@@ -1,5 +1,28 @@
-use crate::clap::TaskType;
 use crate::date::Epoch;
+
+/// Category of a task, derived from its scheduling fields or selected during creation.
+///
+/// A target count distinguishes threshold-style completion behavior, but does not
+/// create a separate task kind: those tasks are still one-shot tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    /// One-shot task, with or without a completion target.
+    Oneshot,
+    /// Recurring task (has an interval).
+    Recurring,
+    /// Scheduled task (has an availability window and no interval).
+    Scheduled,
+}
+
+impl std::fmt::Display for TaskKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TaskKind::Oneshot => "oneshot",
+            TaskKind::Recurring => "recurring",
+            TaskKind::Scheduled => "scheduled",
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
@@ -17,7 +40,7 @@ pub struct Entry {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Task {
-    pub task_type: TaskType,
+    pub task_type: TaskKind,
     pub name: Option<String>,
     pub priority: Option<i32>,
     /// Start/due time for oneshot and scheduled creations (`! name @<time>`),

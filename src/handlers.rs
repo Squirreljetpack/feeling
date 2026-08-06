@@ -4,14 +4,14 @@ use crossterm::style::Stylize;
 use sqlx::SqlitePool;
 use std::io::{BufRead, Write};
 
-use crate::clap::{CliOpts, Command, TaskType, UpdateTarget};
+use crate::clap::{CliOpts, Command, UpdateTarget};
 use crate::config::{Config, TrackerKind, DEFAULT_CONFIG, DEFAULT_MOODS};
 use crate::date::{self, format_duration};
 use crate::editor::{open_editor_at, open_editor_for_body};
 use crate::paths::default_config_path;
 use crate::render::Render;
 use crate::sql::{EntryObject, TaskObject, TaskUpdateInfo, TrackerObject, TrackerValue};
-use crate::types::{Entry, Task};
+use crate::types::{Entry, Task, TaskKind};
 
 pub async fn handle_command<W: Write>(
     cmd: Command,
@@ -440,7 +440,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
     let parent = task.parent;
 
     match task_type {
-        TaskType::OneShot => {
+        TaskKind::Oneshot => {
             // Only a missing name triggers the interactive creation flow:
             // cliclack intro, then the name (required, unique, no tabs),
             // priority and target count. `open_editor` (a bare `..`) never
@@ -470,7 +470,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
 
                 // Name (required, unique among oneshot tasks, no tabs):
                 // re-prompt on duplicates instead of aborting the flow.
-                let name_str = prompt_unique_name(pool, None, Some(TaskType::OneShot)).await?;
+                let name_str = prompt_unique_name(pool, None, Some(TaskKind::Oneshot)).await?;
 
                 let priority_val = crate::prompts::prompt_priority(config.tasks.default_priority)?;
                 let target_count = crate::prompts::prompt_target_count()?;
@@ -495,7 +495,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
             // Uniqueness for command-line names: the interactive flow
             // re-prompts on duplicates, so only this path bails.
             if !interactive
-                && crate::sql::task_name_exists(pool, &name_str, Some(TaskType::OneShot)).await?
+                && crate::sql::task_name_exists(pool, &name_str, Some(TaskKind::Oneshot)).await?
             {
                 anyhow::bail!("A task with name '{name_str}' already exists");
             }
@@ -546,13 +546,13 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                 }
             }
         }
-        TaskType::Recurring => {
+        TaskKind::Recurring => {
             // Create new recurring task via interactive flow, with an
             // optional pre-filled name from `feeling ! @ <name>` and
             // an optional body from `.. body` (editor when `..` is bare).
             handle_recurring_task_creation(pool, config, opts, prefill, body, open_editor).await?;
         }
-        TaskType::Scheduled => {
+        TaskKind::Scheduled => {
             // Scheduled task creation: `! @<time> [:name] [%<duration>]`.
             // The start time and duration were resolved to epochs at CLI
             // parse time, so bad values fail before any interactive prompt.
@@ -652,7 +652,7 @@ async fn handle_recurring_task_creation(
     if let Some(p) = &prefill {
         cliclack::log::info(format!("Name: {p}"))?;
     }
-    let name = prompt_unique_name(pool, prefill.as_deref(), Some(TaskType::Recurring)).await?;
+    let name = prompt_unique_name(pool, prefill.as_deref(), Some(TaskKind::Recurring)).await?;
 
     // 2. Priority (1..=999 per validation; blank falls back to default).
     let priority = crate::prompts::prompt_priority(config.tasks.default_recurring_priority)?;
@@ -770,7 +770,7 @@ async fn handle_scheduled_task_creation(
     if let Some(n) = &name {
         cliclack::log::info(format!("Name: {n}"))?;
     }
-    let name = prompt_unique_name(pool, name.as_deref(), Some(TaskType::Scheduled)).await?;
+    let name = prompt_unique_name(pool, name.as_deref(), Some(TaskKind::Scheduled)).await?;
 
     // 2. Start time (required). A start time from the command line skips
     // the prompt; blank in the prompt means "now".
@@ -1099,7 +1099,7 @@ fn validate_name(name: &str) -> Result<()> {
 async fn prompt_unique_name(
     pool: &sqlx::SqlitePool,
     given: Option<&str>,
-    task_type: Option<TaskType>,
+    task_type: Option<TaskKind>,
 ) -> Result<String> {
     let given = given.map(str::trim).filter(|s| !s.is_empty());
     if let Some(name) = given {

@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 use crate::action::Action;
 use crate::clap::ShowVariant;
 use crate::message::{ControlEvent, RenderEvent};
-use crate::task::TaskKind;
 use crate::tui::Tui;
+use crate::types::TaskKind;
 use crate::views::EntryKind;
 
 use super::{build_preview, confirm_buttons, system::edit_with_editor, truncate_chars, Render};

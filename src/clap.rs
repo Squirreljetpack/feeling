@@ -1,7 +1,7 @@
 use anyhow::Context;
 use std::env::args;
 
-use crate::types::{Entry, Task};
+use crate::types::{Entry, Task, TaskKind};
 use crate::views::TodayHorizon;
 
 /// Characters reserved as leading flags: `-q` (quiet) and `-v` (verbose),
@@ -172,13 +172,6 @@ pub enum TrackerPeriod {
 pub enum TrackerItem {
     Mood,
     Tracker(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskType {
-    OneShot,
-    Recurring,
-    Scheduled,
 }
 
 /// Parse the full command line from `env::args` (skipping argv[0]) into a
@@ -418,7 +411,7 @@ fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command> {
     // `-<parent_id>` (short id) pre-fills the parent prompt.
     if args.is_empty() {
         return Ok(Command::Task(Task {
-            task_type: TaskType::OneShot,
+            task_type: TaskKind::Oneshot,
             name: None,
             priority: None,
             date: None,
@@ -520,7 +513,7 @@ fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command> {
     let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
-        task_type: TaskType::OneShot,
+        task_type: TaskKind::Oneshot,
         name,
         priority: None,
         date,
@@ -583,7 +576,7 @@ fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
     let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
-        task_type: TaskType::Recurring,
+        task_type: TaskKind::Recurring,
         name: None,
         priority: None,
         date: None,
@@ -715,7 +708,7 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
     let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
-        task_type: TaskType::Scheduled,
+        task_type: TaskKind::Scheduled,
         name,
         priority: None,
         date,
@@ -1063,7 +1056,7 @@ mod tests {
         let cmd = parse_from(args(&["!"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, None);
                 assert_eq!(task.parent, None);
                 assert!(task.open_editor);
@@ -1077,7 +1070,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "do", "something"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("do something".to_string()));
                 assert_eq!(task.priority, None);
                 assert_eq!(task.parent, None);
@@ -1091,7 +1084,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "-7", "do", "something"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("do something".to_string()));
                 assert_eq!(task.parent, Some(7));
             }
@@ -1104,7 +1097,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "-7"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, None);
                 assert_eq!(task.parent, Some(7));
             }
@@ -1118,7 +1111,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "-7", "buy", "-milk"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("buy -milk".to_string()));
                 assert_eq!(task.parent, Some(7));
             }
@@ -1132,7 +1125,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "-groceries"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("-groceries".to_string()));
                 assert_eq!(task.parent, None);
             }
@@ -1145,7 +1138,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "task", "@2024-03-20"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("task".to_string()));
                 assert_eq!(task.date, Some(ts("2024-03-20")));
             }
@@ -1160,7 +1153,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "task", "@2024-03-20", "14:30:00"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("task".to_string()));
                 assert_eq!(task.date, Some(ts("2024-03-20 14:30:00")));
             }
@@ -1173,7 +1166,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "  buy milk  "])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("buy milk".to_string()));
                 assert_eq!(task.date, None);
             }
@@ -1188,7 +1181,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "   "])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, None);
             }
             _ => panic!("Expected Task command"),
@@ -1201,7 +1194,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "task", "..", "@notdate"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("task".to_string()));
                 assert_eq!(task.date, None);
                 assert_eq!(task.body, "@notdate");
@@ -1218,7 +1211,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "task", "@2024-03-20", "..", "@b"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.date, Some(ts("2024-03-20")));
                 assert_eq!(task.body, "@b");
             }
@@ -1233,7 +1226,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "task", "..", "see", "..", "note"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("task".to_string()));
                 assert_eq!(task.body, "see .. note");
                 assert!(!task.open_editor);
@@ -1248,7 +1241,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Recurring);
+                assert_eq!(task.task_type, TaskKind::Recurring);
                 assert_eq!(task.name, None);
                 assert_eq!(task.prefill, None);
             }
@@ -1263,7 +1256,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@", "exercise", "more"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Recurring);
+                assert_eq!(task.task_type, TaskKind::Recurring);
                 assert_eq!(task.name, None);
                 assert_eq!(task.prefill, Some("exercise more".to_string()));
             }
@@ -1286,7 +1279,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, None);
                 assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, None);
@@ -1303,7 +1296,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", "meeting"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, None);
                 assert_eq!(task.date, Some(ts("10pm meeting")));
             }
@@ -1317,7 +1310,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", ":meeting"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
                 assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, None);
@@ -1333,7 +1326,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", ":a", ":b"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, Some("a b".to_string()));
                 assert_eq!(task.date, Some(ts("10pm")));
             }
@@ -1347,7 +1340,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", "%2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, None);
                 assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, Some(2 * 3600));
@@ -1362,7 +1355,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", ":meeting", "%2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
                 assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, Some(2 * 3600));
@@ -1377,7 +1370,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
                 assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, Some(2 * 3600));
@@ -1403,7 +1396,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting", "%30"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, Some("meeting %30".to_string()));
                 assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, Some(2 * 3600));
@@ -1424,7 +1417,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", ":meeting", "..", "take", "notes"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
                 assert_eq!(task.body, "take notes");
                 assert!(!task.open_editor);
@@ -1438,7 +1431,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@10pm", ":meeting", ".."])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.body, "");
                 assert!(task.open_editor);
             }
@@ -1453,7 +1446,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@", "exercise", "..", "notes"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Recurring);
+                assert_eq!(task.task_type, TaskKind::Recurring);
                 assert_eq!(task.prefill, Some("exercise".to_string()));
                 assert_eq!(task.body, "notes");
                 assert!(!task.open_editor);
@@ -1467,7 +1460,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@", "exercise", ".."])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Recurring);
+                assert_eq!(task.task_type, TaskKind::Recurring);
                 assert_eq!(task.prefill, Some("exercise".to_string()));
                 assert_eq!(task.body, "");
                 assert!(task.open_editor);
@@ -1491,7 +1484,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "@"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Recurring);
+                assert_eq!(task.task_type, TaskKind::Recurring);
                 assert_eq!(task.name, None);
             }
             _ => panic!("Expected Task command"),
@@ -1505,7 +1498,7 @@ mod tests {
         let cmd = parse_from(args(&["!"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, None);
                 assert!(task.open_editor);
             }
@@ -2037,7 +2030,7 @@ mod tests {
         assert!(matches!(
             cli.cmd,
             Command::Task(Task {
-                task_type: TaskType::OneShot,
+                task_type: TaskKind::Oneshot,
                 ..
             })
         ));
@@ -2347,7 +2340,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "do", "thing", "..", "body", "text"])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("do thing".to_string()));
                 assert_eq!(task.body, "body text");
                 assert!(!task.open_editor);
@@ -2359,7 +2352,7 @@ mod tests {
         let cmd = parse_from(args(&["!", "do", "thing", ".."])).unwrap();
         match cmd {
             Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("do thing".to_string()));
                 assert_eq!(task.body, "");
                 assert!(task.open_editor);
