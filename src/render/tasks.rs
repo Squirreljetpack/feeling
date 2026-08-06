@@ -13,7 +13,7 @@ use std::io::Write;
 use tokio::sync::mpsc;
 
 use crate::action::Action;
-use crate::clap::ViewMode;
+use crate::clap::{ShowVariant, ViewMode};
 use crate::config::Config;
 use crate::message::{ControlEvent, RenderEvent};
 use crate::sql::TaskRow;
@@ -30,10 +30,12 @@ pub struct TasksApp {
     pub(crate) selected: usize,
     pub(crate) mode: ViewMode,
     config: Config,
-    include_completed: bool,
-    /// Whether scheduled tasks are merged into the current view (the
-    /// `include_scheduled` fetch flag; toggled with Ctrl+a).
-    show_scheduled: bool,
+    /// Which task subset the current view displays (All / A / B); cycled
+    /// with Ctrl+d.
+    show: ShowVariant,
+    /// Keep just-completed tasks visible in the pending `All` view for this
+    /// many seconds (config.tasks_view.persist_pending_seconds).
+    persist_pending_seconds: i64,
     should_quit: bool,
     pub(crate) sort_by_due: bool,
     pub(crate) modal: Option<Modal>,
@@ -60,6 +62,14 @@ pub(crate) enum Modal {
         name: String,
         cursor: usize,
     },
+    /// D10: confirm before completing a recurring task whose availability
+    /// window has passed (pending view only). Default Yes; a No just
+    /// closes the modal.
+    AvailabilityConfirm {
+        id: i64,
+        name: String,
+        cursor: usize,
+    },
 }
 
 /// Modal prompt state for marking a task complete when it has a target_count.
@@ -74,10 +84,10 @@ impl TasksApp {
         pool: &SqlitePool,
         mode: ViewMode,
         config: Config,
-        include_completed: bool,
-        show_scheduled: bool,
+        show: ShowVariant,
+        persist_pending_seconds: i64,
     ) -> Self {
-        let tasks = fetch_tasks(pool, mode, include_completed, show_scheduled)
+        let tasks = fetch_tasks(pool, mode, show, persist_pending_seconds)
             .await
             .unwrap_or_default();
         let sort_by_due = true;
@@ -87,8 +97,8 @@ impl TasksApp {
             selected: 0,
             mode,
             config,
-            include_completed,
-            show_scheduled,
+            show,
+            persist_pending_seconds,
             should_quit: false,
             sort_by_due,
             modal: None,
@@ -98,40 +108,68 @@ impl TasksApp {
     }
 
     async fn refresh(&mut self) {
-        self.tasks =
-            fetch_tasks(&self.pool, self.mode, self.include_completed, self.show_scheduled)
-                .await
-                .unwrap_or_default();
+        self.tasks = fetch_tasks(
+            &self.pool,
+            self.mode,
+            self.show,
+            self.persist_pending_seconds,
+        )
+        .await
+        .unwrap_or_default();
         self.apply_sort();
         self.selected = self.selected.min(self.tasks.len().saturating_sub(1));
     }
 
     /// Re-sort the current task list according to the selected sort mode.
     fn apply_sort(&mut self) {
-        // Due time for sorting: `end_time` when set, else `start_time`
-        // (legacy rows / undated tasks) — the same fallback the due
-        // queries use.
-        let due = |t: &TaskRow| t.end_time.or(t.start_time).unwrap_or(i64::MAX);
-        if self.sort_by_due {
-            // Nearness of next due date first; priority as tiebreak (descending)
-            self.tasks.sort_by(|a, b| {
-                due(a).cmp(&due(b)).then(b.priority.cmp(&a.priority))
-            });
+        if self.mode == ViewMode::DoneTasks {
+            // Done view: the "done time" key (`views::task_done_time` —
+            // last completion entry, else start + duration) in reverse,
+            // newest first; the priority sort's equal-priority fallback
+            // defers to the same key.
+            let date_key = |t: &TaskRow| crate::views::task_done_time(t);
+            if self.sort_by_due {
+                self.tasks.sort_by_key(|t| std::cmp::Reverse(date_key(t)));
+            } else {
+                self.tasks.sort_by_key(|t| {
+                    (
+                        std::cmp::Reverse(t.priority),
+                        std::cmp::Reverse(date_key(t)),
+                    )
+                });
+            }
         } else {
-            // Priority descending first; due date as tiebreak
-            self.tasks.sort_by(|a, b| {
-                b.priority.cmp(&a.priority).then_with(|| due(a).cmp(&due(b)))
-            });
+            // Pending view: date key = the unified task timestamp
+            // (`views::task_entry_time`): done rows sort by last completion
+            // entry, pending rows by their kind-specific time (scheduled →
+            // start_time, recurring → current-interval availability-window
+            // end, oneshot → due time). Nearest date first; priority as
+            // tiebreak (descending).
+            let now = crate::date::now();
+            let date_key = |t: &TaskRow| crate::views::task_entry_time(t, now);
+            if self.sort_by_due {
+                self.tasks
+                    .sort_by_key(|t| (date_key(t), std::cmp::Reverse(t.priority)));
+            } else {
+                self.tasks
+                    .sort_by_key(|t| (std::cmp::Reverse(t.priority), date_key(t)));
+            }
         }
     }
 
+    /// Cycle the view mode: Pending ↔ Done (D4 — oneshots live at `@:o`,
+    /// due tasks in the today app).
     async fn next_mode(&mut self) {
         self.mode = match self.mode {
-            ViewMode::OneShotTasks => ViewMode::RecurringTasks,
-            ViewMode::RecurringTasks => ViewMode::DoneTasks,
-            ViewMode::DoneTasks => ViewMode::DueTasks,
-            ViewMode::DueTasks => ViewMode::OneShotTasks,
+            ViewMode::PendingTasks => ViewMode::DoneTasks,
+            ViewMode::DoneTasks => ViewMode::PendingTasks,
         };
+        self.refresh().await;
+    }
+
+    /// Cycle the ShowVariant: All → A → B → All (D5).
+    async fn next_show(&mut self) {
+        self.show = self.show.next();
         self.refresh().await;
     }
 
@@ -144,7 +182,35 @@ impl TasksApp {
         if self.tasks.is_empty() {
             return;
         }
-        let task = &self.tasks[self.selected];
+        let task = self.tasks[self.selected].clone();
+        // D3: `@done:b` history rows (expired recurring tasks) are not
+        // actionable — log and ignore.
+        if task.is_recurring() && task.end_time.is_some_and(|end| crate::date::now() > end) {
+            log::error!("task {} is expired", task.id);
+            return;
+        }
+        // D10: in the pending view, Enter on a recurring task whose
+        // availability window has passed asks first (default Yes) before
+        // the count modal / direct toggle. The reset path is unchanged.
+        if self.mode != ViewMode::DoneTasks
+            && task.is_recurring()
+            && !task.is_done()
+            && crate::task::availability_passed(&task, crate::date::now())
+        {
+            self.modal = Some(Modal::AvailabilityConfirm {
+                id: task.id,
+                name: task.name.clone(),
+                cursor: 0,
+            });
+            return;
+        }
+        self.run_enter_action(task).await;
+    }
+
+    /// Run the Enter-action state machine for a task: modal-less toggle
+    /// steps apply directly, `ResetConfirm` / `CompletePrompt` open their
+    /// modals.
+    async fn run_enter_action(&mut self, task: TaskRow) {
         let action = crate::task::enter_action(
             task.completions,
             task.is_scheduled(),
@@ -159,7 +225,6 @@ impl TasksApp {
             crate::task::EnterAction::Complete
             | crate::task::EnterAction::SetFailed
             | crate::task::EnterAction::Clear => {
-                let task = task.clone();
                 if let Err(e) = crate::task::apply_enter_action(&self.pool, &task, action).await {
                     log::error!("Failed to apply enter action to task {}: {e}", task.id);
                 }
@@ -176,7 +241,6 @@ impl TasksApp {
                         cursor: 0,
                     });
                 } else {
-                    let task = task.clone();
                     if let Err(e) = crate::task::reset_task_progress(&self.pool, &task).await {
                         log::error!("Failed to reset task progress for {}: {e}", task.id);
                     }
@@ -270,6 +334,38 @@ impl TasksApp {
                     self.modal = None;
                 }
                 _ => {}
+            }
+            return true;
+        }
+
+        // D10: Accept while the availability-passed confirm modal is open
+        // proceeds with the normal Enter flow (count modal / direct toggle);
+        // No just closes the modal.
+        if let Some(Modal::AvailabilityConfirm { id, cursor, .. }) = self.modal.as_mut() {
+            let proceed = match action {
+                Action::Accept => *cursor == 0,
+                Action::Left => {
+                    *cursor = 0;
+                    return true;
+                }
+                Action::Right => {
+                    *cursor = 1;
+                    return true;
+                }
+                Action::Input(c) if c.eq_ignore_ascii_case(&'y') => true,
+                Action::Input(c) if c.eq_ignore_ascii_case(&'n') => false,
+                Action::Quit => {
+                    self.modal = None;
+                    return true;
+                }
+                _ => return true,
+            };
+            let task_id = *id;
+            self.modal = None;
+            if proceed {
+                if let Some(task) = self.tasks.iter().find(|t| t.id == task_id).cloned() {
+                    self.run_enter_action(task).await;
+                }
             }
             return true;
         }
@@ -407,15 +503,8 @@ impl Render for TasksApp {
                 }
             }
             Action::CycleMode => self.next_mode().await,
+            Action::CycleShow => self.next_show().await,
             Action::ToggleSort => self.toggle_sort(),
-            Action::ToggleScheduled => {
-                self.show_scheduled = !self.show_scheduled;
-                self.refresh().await;
-            }
-            Action::ToggleCompleted => {
-                self.include_completed = !self.include_completed;
-                self.refresh().await;
-            }
             Action::Refresh => self.refresh().await,
             Action::Quit => self.should_quit = true,
             Action::Accept => self.mark_selected_complete().await,
@@ -492,19 +581,10 @@ fn render_app_task_list(f: &mut Frame, app: &TasksApp, area: Rect) {
         .iter()
         .map(|task| {
             let count = task.completions.unwrap_or(0) as i64;
-            // Scheduled tasks carry their own badge semantics (ongoing /
-            // completed / failed); everything else uses the count badge.
-            let (ch, color) = if task.is_scheduled() {
-                crate::views::scheduled_badge(
-                    &app.config,
-                    task.completions,
-                    task.start_time,
-                    task.available_duration_secs,
-                    crate::date::now(),
-                )
-            } else {
-                crate::views::completion_badge(&app.config, count, task.target_count)
-            };
+            // Badge semantics live in badge::task_badge; the @done view
+            // keeps the done-state glyph (◷ / ↻) via done_view.
+            let (ch, color) =
+                crate::badge::task_badge(task, &app.config, app.mode == ViewMode::DoneTasks);
             let dot_style = if color == CtColor::Reset {
                 Style::default().add_modifier(Modifier::BOLD)
             } else {
@@ -531,9 +611,7 @@ fn render_app_task_list(f: &mut Frame, app: &TasksApp, area: Rect) {
             let id_cell = if task.is_done() {
                 String::new()
             } else {
-                task.short_id
-                    .map(|s| s.to_string())
-                    .unwrap_or_default()
+                task.short_id.map(|s| s.to_string()).unwrap_or_default()
             };
             let cells = vec![
                 Cell::from(id_cell),
@@ -549,13 +627,12 @@ fn render_app_task_list(f: &mut Frame, app: &TasksApp, area: Rect) {
         .collect();
 
     let sort_indicator = if app.sort_by_due { "due" } else { "priority" };
-    let mut title = format!("{} [sort: {}]", mode_label(app.mode), sort_indicator);
-    if app.show_scheduled {
-        title.push_str(" +scheduled");
-    }
-    if app.include_completed {
-        title.push_str(" +completed");
-    }
+    let title = format!(
+        "{} [sort: {}] [show: {}]",
+        mode_label(app.mode),
+        sort_indicator,
+        app.show.label()
+    );
 
     // Column widths: id is autosized, pri is a small fixed column, name fills.
     let widths = vec![
@@ -673,6 +750,29 @@ fn render_app_modal(f: &mut Frame, app: &TasksApp) {
             ];
             (None, lines, Some(confirm_buttons(*cursor)))
         }
+        Modal::AvailabilityConfirm { name, cursor, .. } => {
+            // D10: the availability window has passed; completing still
+            // counts in the current interval.
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(
+                        "The availability window for",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                    Span::raw(format!(" '{}' has passed.", name)),
+                ]),
+                Line::from(Span::styled(
+                    "  Update anyway?",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                )),
+                Line::from(""),
+            ];
+            (None, lines, Some(confirm_buttons(*cursor)))
+        }
     };
 
     // Centered box. The count modal is perfectly sized to its content and
@@ -746,8 +846,8 @@ fn render_app_modal(f: &mut Frame, app: &TasksApp) {
 async fn fetch_tasks(
     pool: &SqlitePool,
     mode: ViewMode,
-    include_completed: bool,
-    show_scheduled: bool,
+    show: ShowVariant,
+    persist_pending_seconds: i64,
 ) -> Result<Vec<TaskRow>> {
-    crate::sql::fetch_tasks_for_view(pool, mode, include_completed, show_scheduled).await
+    crate::sql::fetch_tasks_for_view(pool, mode, show, persist_pending_seconds).await
 }

@@ -62,7 +62,8 @@ pub fn open_editor_for_body(show_hint: bool) -> Result<String> {
         tempfile::NamedTempFile::new().context("Failed to create temporary file")?;
 
     if show_hint {
-        writeln!(temp_file, "# additional notes below").context("Failed to write to temporary file")?;
+        writeln!(temp_file, "# additional notes below")
+            .context("Failed to write to temporary file")?;
     }
     temp_file.flush()?;
 

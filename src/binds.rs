@@ -32,9 +32,8 @@ pub fn default_binds() -> BindMap {
     binds.insert(key!(tab), Action::CycleMode);
     // Sort toggle
     binds.insert(key!(ctrl - s), Action::ToggleSort);
-    // Scheduled / completed view toggles (tasks app)
-    binds.insert(key!(ctrl - a), Action::ToggleScheduled);
-    binds.insert(key!(ctrl - d), Action::ToggleCompleted);
+    // Show-variant cycle (All → A → B → All; tasks app + today app)
+    binds.insert(key!(ctrl - d), Action::CycleShow);
     // Primary actions
     binds.insert(key!(enter), Action::Accept);
     binds.insert(key!(delete), Action::Delete(false));

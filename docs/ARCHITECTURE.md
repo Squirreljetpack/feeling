@@ -57,7 +57,7 @@ src/
   render/       ratatui rendering
     mod.rs      Render trait & shared TUI lifecycle runner
     system.rs   TUI external editor suspension helper (pause/resume event loop)
-    tasks.rs    task-list TUI (`!`, `@`, `@done`, `@due`) via TasksApp
+    tasks.rs    task-list TUI (`@[:o|:O]`, `@done[:o|:O]`) via TasksApp
     today.rs    today TUI (Today/Tomorrow/Week horizons) via TodayApp
     preview.rs  task & today entry preview rendering helpers
     utils.rs    priority colors, mode labels, string truncation
@@ -233,11 +233,14 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `--help` / `-h` | `Help` — bundled `assets/help.txt` printed via `include_str!` |
 | plain words (`happy`, `good ...`) | `Entry { feeling, customs, .. }` — mood entry; custom trackers as `-type score` |
 | `..` (bare, at the end) | opens the body editor (Entry/Task with `open_editor`) |
-| `!` (bare) | `View { mode: OneShotTasks, .. }` — the tasks TUI entry |
+| `!` (bare) | `Task { OneShot, name: None, open_editor: true }` — interactive oneshot creation (name prompted via `prompt_name`) |
 | `! description [@date] [..]` | `Task { OneShot, .. }` — `@YYYY-MM-DD` is the **due** time (stored in `end_time`; `start_time` records creation); a second `@`-word is rejected |
 | `! @` / `! @ description` | `Task { Recurring, prefill }` — interactive recurring creation; the description pre-fills the name prompt (`@`-words inside it stay free text) |
 | `! @<time> [:name] [%<duration>] [..]` | `Task { Scheduled, .. }` — scheduled creation; immediate when all three fields came from the CLI, else interactive with pre-fills. The space discriminator is load-bearing: `! @ 10pm` (bare `@`) is recurring, `! @10pm` is scheduled |
-| `@` / `@done` / `@due` | `View { mode, .. }` — recurring / done / due task views |
+| `@[:o\|:O]` | `View { PendingTasks, show }` — pending tasks (all / oneshots only / recurring+scheduled, not availability-filtered); recently-completed tasks stay within `persist_pending_seconds` (D9) |
+| `@done[:o\|:O]` | `View { DoneTasks, show }` — completed tasks (all / oneshots only / recurring history + scheduled incl. auto-completed) |
+| `@due[:t\|:w]` | `Today { date: None, show: B, horizon: Today\|Tomorrow\|Week }` — today view, tasks only |
+| `@<date>` | `Today { date: Some, show: All, horizon: Today }` — anchored today view |
 | `- id [count]` | `Update { OneShot(id), count }` — `id` is the user-facing short id; `count` may be negative |
 | `- words… [count]` | `Update { Query(words), count }` — the unique oneshot task whose name contains the words in order (subsequence match) |
 | `-` alone | `TasksEdit` — stub: `handle_tasks_edit` bails "not yet implemented" |
@@ -297,10 +300,11 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   tasks have no short id and are not addressable here (use the word query form
   instead).
 - **Today** → resolves `@<date>` via `parse_date` with `config.date.dialect`
-  (day-aligned), then TUI (`TodayApp::new(pool, config, day_epoch).run()`) when
-  `tui`, else `views::handle_today(pool, config, day_epoch, opts, out)`.
-- **View** → TUI (`TasksApp::new(pool, mode, config, include_completed,
-  show_scheduled).run()`) when `tui`, else `views::handle_view(...)`.
+  (day-aligned), then TUI (`TodayApp::new(pool, config, day_epoch, show,
+  horizon).run()`) when `tui`, else `views::handle_today(...)`.
+- **View** → TUI (`TasksApp::new(pool, mode, config, show,
+  persist_pending_seconds).run()`) when `tui`, else
+  `views::handle_view(pool, mode, config, show, out)`.
 - **Tracker** → `views::handle_tracker` (no TUI path yet).
 - **Prune** → prunes expired/completed tasks and clears the **entire**
   `embedding_cache` (it is a cache — rows are lazily re-embedded).
@@ -343,12 +347,26 @@ views.rs, render/tasks.rs and render/today.rs (no shared const — queries are
 intentionally duplicated). Single-row fetches use a correlated `(SELECT
 SUM(count) ...)` subquery with the same boundary condition.
 
-Per-mode filters:
-`@` = recurring, not done in the current interval, `end_time > now`, then a
-Rust availability-window check; `@done` = completed tasks (oneshot only at
-`include_completed=false`); `@due` = oneshot, due time (`end_time`, falling
-back to `start_time` for legacy/undated rows) `<= today_end`; `!` =
-oneshot, not done.
+Per-mode filters (`fetch_tasks_for_view(mode, show, persist_pending_seconds)`):
+`@` All = not-done oneshots ∪ recurring (interval-scoped, not expired,
+availability-checked in Rust) ∪ ongoing scheduled (window open, no entry) ∪
+recently-completed (any kind, last `persist_pending_seconds`); `@:o` =
+not-done oneshots only (+ recently-completed oneshots); `@:O` = not-done
+recurring (any not expired, no availability check) ∪ scheduled with an open
+window (+ recently-completed sched/recur); `@done` = done oneshots ∪
+scheduled with any entry ∪ recurring done in the current interval; `@done:o`
+= done oneshots only; `@done:O` = ALL recurring (one row per task, no
+completions filter — history, expired and never-completed rows) ∪ scheduled
+with any entry or auto-completed (no entry, window elapsed). All view
+fetches carry an ORDER BY, but it doesn't actually matter: every consumer
+re-sorts in Rust with the shared view keys — `views::task_done_time` for
+`@done` (last completion entry; entry-less rows fall back per kind to
+`start_time + duration` for auto-completed scheduled, `start_time` for
+zero-entry recurring history), `views::task_entry_time` for pending lists
+and the today view (done rows by last completion entry, scheduled →
+`start_time`, recurring → current-interval availability-window end, oneshot
+→ due time), and `fetch_today_entries` always ends in `today_sort`. The SQL
+order only survives where the Rust keys tie (the sorts are stable).
 
 ### Today view — `fetch_today_entries` / `format_today_simple`
 
@@ -358,9 +376,10 @@ and active recurring tasks (recurring availability filter:
 `(now - start_time) mod interval < available_duration`). **Rows are tasks
 only — completion events are not rendered**; a done task carries `✓` on its
 own row instead. Badges: `●` feeling + Oklab mood projection; `◆` numeric
-custom + `bin_score_color`; `·` text custom; `○`/`✓` oneshot/recurring tasks
-(in-progress vs done via `is_task_done`); scheduled tasks use the
-`scheduled_badge` glyphs with `✓` for done/auto-completed states; journal
+custom + `bin_score_color`; `·` text custom; oneshot tasks use `○`
+(in-progress) / `✓` (done); recurring tasks use `↻` (in-progress) / `✓`
+(done); scheduled tasks render `✓` for done/auto-completed states and `◷`
+for ongoing and failed states; journal
 entries (empty mood) use `config.today_view.journal_badge` when set (no badge
 otherwise). Each entry carries its marker glyph (`TodayEntry.badge:
 Option<char>`) and a dynamic dot color (`TodayEntry.color`, type
@@ -446,13 +465,12 @@ from frame rendering:
 
 - **`Action` enum (`action.rs`)**: unified action set emitted by input parsing
   (`Up`, `Down`, `Left`, `Right`, `Accept`, `Edit`, `Delete(bool)`, `CycleMode`,
-  `ToggleSort`, `ToggleScheduled`, `ToggleCompleted`, `Refresh`, `Quit`, `Ack`,
-  `Input(char)`). Both `TasksApp` and `TodayApp` match on every variant and
-  ignore those that don't apply to their context (scheduled/completed toggles
-  are tasks-app-only).
+  `ToggleSort`, `CycleShow`, `Refresh`, `Quit`, `Ack`, `Input(char)`). Both
+  `TasksApp` and `TodayApp` match on every variant and ignore those that don't
+  apply to their context (`CycleShow` cycles the ShowVariant in both apps).
 - **Key bindings (`binds.rs`)**: `default_binds()` uses `crokey::KeyCombination`
   to map key combinations to `Action`s (`q`/`esc` quit, `j`/`k`/`h`/`l` nav,
-  `tab` cycle mode/horizon, `ctrl-s` sort, `ctrl-a`/`ctrl-d` toggles, `enter`
+  `tab` cycle mode/horizon, `ctrl-s` sort, `ctrl-d` show-variant cycle, `enter`
   accept, `delete`/`backspace` delete, `ctrl-e` edit, `ctrl-r` refresh).
   Unbound keys fall through to `Action::Input(char)` for modal text fields.
 - **Event loop (`event_loop.rs`)**: runs in a dedicated tokio task reading
@@ -497,11 +515,18 @@ the tracker kind on Enter).
 
 ### TUI Applications
 
-- **`TasksApp` (`render/tasks.rs`)** — task-list App (`!`, `@`, `@done`, `@due`):
-  fields include `pool`, `tasks`, `selected`, `mode`, `config`,
-  `include_completed`, `show_scheduled`, `sort_by_due`, `modal`. Modals:
+- **`TasksApp` (`render/tasks.rs`)** — task-list App (`@[:o|:O]`, `@done[:o|:O]`):
+  fields include `pool`, `tasks`, `selected`, `mode`, `show` (`ShowVariant`),
+  `persist_pending_seconds`, `config`, `sort_by_due`, `modal`. Modals:
   `CompleteModal`, `DeleteConfirm` (default No; recurring tasks add an indented
-  italic "This task will stop recurring!" line), `ResetConfirm` (default Yes).
+  italic "This task will stop recurring!" line), `ResetConfirm` (default Yes),
+  `AvailabilityConfirm` (D10 — Enter on a recurring task whose availability
+  window has passed; default Yes). `@done` sorts by `views::task_done_time`
+  (last completion entry; entry-less rows fall back per kind —
+  auto-completed scheduled → `start + duration`, zero-entry recurring →
+  `start_time`) newest first in date mode; equal-priority ties fall back to
+  the same key. Expired `@done:O`
+  history rows log `task {id} is expired` and ignore actions.
   Table renders `short_id / pri / name` with badge and `m/n` sub-line;
   completed tasks show no id. Preview pane (`render/preview.rs`) shows detailed
   task fields.
@@ -648,9 +673,11 @@ real editor.
 
 - **`:score`** — stub (`todo!()`).
 - **`:g` grid view** — parser bails "Grid view (:g) is not yet implemented".
-- **CLI flags for `include_completed` / `include_scheduled`** — intentionally
-  absent: the `INCLUDE_COMPLETED` / `INCLUDE_SCHEDULED` env vars (applied in
-  main.rs via `apply_envs`) are the resolution; no flags will be added.
+- **CLI flags for view variants** — intentionally absent: the `@[:o|:O]` /
+  `@done[:o|:O]` suffixes (`ShowVariant`) and `ctrl+d` in the TUIs cover the
+  former `include_completed` / `include_scheduled` toggles; the
+  `INCLUDE_COMPLETED` / `INCLUDE_SCHEDULED` env vars (previously applied in
+  main.rs via `apply_envs`) were removed with them. No flags will be added.
 - **No DB migrations** — schema changes are CREATE TABLE edits only; the dev DB
   (`~/.local/state/feeling/feeling.db`) must be deleted manually when the schema
   changes.

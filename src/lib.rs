@@ -1,4 +1,5 @@
 pub mod action;
+pub mod badge;
 pub mod binds;
 pub mod clap;
 pub mod color;

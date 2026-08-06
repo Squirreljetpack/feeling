@@ -157,22 +157,30 @@ pub fn format_today_simple(entries: &[TodayEntry]) -> String {
 /// 6 columns: `id \t interval \t next_available \t pri \t name \t status`.
 /// Recurring tasks fill `interval` (`format_duration`) and `next_available`
 /// (the next interval window start, `format_date_time`); oneshot tasks render
-/// a single space in both.
-pub fn format_tasks_simple(tasks: &[TaskRow], config: &Config) -> String {
+/// a single space in both. `done_view` renders the done-list badge variant
+/// (`@done` — scheduled `✓`→`◷`, recurring `✓`→`↻`, see `badge::task_badge`).
+pub fn format_tasks_simple(tasks: &[TaskRow], config: &Config, done_view: bool) -> String {
     use crossterm::style::{Color as CtColor, Stylize};
 
     let mut output = String::new();
     for task in tasks {
         let count = task.completions.unwrap_or(0) as i64;
-        let (ch, color) = crate::views::completion_badge(config, count, task.target_count);
-        // Same badge as the TUI preview: colored dot + plain label.
+        let (ch, color) = crate::badge::task_badge(task, config, done_view);
+        // Same badge as the TUI: colored dot + plain label.
         let dot = if color == CtColor::Reset {
             ch.to_string()
         } else {
             ch.to_string().with(color).to_string()
         };
-        let label = crate::views::completion_badge_text(count, task.target_count);
-        let label = label.strip_prefix(ch).unwrap_or("").to_string();
+        // Progress text (" 2/5") for in-progress target tasks. The text's
+        // own leading glyph is stripped (it may differ from the displayed
+        // badge — ↻/◷/✓) so the dot column doesn't duplicate it.
+        let label = crate::badge::completion_badge_text(count, task.target_count);
+        let label = label
+            .strip_prefix('◯')
+            .or_else(|| label.strip_prefix('●'))
+            .unwrap_or("")
+            .to_string();
         // Completed tasks have no short id — the id column stays empty.
         let id_cell = if task.is_done() {
             String::new()

@@ -43,19 +43,15 @@ pub enum Action {
     /// Cycle the view mode.
     ///
     /// - TodayApp: cycles horizon (today → +tomorrow → +this week → today).
-    /// - App: cycles ViewMode (OneShot → Recurring → Done → Due → Scheduled → ...).
+    /// - App: cycles the mode (Pending ↔ Done).
     CycleMode,
+
+    /// Cycle the ShowVariant (All → A → B → All) in the tasks app and the
+    /// today app (Ctrl+d).
+    CycleShow,
 
     /// Toggle the task list sort direction.
     ToggleSort,
-
-    /// Toggle whether scheduled tasks are included in the current view
-    /// (tasks app only: `!`, `@`, `@done`, `@due`).
-    ToggleScheduled,
-
-    /// Toggle whether completed tasks are included in the current view
-    /// (tasks app only).
-    ToggleCompleted,
 
     /// Reload data from the database.
     Refresh,

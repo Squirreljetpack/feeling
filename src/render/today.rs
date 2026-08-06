@@ -10,6 +10,7 @@ use std::io::Write;
 use tokio::sync::mpsc;
 
 use crate::action::Action;
+use crate::clap::ShowVariant;
 use crate::message::{ControlEvent, RenderEvent};
 use crate::tui::Tui;
 use crate::views::EntryKind;
@@ -24,10 +25,17 @@ pub struct TodayApp {
     pub(crate) entries: Vec<crate::views::TodayEntry>,
     pub(crate) selected: usize,
     pub(crate) horizon: crate::views::TodayHorizon,
+    /// Which task subset the view displays (All / A / B); cycled with
+    /// Ctrl+d. `B` is tasks-only (no trackers/mood sections).
+    show: ShowVariant,
     /// Day the view is anchored to (`None` = today). `feeling @<date>`.
     day_epoch: Option<i64>,
     /// Title label for the anchored day: "Today" / "Yesterday" / DD-MM-YY.
     day_label: String,
+    /// D11: accepted and stored; no behavior yet (future: coalesce adjacent
+    /// completion entries into a single today-view row).
+    #[allow(dead_code)]
+    pub(crate) coalesce_completions: bool,
     pub(crate) sort_by_priority: bool,
     should_quit: bool,
     pub(crate) modal: Option<Modal>,
@@ -51,6 +59,13 @@ pub(crate) enum Modal {
     /// Confirm before resetting a completed task's progress (target_count
     /// > 1 done, or any done task in the tasks app's @done view). Default Yes.
     ResetConfirm {
+        id: i64,
+        name: String,
+        cursor: usize,
+    },
+    /// D10: confirm before completing a recurring task whose availability
+    /// window has passed. Default Yes; a No just closes the modal.
+    AvailabilityConfirm {
         id: i64,
         name: String,
         cursor: usize,
@@ -85,26 +100,32 @@ impl TodayApp {
         pool: &SqlitePool,
         config: crate::config::Config,
         day_epoch: Option<i64>,
+        show: ShowVariant,
+        horizon: crate::views::TodayHorizon,
     ) -> Self {
         let mut color_cache = std::collections::HashMap::new();
         let entries = crate::views::fetch_today_entries(
             pool,
             &config,
-            crate::views::TodayHorizon::Today,
+            horizon,
             day_epoch,
+            show,
             &mut color_cache,
         )
         .await
         .unwrap_or_default();
         let day_label = day_label_for(day_epoch);
+        let coalesce_completions = config.today_view.coalesce_completions;
         let mut app = Self {
             pool: pool.clone(),
             config,
             entries,
             selected: 0,
-            horizon: crate::views::TodayHorizon::Today,
+            horizon,
+            show,
             day_epoch,
             day_label,
+            coalesce_completions,
             sort_by_priority: false,
             should_quit: false,
             modal: None,
@@ -122,6 +143,7 @@ impl TodayApp {
             &self.config,
             self.horizon,
             self.day_epoch,
+            self.show,
             &mut self.color_cache,
         )
         .await
@@ -156,6 +178,12 @@ impl TodayApp {
         self.refresh().await;
     }
 
+    /// Cycle the ShowVariant: All → A → B → All (D5).
+    async fn cycle_show(&mut self) {
+        self.show = self.show.next();
+        self.refresh().await;
+    }
+
     /// Fetch the full TaskRow for the currently selected entry (if it is a
     /// task row).
     async fn fetch_selected_task(&mut self) {
@@ -175,6 +203,28 @@ impl TodayApp {
         let Some(task) = self.selected_task.as_ref() else {
             return;
         };
+        // D10: Enter on a recurring task whose availability window has
+        // passed asks first (default Yes) before the count modal / direct
+        // toggle. The reset path is unchanged.
+        if task.is_recurring()
+            && !task.is_done()
+            && crate::task::availability_passed(task, crate::date::now())
+        {
+            self.modal = Some(Modal::AvailabilityConfirm {
+                id: task.id,
+                name: task.name.clone(),
+                cursor: 0,
+            });
+            return;
+        }
+        let task = task.clone();
+        self.run_enter_action(task).await;
+    }
+
+    /// Run the Enter-action state machine for a task: modal-less toggle
+    /// steps apply directly, `ResetConfirm` / `CompletePrompt` open their
+    /// modals.
+    async fn run_enter_action(&mut self, task: crate::sql::TaskRow) {
         let action = crate::task::enter_action(
             task.completions,
             task.is_scheduled(),
@@ -189,14 +239,12 @@ impl TodayApp {
             crate::task::EnterAction::Complete
             | crate::task::EnterAction::SetFailed
             | crate::task::EnterAction::Clear => {
-                let task = task.clone();
                 if let Err(e) = crate::task::apply_enter_action(&self.pool, &task, action).await {
                     log::error!("Failed to apply enter action to task {}: {e}", task.id);
                 }
                 self.refresh().await;
             }
             crate::task::EnterAction::Reset => {
-                let task = task.clone();
                 if let Err(e) = crate::task::reset_task_progress(&self.pool, &task).await {
                     log::error!("Failed to reset task progress for {}: {e}", task.id);
                 }
@@ -317,6 +365,49 @@ impl TodayApp {
                     self.modal = None;
                 }
                 _ => {}
+            }
+            return true;
+        }
+
+        // D10: Accept while the availability-passed confirm modal is open
+        // proceeds with the normal Enter flow (count modal / direct toggle);
+        // No just closes the modal.
+        if let Some(Modal::AvailabilityConfirm { id, cursor, .. }) = self.modal.as_mut() {
+            let proceed = match action {
+                Action::Accept => *cursor == 0,
+                Action::Left => {
+                    *cursor = 0;
+                    return true;
+                }
+                Action::Right => {
+                    *cursor = 1;
+                    return true;
+                }
+                Action::Input(c) if c.eq_ignore_ascii_case(&'y') => true,
+                Action::Input(c) if c.eq_ignore_ascii_case(&'n') => false,
+                Action::Quit => {
+                    self.modal = None;
+                    return true;
+                }
+                _ => return true,
+            };
+            let task_id = *id;
+            self.modal = None;
+            if proceed {
+                let task = match self.selected_task.as_ref() {
+                    Some(t) if t.id == task_id => t.clone(),
+                    _ => {
+                        match crate::sql::fetch_task_by_id(&self.pool, task_id, crate::date::now())
+                            .await
+                            .ok()
+                            .flatten()
+                        {
+                            Some(t) => t,
+                            None => return true,
+                        }
+                    }
+                };
+                self.run_enter_action(task).await;
             }
             return true;
         }
@@ -578,11 +669,8 @@ impl Render for TodayApp {
                 }
             }
             Action::CycleMode => self.cycle_horizon().await,
+            Action::CycleShow => self.cycle_show().await,
             Action::ToggleSort => self.toggle_sort(),
-            // Scheduled/completed toggles are tasks-app-only; the today view
-            // always includes scheduled tasks (window overlap) and completed
-            // activity, so both are no-ops here.
-            Action::ToggleScheduled | Action::ToggleCompleted => {}
             Action::Refresh => self.refresh().await,
             Action::Quit => self.should_quit = true,
             Action::Accept => self.mark_selected_complete().await,
@@ -667,8 +755,11 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
         format!(" ({})", app.horizon.label())
     };
     let title = format!(
-        " {}{} [sort: {}] ",
-        app.day_label, horizon_suffix, sort_indicator
+        " {}{} [sort: {}] [show: {}] ",
+        app.day_label,
+        horizon_suffix,
+        sort_indicator,
+        app.show.label()
     );
 
     // Last column width = area.width minus the fixed time (8) and dot (4) columns.
@@ -857,6 +948,29 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
                     ),
                     Span::raw(format!(" '{}'?", name)),
                 ]),
+                Line::from(""),
+            ];
+            (None, lines, Some(confirm_buttons(*cursor)))
+        }
+        Modal::AvailabilityConfirm { name, cursor, .. } => {
+            // D10: the availability window has passed; completing still
+            // counts in the current interval.
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(
+                        "The availability window for",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                    Span::raw(format!(" '{}' has passed.", name)),
+                ]),
+                Line::from(Span::styled(
+                    "  Update anyway?",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                )),
                 Line::from(""),
             ];
             (None, lines, Some(confirm_buttons(*cursor)))

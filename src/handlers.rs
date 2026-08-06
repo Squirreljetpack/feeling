@@ -24,38 +24,20 @@ pub async fn handle_command<W: Write>(
     match cmd {
         Command::Entry(entry) => handle_entry(pool, config, opts, _dbg!(entry)).await,
 
-        Command::View {
-            mode,
-            include_completed,
-            include_scheduled,
-        } => {
-            // Both flags are env-only: the INCLUDE_COMPLETED /
-            // INCLUDE_SCHEDULED vars (applied in main.rs) are the only way
-            // to turn them on per run — there are no CLI flags. The TUI
-            // starts with scheduled tasks visible when the command flag is
-            // set or the config asks for it.
+        Command::View { mode, show } => {
             if tui {
-                let show_scheduled = include_scheduled || config.tasks_view.include_scheduled;
                 crate::render::tasks::TasksApp::new(
                     pool,
                     mode,
                     config.clone(),
-                    include_completed,
-                    show_scheduled,
+                    show,
+                    config.tasks_view.persist_pending_seconds,
                 )
                 .await
                 .run()
                 .await
             } else {
-                crate::views::handle_view(
-                    pool,
-                    mode,
-                    config,
-                    include_completed,
-                    include_scheduled,
-                    out,
-                )
-                .await
+                crate::views::handle_view(pool, mode, config, show, out).await
             }
         }
 
@@ -83,7 +65,11 @@ pub async fn handle_command<W: Write>(
             // handle_score(&start, &end, &mut reader, out)
         }
 
-        Command::Today { date } => {
+        Command::Today {
+            date,
+            show,
+            horizon,
+        } => {
             let mut config = config.clone();
             config
                 .moods
@@ -97,12 +83,12 @@ pub async fn handle_command<W: Write>(
                 None => None,
             };
             if tui {
-                crate::render::today::TodayApp::new(pool, config, day_epoch)
+                crate::render::today::TodayApp::new(pool, config, day_epoch, show, horizon)
                     .await
                     .run()
                     .await
             } else {
-                crate::views::handle_today(pool, &config, day_epoch, opts, out).await
+                crate::views::handle_today(pool, &config, day_epoch, show, horizon, opts, out).await
             }
         }
 
@@ -410,13 +396,12 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
 
     match task_type {
         TaskType::OneShot => {
-            if name.is_none() {
-                anyhow::bail!(
-                    "Task name is required. Usage: feeling ! <description> [@<time>] [.. body]"
-                );
-            }
-
-            let name_str = name.as_deref().unwrap();
+            // Bare `!` prompts for the name (interactive creation); the
+            // `open_editor` flag then runs the priority/target/body flow.
+            let name_str = match &name {
+                Some(n) => n.clone(),
+                None => crate::prompts::prompt_name(None)?,
+            };
 
             // Validate name doesn't contain tabs
             if name_str.contains('\t') {

@@ -507,8 +507,8 @@ async fn test_view_oneshot_tasks() {
     .await
     .unwrap();
 
-    // View oneshot tasks and capture the tab-separated output
-    let cmd = parse_from(vec!["!".to_string()]).unwrap();
+    // View pending oneshots via @:o (bare `!` is interactive creation now)
+    let cmd = parse_from(vec!["@:o".to_string()]).unwrap();
     let mut out = Vec::new();
     handle_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
         .await
@@ -531,7 +531,7 @@ async fn test_view_oneshot_tasks() {
         assert_eq!(fields[1], " ", "oneshot interval: {line:?}");
         assert_eq!(fields[2], " ", "oneshot next_available: {line:?}");
         assert_eq!(fields[3], "5", "default priority: {line:?}");
-        assert_eq!(fields[5], "◯", "not-started status: {line:?}");
+        assert_eq!(fields[5], "○", "not-started status: {line:?}");
     }
 
     // Verify both tasks exist
@@ -953,8 +953,16 @@ async fn test_today_view_no_data() {
         .unwrap();
     // handle_today should succeed even with no data
     let mut out = Vec::new();
-    let result =
-        feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
+    let result = feeling::views::handle_today(
+        &pool,
+        &config,
+        None,
+        feeling::clap::ShowVariant::All,
+        feeling::views::TodayHorizon::Today,
+        &CliOpts::default(),
+        &mut out,
+    )
+    .await;
     assert!(result.is_ok());
     let output = String::from_utf8(out).unwrap();
     assert!(
@@ -1042,8 +1050,16 @@ async fn test_today_view_with_data() {
 
     // handle_today should succeed with data and emit tab-separated rows
     let mut out = Vec::new();
-    let result =
-        feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out).await;
+    let result = feeling::views::handle_today(
+        &pool,
+        &config,
+        None,
+        feeling::clap::ShowVariant::All,
+        feeling::views::TodayHorizon::Today,
+        &CliOpts::default(),
+        &mut out,
+    )
+    .await;
     assert!(result.is_ok());
     let output = String::from_utf8(out).unwrap();
     assert!(output.contains("good"), "output: {output:?}");
@@ -1189,9 +1205,17 @@ async fn test_today_view_backfills_feeling_score() {
 
     // A fresh render pass (new color cache) runs the pipeline and backfills.
     let mut out = Vec::new();
-    feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out)
-        .await
-        .unwrap();
+    feeling::views::handle_today(
+        &pool,
+        &config,
+        None,
+        feeling::clap::ShowVariant::All,
+        feeling::views::TodayHorizon::Today,
+        &CliOpts::default(),
+        &mut out,
+    )
+    .await
+    .unwrap();
 
     let scores: Vec<Option<f32>> = sqlx::query_scalar("SELECT score FROM feeling ORDER BY id")
         .fetch_all(&pool)
@@ -1228,7 +1252,7 @@ async fn test_view_done_tasks() {
     .await
     .unwrap();
 
-    // @done should list the completed task
+    // @done should list the completed task; done oneshots render ✓.
     let cmd = parse_from(vec!["@done".to_string()]).unwrap();
     let mut out = Vec::new();
     handle_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
@@ -1241,8 +1265,8 @@ async fn test_view_done_tasks() {
         assert_eq!(fields.len(), 6, "line not tab-separated: {line:?}");
         // Completed tasks show no id — the id column is empty.
         assert!(fields[0].is_empty(), "completed task shows no id: {line:?}");
-        // Done oneshot task → colored "●" badge (no "DONE" suffix anymore).
-        assert!(fields[5].contains('●'), "badge dot expected: {line:?}");
+        // Done oneshot task → ✓ badge (no "DONE" suffix anymore).
+        assert!(fields[5].contains('✓'), "badge dot expected: {line:?}");
         assert!(
             !fields[5].ends_with("DONE"),
             "DONE suffix dropped: {line:?}"
@@ -1274,7 +1298,8 @@ async fn test_view_due_tasks() {
     .await
     .unwrap();
 
-    // @due should list the task
+    // @due opens the TodayView at ShowVariant::B — today-view rows have
+    // 4 tab-separated columns: time, badge, label, detail.
     let cmd = parse_from(vec!["@due".to_string()]).unwrap();
     let mut out = Vec::new();
     handle_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
@@ -1285,10 +1310,702 @@ async fn test_view_due_tasks() {
     for line in output.lines() {
         assert_eq!(
             line.split('\t').count(),
-            6,
-            "line not tab-separated: {line:?}"
+            4,
+            "line not tab-separated into 4 today-view columns: {line:?}"
         );
     }
+}
+
+/// Insert a recurring task row directly and return its id.
+async fn insert_recurring_task(
+    pool: &SqlitePool,
+    name: &str,
+    start_time: i64,
+    interval: i64,
+    available_duration: Option<i64>,
+    target_count: i32,
+    end_time: Option<i64>,
+) -> i64 {
+    sqlx::query(
+        "INSERT INTO todos (name, body, priority, interval_secs, available_duration_secs, target_count, optional, start_time, end_time) \
+         VALUES (?, '', 5, ?, ?, ?, 0, ?, ?)",
+    )
+    .bind(name)
+    .bind(interval)
+    .bind(available_duration)
+    .bind(target_count)
+    .bind(start_time)
+    .bind(end_time)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query_scalar::<_, i64>("SELECT id FROM todos WHERE name = ?")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Run a view command and return its raw output.
+async fn run_view(pool: &SqlitePool, config: &Config, args: &[&str]) -> String {
+    let cmd = parse_from(args.iter().map(|s| s.to_string()).collect()).unwrap();
+    let mut out = Vec::new();
+    handle_command(cmd, pool, config, &CliOpts::default(), &mut out, false)
+        .await
+        .unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// `@done:O` shows ALL recurring tasks (one row per task, no completions
+/// filter): history rows with entries in earlier intervals (unscoped sum),
+/// expired tasks, and even never-completed ones — unlike `@done` (All),
+/// which needs done-in-current-interval and excludes expired tasks (D3).
+/// entry ever (unscoped sum), including expired ones — unlike `@done` (All),
+/// which needs done-in-current-interval and excludes expired tasks (D3).
+#[tokio::test]
+async fn test_view_done_b_recurring_history() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+    let interval = 86_400i64;
+    let now = feeling::date::now();
+
+    // Recurring with completions only in the FIRST interval: unscoped sum 2
+    // (history), current-interval sum 0 (not done now).
+    let start = now - 2 * interval - 500;
+    let history_id =
+        insert_recurring_task(&pool, "history task", start, interval, None, 2, None).await;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(history_id)
+        .bind(start + 100)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(history_id)
+        .bind(start + 200)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Expired recurring with a single completion ever (end_time passed).
+    let expired_id = insert_recurring_task(
+        &pool,
+        "expired task",
+        now - 10 * interval,
+        interval,
+        None,
+        1,
+        Some(now - 1000),
+    )
+    .await;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(expired_id)
+        .bind(now - 10 * interval + 100)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Never-completed recurring (zero entries ever).
+    let _fresh_id = insert_recurring_task(
+        &pool,
+        "fresh task",
+        now - 2 * interval,
+        interval,
+        None,
+        1,
+        None,
+    )
+    .await;
+
+    // @done (All): none appear — history task isn't done in the current
+    // interval, expired task is excluded.
+    let all = run_view(&pool, &config, &["@done"]).await;
+    assert!(!all.contains("history task"), "@done All: {all:?}");
+    assert!(!all.contains("expired task"), "@done All: {all:?}");
+
+    // @done:O (B): all three appear (ALL R — unscoped history, expired and
+    // never-completed rows included).
+    let b = run_view(&pool, &config, &["@done:O"]).await;
+    assert!(b.contains("history task"), "@done:O: {b:?}");
+    assert!(b.contains("expired task"), "@done:O: {b:?}");
+    assert!(b.contains("fresh task"), "@done:O: {b:?}");
+}
+
+/// `@done:O` partial-history rows (recurring with target > 1, entries ever
+/// but sum < target — not `is_done()`) sort by their last completion
+/// entry, not by a future window end (which would push them to the bottom
+/// of the done list as if "due in the future").
+#[tokio::test]
+async fn test_done_b_partial_history_sorts_by_last_completion() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+    let interval = 86_400i64;
+    let now = feeling::date::now();
+
+    // Partial history: target 3, one entry 2 days ago. Its availability
+    // window end is in the future — the buggy sort key.
+    let partial = insert_recurring_task(
+        &pool,
+        "partial task",
+        now - 10 * interval,
+        interval,
+        None,
+        3,
+        None,
+    )
+    .await;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(partial)
+        .bind(now - 2 * interval)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Done task completed 3 days ago (older than the partial's entry).
+    let older_done = insert_recurring_task(
+        &pool,
+        "older done task",
+        now - 10 * interval,
+        interval,
+        None,
+        1,
+        None,
+    )
+    .await;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(older_done)
+        .bind(now - 3 * interval)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Done task completed 1 hour ago.
+    let recent_done = insert_recurring_task(
+        &pool,
+        "recent done task",
+        now - 10 * interval,
+        interval,
+        None,
+        1,
+        None,
+    )
+    .await;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(recent_done)
+        .bind(now - 3600)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Date-descending: recent done, partial (2d ago), older done (3d ago).
+    // With the buggy key (partial = future window end) the partial row
+    // would land last.
+    let done = run_view(&pool, &config, &["@done:O"]).await;
+    let recent_pos = done.find("recent done task").expect("recent row");
+    let partial_pos = done.find("partial task").expect("partial row");
+    let older_pos = done.find("older done task").expect("older row");
+    assert!(recent_pos < partial_pos, "order: {done:?}");
+    assert!(
+        partial_pos < older_pos,
+        "partial-history row sorts by last completion, not a future window end: {done:?}"
+    );
+}
+
+/// `@:O` shows recurring tasks whose availability window has passed (not
+/// expired), while `@` (All) filters them out via `recurring_available`.
+#[tokio::test]
+async fn test_view_pending_b_not_availability_filtered() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+    let interval = 86_400i64;
+    let now = feeling::date::now();
+
+    // Availability window [now-2h, now-1h) — passed, but not expired.
+    let id = insert_recurring_task(
+        &pool,
+        "window passed task",
+        now - 7200,
+        interval,
+        Some(3600),
+        0,
+        None,
+    )
+    .await;
+
+    // @ (All): excluded by the availability filter.
+    let all = run_view(&pool, &config, &["@"]).await;
+    assert!(!all.contains("window passed task"), "@ All: {all:?}");
+
+    // @:O (B): included — no availability post-filter.
+    let b = run_view(&pool, &config, &["@:O"]).await;
+    assert!(b.contains("window passed task"), "@:O: {b:?}");
+
+    // The row itself exists (sanity).
+    let _ = id;
+}
+
+/// The today view includes any task with a completion entry on the anchored
+/// day, even when it would not appear in the regular task lists (recurring
+/// availability window passed), and the merged row's time cell is the last
+/// completion timestamp (VIEWS.md time-label rule).
+#[tokio::test]
+async fn test_today_view_completed_today_inclusion_and_time_label() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    let embedder = feeling::embed::global_embedder();
+    config.moods.init_with(&pool, embedder).await.unwrap();
+
+    let interval = 86_400i64;
+    let yesterday_start = feeling::date::today_start() - 86_400;
+
+    // A: always available (no duration); completion at 10:30 on the anchored
+    // day, outside the current interval.
+    let a = insert_recurring_task(
+        &pool,
+        "completed always",
+        yesterday_start + 6 * 3600,
+        interval,
+        None,
+        0,
+        None,
+    )
+    .await;
+    let a_time = yesterday_start + 10 * 3600 + 30 * 60;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(a)
+        .bind(a_time)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // B: availability window passed on the anchored day (08:00-09:00), so
+    // the regular availability-filtered recurring fetch drops it; only the
+    // completed-today merge surfaces it.
+    let b = insert_recurring_task(
+        &pool,
+        "completed window passed",
+        yesterday_start + 8 * 3600,
+        interval,
+        Some(3600),
+        0,
+        None,
+    )
+    .await;
+    let b_time = yesterday_start + 10 * 3600;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(b)
+        .bind(b_time)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut color_cache = std::collections::HashMap::new();
+    let entries = feeling::views::fetch_today_entries(
+        &pool,
+        &config,
+        feeling::views::TodayHorizon::Today,
+        Some(yesterday_start),
+        feeling::clap::ShowVariant::All,
+        &mut color_cache,
+    )
+    .await
+    .unwrap();
+
+    let row = |name: &str| {
+        entries
+            .iter()
+            .find(|e| e.kind.is_task() && e.label == name)
+            .expect("task row must appear in the today view")
+    };
+    // Time cell = last completion timestamp on the anchored day.
+    assert_eq!(row("completed always").time_label, "10:30");
+    assert_eq!(row("completed window passed").time_label, "10:00");
+    // Both are done in the current interval? No — the badge reflects the
+    // current-interval state (D8): zero completions in the current interval
+    // → not done ↻.
+    assert_eq!(row("completed always").badge, Some('↻'));
+    assert_eq!(row("completed window passed").badge, Some('↻'));
+
+    // The A variant filters completed tasks out and shows no completions.
+    // Neither task is done in the current interval, so both keep their
+    // regular rows — the window-passed task is active earlier in the day
+    // (interval-aware period overlap) and shows its window-end time cell.
+    let entries_a = feeling::views::fetch_today_entries(
+        &pool,
+        &config,
+        feeling::views::TodayHorizon::Today,
+        Some(yesterday_start),
+        feeling::clap::ShowVariant::A,
+        &mut color_cache,
+    )
+    .await
+    .unwrap();
+    let a_win = entries_a
+        .iter()
+        .find(|e| e.label == "completed window passed")
+        .expect("window-passed task stays in A (active earlier in the day)");
+    assert_eq!(
+        a_win.time_label, "We 09:00",
+        "window-passed recurring row shows its window end (weekday prefix: outside the anchored day)"
+    );
+    let a_row = entries_a
+        .iter()
+        .find(|e| e.label == "completed always")
+        .expect("always-available task stays in A");
+    assert_eq!(
+        a_row.time_label, "",
+        "regular recurring row has no time cell"
+    );
+}
+
+/// D9: a just-completed task stays visible in `@` (All) within
+/// `persist_pending_seconds`, and disappears once the window passes.
+#[tokio::test]
+async fn test_persist_pending_seconds() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+    assert_eq!(config.tasks_view.persist_pending_seconds, 5 * 60);
+
+    // Create + complete a oneshot task.
+    let task_id = create_oneshot_task(&pool, "just finished").await;
+    let update_cmd = parse_from(vec!["-".to_string(), task_id.to_string()]).unwrap();
+    handle_command(
+        update_cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    // Still in `@` right after completing (the persist window holds it).
+    let pending = run_view(&pool, &config, &["@"]).await;
+    assert!(pending.contains("just finished"), "@ All: {pending:?}");
+
+    // Backdate the completion past the persist window: it disappears from
+    // `@` (done + outside the window) but stays in `@done`.
+    sqlx::query("UPDATE todo_completions SET time = time - 400")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let pending = run_view(&pool, &config, &["@"]).await;
+    assert!(!pending.contains("just finished"), "@ All: {pending:?}");
+    let done = run_view(&pool, &config, &["@done"]).await;
+    assert!(done.contains("just finished"), "@done All: {done:?}");
+}
+
+/// D9 applies to every pending variant, kind-scoped: `@:o` keeps a
+/// just-completed oneshot (and only oneshots) within the persist window;
+/// `@:O` keeps a just-completed recurring task (and only sched/recur).
+#[tokio::test]
+async fn test_persist_pending_variant_scoping() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    let oneshot = create_oneshot_task(&pool, "just finished oneshot").await;
+    let cmd = parse_from(vec!["-".to_string(), oneshot.to_string()]).unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    // A completed recurring task, also just completed.
+    let interval = 86_400i64;
+    let now = feeling::date::now();
+    let recurring = insert_recurring_task(
+        &pool,
+        "just finished recurring",
+        now - 3600,
+        interval,
+        Some(7200),
+        1,
+        None,
+    )
+    .await;
+    feeling::sql::update_task(&pool, recurring, 1)
+        .await
+        .unwrap();
+
+    // @:o holds the oneshot (D9, oneshot scope) but not the recurring.
+    let a = run_view(&pool, &config, &["@:o"]).await;
+    assert!(a.contains("just finished oneshot"), "@:o: {a:?}");
+    assert!(!a.contains("just finished recurring"), "@:o: {a:?}");
+
+    // @:O holds the recurring (D9, sched/recur scope) but not the oneshot.
+    let b = run_view(&pool, &config, &["@:O"]).await;
+    assert!(b.contains("just finished recurring"), "@:O: {b:?}");
+    assert!(!b.contains("just finished oneshot"), "@:O: {b:?}");
+
+    // Once the persist window passes, both disappear from their variant
+    // (done + outside the window).
+    sqlx::query("UPDATE todo_completions SET time = time - 400")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let a = run_view(&pool, &config, &["@:o"]).await;
+    assert!(!a.contains("just finished oneshot"), "@:o: {a:?}");
+    let b = run_view(&pool, &config, &["@:O"]).await;
+    assert!(!b.contains("just finished recurring"), "@:O: {b:?}");
+}
+
+/// `@:O` scheduled rows are non-done `S` with `window_open`: ongoing and
+/// failed-with-open-window show; failed with a closed window and
+/// auto-completed (no entry, window elapsed) belong to `@done` only.
+#[tokio::test]
+async fn test_pending_b_window_open_scheduled() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+    let now = feeling::date::now();
+
+    // Ongoing: window open, no entry.
+    let ongoing = insert_scheduled(&pool, "ongoing task", now - 7200, 3 * 3600, None).await;
+    // Failed with window still open.
+    let failed_open = insert_scheduled(&pool, "failed open task", now - 7200, 3 * 3600, None).await;
+    // Failed with a closed window.
+    let failed_closed = insert_scheduled(&pool, "failed closed task", now - 7200, 3600, None).await;
+    // Auto-completed: window elapsed, no entry.
+    let auto = insert_scheduled(&pool, "auto completed task", now - 7200, 3600, None).await;
+
+    // Entries outside the persist window so only the window logic decides.
+    let t = now - 600;
+    for (id, count) in [(failed_open, 0), (failed_closed, 0), (auto, 1)] {
+        sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(t)
+            .bind(count)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let b = run_view(&pool, &config, &["@:O"]).await;
+    assert!(b.contains("ongoing task"), "@:O: {b:?}");
+    assert!(b.contains("failed open task"), "@:O: {b:?}");
+    assert!(!b.contains("failed closed task"), "@:O: {b:?}");
+    assert!(!b.contains("auto completed task"), "@:O: {b:?}");
+
+    // The failed-with-closed-window task lives in @done instead.
+    let done = run_view(&pool, &config, &["@done"]).await;
+    assert!(done.contains("failed closed task"), "@done: {done:?}");
+    let _ = ongoing;
+}
+
+/// The today view's recurring fetch is interval-aware: a task started long
+/// ago still shows when its current-interval availability window overlaps
+/// the anchored day, and a task whose windows skip the day does not.
+#[tokio::test]
+async fn test_today_view_interval_aware_recurring_overlap() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    let embedder = feeling::embed::global_embedder();
+    config.moods.init_with(&pool, embedder).await.unwrap();
+
+    let today_start = feeling::date::today_start();
+
+    // Started 60 days ago at 06:00, daily, window 06:00-07:00 each day:
+    // active today, even though start_time + duration is far in the past
+    // (the raw-overlap formula would drop it).
+    let _active = insert_recurring_task(
+        &pool,
+        "old but active today",
+        today_start - 60 * 86_400 + 6 * 3600,
+        86_400,
+        Some(3600),
+        0,
+        None,
+    )
+    .await;
+
+    // Started yesterday at 06:00 on a 2-day interval: windows are
+    // yesterday 06:00 and tomorrow 06:00 — none overlap today.
+    let skipping = insert_recurring_task(
+        &pool,
+        "no window today",
+        today_start - 86_400 + 6 * 3600,
+        2 * 86_400,
+        Some(3600),
+        0,
+        None,
+    )
+    .await;
+
+    let mut color_cache = std::collections::HashMap::new();
+    let entries = feeling::views::fetch_today_entries(
+        &pool,
+        &config,
+        feeling::views::TodayHorizon::Today,
+        None,
+        feeling::clap::ShowVariant::All,
+        &mut color_cache,
+    )
+    .await
+    .unwrap();
+    let active_row = entries
+        .iter()
+        .find(|e| e.label == "old but active today")
+        .expect("interval-aware overlap must surface the old recurring task");
+    assert_eq!(active_row.time_label, "07:00");
+    assert!(
+        !entries.iter().any(|e| e.label == "no window today"),
+        "task with no window overlapping today must not show"
+    );
+    let _ = skipping;
+}
+
+/// Today-view All time label for complete tasks = completion time
+/// (generalizes the scheduled time label): a scheduled task completed in
+/// its window shows the completion time, an auto-completed one shows
+/// start + duration; the B variant (@due) filters completed tasks out.
+#[tokio::test]
+async fn test_today_view_done_time_label_and_b_filter() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    let embedder = feeling::embed::global_embedder();
+    config.moods.init_with(&pool, embedder).await.unwrap();
+
+    let yesterday_start = feeling::date::today_start() - 86_400;
+
+    // Scheduled window [10:00, 16:00) on the anchored day, completed at
+    // 14:30 on that day.
+    let completed = insert_scheduled(
+        &pool,
+        "completed scheduled",
+        yesterday_start + 10 * 3600,
+        6 * 3600,
+        None,
+    )
+    .await;
+    let done_at = yesterday_start + 14 * 3600 + 30 * 60;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(completed)
+        .bind(done_at)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Auto-completed: window [10:00, 12:00) on the anchored day, no entry.
+    insert_scheduled(
+        &pool,
+        "auto completed scheduled",
+        yesterday_start + 10 * 3600,
+        2 * 3600,
+        None,
+    )
+    .await;
+
+    let mut color_cache = std::collections::HashMap::new();
+    let entries = feeling::views::fetch_today_entries(
+        &pool,
+        &config,
+        feeling::views::TodayHorizon::Today,
+        Some(yesterday_start),
+        feeling::clap::ShowVariant::All,
+        &mut color_cache,
+    )
+    .await
+    .unwrap();
+    let row = |name: &str| {
+        entries
+            .iter()
+            .find(|e| e.kind.is_task() && e.label == name)
+            .expect("task row must appear in the today view")
+    };
+    assert_eq!(row("completed scheduled").time_label, "14:30");
+    assert_eq!(row("auto completed scheduled").time_label, "12:00");
+
+    // @due (B) is the same as All but tasks-only (no trackers/mood): a
+    // task completed a minute ago in a window that is still open today
+    // stays, with its completion-time label. The yesterday-anchored tasks
+    // don't overlap today, so they don't show.
+    let now = feeling::date::now();
+    let completed_today =
+        insert_scheduled(&pool, "completed today", now - 2 * 3600, 4 * 3600, None).await;
+    sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
+        .bind(completed_today)
+        .bind(now - 60)
+        .bind(1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let due = run_view(&pool, &config, &["@due"]).await;
+    assert!(
+        due.contains("completed today"),
+        "@due (B) shows completed tasks like All: {due:?}"
+    );
+    let expected = feeling::date::format_time(now - 60);
+    let line = due
+        .lines()
+        .find(|l| l.contains("completed today"))
+        .expect("completed today row");
+    let fields: Vec<&str> = line.split('\t').collect();
+    assert_eq!(fields[0], expected, "completion-time label: {line:?}");
+    assert!(!due.contains("completed scheduled"), "@due: {due:?}");
+    assert!(!due.contains("auto completed scheduled"), "@due: {due:?}");
+}
+
+/// Insert a scheduled task row directly and return its id.
+async fn insert_scheduled(
+    pool: &SqlitePool,
+    name: &str,
+    start_time: i64,
+    duration: i64,
+    end_time: Option<i64>,
+) -> i64 {
+    sqlx::query(
+        "INSERT INTO todos (name, body, priority, interval_secs, available_duration_secs, target_count, optional, start_time, end_time) \
+         VALUES (?, '', 5, NULL, ?, 0, 0, ?, ?)",
+    )
+    .bind(name)
+    .bind(duration)
+    .bind(start_time)
+    .bind(end_time)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query_scalar::<_, i64>("SELECT id FROM todos WHERE name = ?")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Bare `feeling !` is interactive oneshot creation — without a terminal it
+/// fails (the name prompt needs a TTY) instead of listing tasks.
+#[tokio::test]
+async fn test_bare_bang_is_interactive() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+    let cmd = parse_from(vec!["!".to_string()]).unwrap();
+    let result = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "bare `!` must prompt interactively and fail without a TTY"
+    );
 }
 
 #[tokio::test]
@@ -1696,7 +2413,7 @@ async fn test_recurring_previous_interval_completions_still_shown() {
     let config = Config::default();
 
     // @ (CLI) must still show the task: it is not done in the current
-    // interval, so it renders as the not-started badge.
+    // interval, so it renders with the recurring ↻ badge.
     let mut out = Vec::new();
     let cmd = parse_from(vec!["@".to_string()]).unwrap();
     handle_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
@@ -1707,12 +2424,13 @@ async fn test_recurring_previous_interval_completions_still_shown() {
     for line in output.lines() {
         if line.contains(name) {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!(fields[5], "◯", "not-started badge expected: {line:?}");
+            assert_eq!(fields[5], "↻", "recurring badge expected: {line:?}");
         }
     }
 
-    // Completing it in the current interval hides it from the CLI @ view.
-    // (The `- @name` CLI update form was removed, so bump directly.)
+    // Completing it in the current interval: D9 keeps it visible in @ within
+    // persist_pending_seconds (done ✓ badge); once the completion is outside
+    // the persist window it disappears from the CLI @ view.
     feeling::sql::update_task(&pool, task_id, 2).await.unwrap();
 
     let mut out = Vec::new();
@@ -1722,8 +2440,34 @@ async fn test_recurring_previous_interval_completions_still_shown() {
         .unwrap();
     let output = String::from_utf8(out).unwrap();
     assert!(
+        output.contains(name),
+        "@ persist window keeps a just-completed task: {output:?}"
+    );
+    for line in output.lines() {
+        if line.contains(name) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert!(
+                fields[5].contains('✓'),
+                "done badge in pending view: {line:?}"
+            );
+        }
+    }
+
+    // Backdate the completions past the persist window: @ hides it again
+    // (done in the current interval, no longer recently completed).
+    sqlx::query("UPDATE todo_completions SET time = time - 400")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let cmd = parse_from(vec!["@".to_string()]).unwrap();
+    handle_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
+        .await
+        .unwrap();
+    let output = String::from_utf8(out).unwrap();
+    assert!(
         !output.contains(name),
-        "@ must hide a task done in the current interval: {output:?}"
+        "@ must hide a task done in the current interval once the persist window passes: {output:?}"
     );
 }
 
@@ -1769,7 +2513,7 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
     assert_eq!(row.get::<String, _>("score"), "fixed 2 bugs");
     assert_eq!(row.get::<String, _>("t"), "text");
 
-    // Today view: text entries use the · badge with the text as label
+    // Today view: text entries use the ◆ badge with the text as label
     // (bare `feeling` → Today; `-` alone is the TasksEdit stub).
     let cmd = parse_from(vec![]).unwrap();
     let mut out = Vec::new();
@@ -1782,8 +2526,8 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
         "output: {output:?}"
     );
     assert!(
-        output.contains('\t') && output.contains('·'),
-        "text custom entries must use the · badge: {output:?}"
+        output.contains('\t') && output.contains('◆'),
+        "text custom entries must use the ◆ badge: {output:?}"
     );
 
     // : accomplishment lists entries as dark-gray '> text' lines
@@ -2019,7 +2763,6 @@ async fn test_today_view_include_overdue() {
     .unwrap();
     let output = String::from_utf8(out).unwrap();
     assert!(output.contains(name), "output: {output:?}");
-    assert!(output.contains("OVERDUE"), "output: {output:?}");
 }
 
 #[tokio::test]
@@ -2055,6 +2798,8 @@ async fn test_config_view_sections_deserialize() {
 
     let default: Config = toml::from_str("").unwrap();
     assert!(!default.today_view.include_overdue);
+    assert_eq!(default.tasks_view.persist_pending_seconds, 5 * 60);
+    assert!(!default.today_view.coalesce_completions);
     assert!(
         !default.grid.week_rolling,
         "week_rolling must default to false"
@@ -3472,6 +4217,7 @@ async fn test_fetch_today_entries_carries_custom_ids() {
         &config,
         feeling::views::TodayHorizon::Today,
         None,
+        feeling::clap::ShowVariant::All,
         &mut color_cache,
     )
     .await
@@ -3541,6 +4287,7 @@ async fn test_fetch_today_entries_completed_task_has_check_badge() {
         &config,
         feeling::views::TodayHorizon::Today,
         None,
+        feeling::clap::ShowVariant::All,
         &mut color_cache,
     )
     .await
@@ -3584,9 +4331,17 @@ async fn test_today_view_journal_badge() {
 
     // Default (no journal_badge): no badge at all.
     let mut out = Vec::new();
-    feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out)
-        .await
-        .unwrap();
+    feeling::views::handle_today(
+        &pool,
+        &config,
+        None,
+        feeling::clap::ShowVariant::All,
+        feeling::views::TodayHorizon::Today,
+        &CliOpts::default(),
+        &mut out,
+    )
+    .await
+    .unwrap();
     let output = String::from_utf8(out).unwrap();
     let line = output
         .lines()
@@ -3601,9 +4356,17 @@ async fn test_today_view_journal_badge() {
     // With a configured badge, the journal entry carries it.
     config.today_view.journal_badge = Some('•');
     let mut out = Vec::new();
-    feeling::views::handle_today(&pool, &config, None, &CliOpts::default(), &mut out)
-        .await
-        .unwrap();
+    feeling::views::handle_today(
+        &pool,
+        &config,
+        None,
+        feeling::clap::ShowVariant::All,
+        feeling::views::TodayHorizon::Today,
+        &CliOpts::default(),
+        &mut out,
+    )
+    .await
+    .unwrap();
     let output = String::from_utf8(out).unwrap();
     let line = output
         .lines()

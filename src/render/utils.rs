@@ -50,9 +50,7 @@ pub fn priority_color(p: i32) -> Style {
 
 pub fn mode_label(mode: crate::clap::ViewMode) -> &'static str {
     match mode {
-        crate::clap::ViewMode::OneShotTasks => "! Oneshot Tasks",
-        crate::clap::ViewMode::RecurringTasks => "@ Recurring Tasks",
+        crate::clap::ViewMode::PendingTasks => "@ Pending Tasks",
         crate::clap::ViewMode::DoneTasks => "@done Completed",
-        crate::clap::ViewMode::DueTasks => "@due Due",
     }
 }

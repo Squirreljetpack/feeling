@@ -200,6 +200,32 @@ pub fn interval_start(task: &crate::sql::TaskRow, now: i64) -> Option<i64> {
     Some(current_interval_start(start, interval, now))
 }
 
+/// Whether a task's availability window has fully passed (`now >= window
+/// end`). For a recurring task the window is anchored to the **current
+/// interval** — `current_interval_start + available_duration_secs <= now`
+/// — since `start_time` is the chain origin and never advances; for a
+/// scheduled task it is absolute (`start_time + available_duration_secs
+/// <= now`). Tasks without a duration never pass. Used by the D10 confirm
+/// modal (Enter on a recurring task whose window has passed) and the
+/// recurring badge — see docs/VIEWS.md.
+pub fn availability_passed(task: &crate::sql::TaskRow, now: i64) -> bool {
+    match (
+        task.start_time,
+        task.interval_secs,
+        task.available_duration_secs,
+    ) {
+        // Recurring: the window moves with each interval. With
+        // `dur >= interval` the window covers the whole interval, so the
+        // end never precedes now (consistent with `recurring_available`).
+        (Some(st), Some(interval), Some(dur)) if interval > 0 => {
+            current_interval_start(st, interval, now) + dur <= now
+        }
+        // Scheduled: the window is absolute.
+        (Some(st), None, Some(dur)) => st + dur <= now,
+        _ => false,
+    }
+}
+
 /// Reset a task's completion progress: scheduled/oneshot clear all
 /// completions; recurring resets only the current interval (earlier
 /// history survives).
@@ -251,6 +277,60 @@ mod tests {
         // count exactly equal to remaining → entry becomes 0, must be dropped
         assert_eq!(apply_delta_to_counts(&[2, 3], -3), vec![2]);
         assert_eq!(apply_delta_to_counts(&[3], -3), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn test_availability_passed() {
+        let day = 86_400;
+        let st = 1_000_000i64;
+        let hour = 3600;
+        let row = |interval: Option<i64>, dur: Option<i64>| crate::sql::TaskRow {
+            id: 1,
+            short_id: Some(1),
+            name: "t".to_string(),
+            body: String::new(),
+            priority: 5,
+            start_time: Some(st),
+            available_duration_secs: dur,
+            interval_secs: interval,
+            target_count: 0,
+            optional: 0,
+            end_time: None,
+            completions: None,
+            last_time: None,
+        };
+
+        // Recurring, old origin (60 days ago): the window is anchored to
+        // the current interval, not the chain origin.
+        let now = st + 60 * day + 10_000;
+        assert!(
+            availability_passed(&row(Some(day), Some(hour)), now),
+            "window ended at interval_start + 1h, now is 2.7h in"
+        );
+        assert!(
+            !availability_passed(&row(Some(day), Some(hour)), st + 60 * day + 1800),
+            "window still open 30min in"
+        );
+        // Exactly at the window end → passed (<=).
+        assert!(availability_passed(
+            &row(Some(day), Some(hour)),
+            st + 60 * day + hour
+        ));
+        // dur >= interval: the window covers the whole interval → never passed.
+        assert!(!availability_passed(
+            &row(Some(day), Some(2 * day)),
+            st + 60 * day + 1800
+        ));
+        // No duration → never passed.
+        assert!(!availability_passed(&row(Some(day), None), now));
+        assert!(!availability_passed(&row(None, None), now));
+
+        // Scheduled: the window is absolute.
+        assert!(availability_passed(&row(None, Some(hour)), st + 2 * hour));
+        assert!(!availability_passed(
+            &row(None, Some(3 * hour)),
+            st + 2 * hour
+        ));
     }
 
     #[test]

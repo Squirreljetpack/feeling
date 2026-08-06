@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use sqlx::{FromRow, Row, SqlitePool};
 
-use crate::clap::ViewMode;
+use crate::clap::{ShowVariant, ViewMode};
 use crate::config::TrackerType;
 
 // ---------------------------------------------------------------------------
@@ -116,6 +116,8 @@ pub struct TaskRow {
     pub optional: i32,
     pub end_time: Option<i64>,
     pub completions: Option<i32>,
+    #[sqlx(default)]
+    pub last_time: Option<i64>,
 }
 
 impl TaskRow {
@@ -608,15 +610,17 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
             .context("Failed to insert feeling")?
             .get("id")
         } else {
-            sqlx::query("INSERT INTO feeling (mood, body, time, score) VALUES (?, ?, ?, ?) RETURNING id")
-                .bind(&entry.mood)
-                .bind(&entry.body)
-                .bind(entry.time)
-                .bind(entry.score)
-                .fetch_one(&mut *tx)
-                .await
-                .context("Failed to insert feeling")?
-                .get("id")
+            sqlx::query(
+                "INSERT INTO feeling (mood, body, time, score) VALUES (?, ?, ?, ?) RETURNING id",
+            )
+            .bind(&entry.mood)
+            .bind(&entry.body)
+            .bind(entry.time)
+            .bind(entry.score)
+            .fetch_one(&mut *tx)
+            .await
+            .context("Failed to insert feeling")?
+            .get("id")
         };
         Some(id)
     } else {
@@ -862,7 +866,7 @@ pub async fn fetch_due_oneshot_tasks(
     // no longer emits separate completion rows). Due is the end_time when
     // set, else the start_time (legacy rows / undated tasks).
     let tasks = sqlx::query_as::<_, TaskRow>(
-        r#"SELECT t.*, SUM(tc.count) AS completions
+        r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
            FROM todos t
            LEFT JOIN todo_completions tc ON tc.todo_id = t.id
            WHERE t.interval_secs IS NULL
@@ -891,7 +895,7 @@ pub async fn fetch_scheduled_today(
     floor: i64,
 ) -> Result<Vec<TaskRow>> {
     let tasks = sqlx::query_as::<_, TaskRow>(
-        r#"SELECT t.*, SUM(tc.count) AS completions
+        r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
            FROM todos t
            LEFT JOIN todo_completions tc ON tc.todo_id = t.id
            WHERE t.interval_secs IS NULL
@@ -911,7 +915,14 @@ pub async fn fetch_scheduled_today(
 
 /// Whether a recurring task is currently within its availability window.
 /// Tasks without an `available_duration_secs` are always available.
+///
+/// Expired tasks (end_time set and past) are *not* subject to the window
+/// check: they have no current interval, so expiry is handled by the SQL
+/// `end_time` filter instead (they pass through here).
 pub fn recurring_available(task: &TaskRow, now: i64) -> bool {
+    if task.end_time.is_some_and(|end| now > end) {
+        return true;
+    }
     match (
         task.start_time,
         task.interval_secs,
@@ -926,13 +937,104 @@ pub fn recurring_available(task: &TaskRow, now: i64) -> bool {
     }
 }
 
-/// Active recurring tasks with completions scoped to the current interval,
-/// filtered to those currently within their availability window.
-pub async fn fetch_active_recurring_tasks(pool: &SqlitePool, now: i64) -> Result<Vec<TaskRow>> {
-    // Completed tasks are included too: their row carries the ✓ badge (the
-    // today view no longer emits separate completion rows).
+/// Tasks with a completion entry in `[day_start, day_end)` — the
+/// "completed today" fetch for the today view. The completions sum is
+/// scoped to the recurring task's current interval (so the badge matches
+/// the regular recurring fetch, D8); non-recurring rows keep the unscoped
+/// sum. `last_time` is the most recent completion timestamp within the day
+/// window (the time label + sort key for the merged row).
+pub async fn fetch_tasks_completed_on(
+    pool: &SqlitePool,
+    day_start: i64,
+    day_end: i64,
+) -> Result<Vec<TaskRow>> {
+    let now = crate::date::now();
     let tasks = sqlx::query_as::<_, TaskRow>(
-        r#"SELECT t.*, SUM(tc.count) AS completions
+        r#"SELECT t.*, SUM(tc.count) AS completions,
+                  (SELECT MAX(c.time) FROM todo_completions c
+                    WHERE c.todo_id = t.id AND c.time >= ? AND c.time < ?) AS last_time
+           FROM todos t
+           LEFT JOIN todo_completions tc ON tc.todo_id = t.id
+               AND tc.time >= CASE
+                   WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
+                       CASE WHEN ? <= t.start_time THEN t.start_time
+                            ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
+                   ELSE 0 END
+           WHERE EXISTS (
+               SELECT 1 FROM todo_completions c
+               WHERE c.todo_id = t.id AND c.time >= ? AND c.time < ?
+           )
+           GROUP BY t.id"#,
+    )
+    .bind(day_start)
+    .bind(day_end)
+    .bind(now)
+    .bind(now)
+    .bind(day_start)
+    .bind(day_end)
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch tasks completed today")?;
+    Ok(tasks)
+}
+
+/// Whether any per-interval availability window of a recurring task
+/// overlaps `[period_start, period_end]`. Availability windows are
+/// `[start + k*interval, start + k*interval + dur)` (the whole interval
+/// when `dur` is None or >= interval — matching `recurring_available`) and
+/// move with each interval, so the check is built from `interval_start`
+/// math. A raw `start_time + duration >= period_start` comparison would
+/// degenerate to "every task ever started" for old start times — this is
+/// the interval-aware form. When `end_time` is set, windows after the
+/// expiry don't count.
+pub fn availability_windows_overlap(task: &TaskRow, period_start: i64, period_end: i64) -> bool {
+    let (Some(st), Some(interval)) = (task.start_time, task.interval_secs) else {
+        return false;
+    };
+    if interval <= 0 {
+        return false;
+    }
+    // Window length: explicit duration when set and < interval, else the
+    // whole interval.
+    let dur = match task.available_duration_secs {
+        Some(d) if d < interval => d,
+        _ => interval,
+    };
+    // First window index that could reach the period (integer division
+    // truncates, so overshoot by one window; k >= 0).
+    let k0 = ((period_start - st) / interval - 1).max(0);
+    let mut k = k0;
+    loop {
+        let w_start = st + k * interval;
+        if w_start > period_end {
+            return false;
+        }
+        let w_end = match task.end_time {
+            Some(end) => (w_start + dur).min(end),
+            None => w_start + dur,
+        };
+        if w_end > period_start {
+            return true;
+        }
+        k += 1;
+    }
+}
+
+/// Recurring tasks active at any point during `[period_start, period_end]`
+/// — the today-view recurring fetch (all variants). A task is active if
+/// any of its per-interval availability windows overlaps the period
+/// (interval-aware — see [`availability_windows_overlap`]); expired tasks
+/// (`end_time` passed before the period) are excluded, they have no
+/// current interval. Completions and `last_time` are scoped to the current
+/// interval, matching `fetch_tasks_completed_on` (D8).
+pub async fn fetch_recurring_tasks_for_period(
+    pool: &SqlitePool,
+    period_start: i64,
+    period_end: i64,
+) -> Result<Vec<TaskRow>> {
+    let now = crate::date::now();
+    let tasks = sqlx::query_as::<_, TaskRow>(
+        r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
            FROM todos t
            LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                AND tc.time >= CASE
@@ -942,19 +1044,21 @@ pub async fn fetch_active_recurring_tasks(pool: &SqlitePool, now: i64) -> Result
                    ELSE 0 END
            WHERE t.interval_secs IS NOT NULL
            AND (t.end_time IS NULL OR t.end_time > ?)
+           AND t.start_time <= ?
            GROUP BY t.id
-           ORDER BY t.priority DESC"#,
+           ORDER BY t.priority DESC, t.start_time ASC"#,
     )
     .bind(now)
     .bind(now)
-    .bind(now)
+    .bind(period_start)
+    .bind(period_end)
     .fetch_all(pool)
     .await
-    .context("Failed to fetch active recurring tasks")?;
+    .context("Failed to fetch recurring tasks for period")?;
 
     Ok(tasks
         .into_iter()
-        .filter(|t| recurring_available(t, now))
+        .filter(|t| availability_windows_overlap(t, period_start, period_end))
         .collect())
 }
 
@@ -1100,308 +1204,221 @@ fn name_contains_words_in_order(name: &str, words: &[String]) -> bool {
     wi == words.len()
 }
 
-/// Task rows for a view mode, with per-mode completion scoping. Shared by the
-/// CLI (`views::handle_view`) and the TUI tasks app.
+/// Task rows for a view mode at a [`ShowVariant`], with per-mode completion
+/// scoping. Shared by the CLI (`views::handle_view`) and the TUI tasks app.
 ///
-/// `include_completed` drops the not-done filter of each mode; `include_scheduled`
-/// merges scheduled tasks into the `!`, `@` and `@due` views (and replaces
-/// `@done` with scheduled-only rows). See VIEWS.md for the full matrix.
+/// `persist_pending_seconds` keeps just-completed tasks visible in the
+/// pending `All` view (D9). See VIEWS.md for the full matrix.
 pub async fn fetch_tasks_for_view(
     pool: &SqlitePool,
     mode: ViewMode,
-    include_completed: bool,
-    include_scheduled: bool,
+    show: ShowVariant,
+    persist_pending_seconds: i64,
 ) -> Result<Vec<TaskRow>> {
-    match mode {
-        ViewMode::OneShotTasks => {
-            // Incomplete oneshot tasks; with include_scheduled, ongoing
-            // scheduled tasks (window not yet elapsed) are merged in. The
-            // HAVING clause doubles for scheduled rows: target_count is 0,
-            // so any completion entry excludes them.
-            let now = crate::date::now();
-            let (sql, bind_now) = match (include_scheduled, include_completed) {
-                (true, true) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE (t.interval_secs IS NULL AND t.available_duration_secs IS NULL)
-                          OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
-                              AND t.start_time + t.available_duration_secs >= ?)
-                       GROUP BY t.id
-                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
-                    true,
-                ),
-                (true, false) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE (t.interval_secs IS NULL AND t.available_duration_secs IS NULL)
-                          OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
-                              AND t.start_time + t.available_duration_secs >= ?)
-                       GROUP BY t.id
-                       HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
-                    true,
-                ),
-                (false, true) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE t.interval_secs IS NULL AND t.available_duration_secs IS NULL
-                       GROUP BY t.id
-                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
-                    false,
-                ),
-                (false, false) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE t.interval_secs IS NULL AND t.available_duration_secs IS NULL
-                       GROUP BY t.id
-                       HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY t.priority DESC, COALESCE(t.end_time, t.start_time) ASC"#,
-                    false,
-                ),
-            };
-            let mut q = sqlx::query_as::<_, TaskRow>(sql);
-            if bind_now {
-                q = q.bind(now);
-            }
-            let tasks = q
-                .fetch_all(pool)
-                .await
-                .context("Failed to fetch oneshot tasks")?;
-            Ok(tasks)
-        }
-        ViewMode::RecurringTasks => {
-            // Active recurring tasks, plus ongoing scheduled tasks when
-            // include_scheduled is set. Completions are scoped to the
-            // current interval; without include_completed tasks already
-            // done in the current interval are excluded. Scheduled rows
-            // fall to the unscoped (ELSE 0) completion branch, so their
-            // entry-less state is enforced by the same HAVING clause.
-            let now = crate::date::now();
-            let (sql, bind_scheduled) = match (include_scheduled, include_completed) {
-                (true, true) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                           AND tc.time >= CASE
-                               WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
-                                   CASE WHEN ? <= t.start_time THEN t.start_time
-                                        ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                               ELSE 0 END
-                       WHERE (t.interval_secs IS NOT NULL AND (t.end_time IS NULL OR t.end_time > ?))
-                          OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
-                              AND t.start_time + t.available_duration_secs >= ?)
-                       GROUP BY t.id
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
-                    true,
-                ),
-                (true, false) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                           AND tc.time >= CASE
-                               WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
-                                   CASE WHEN ? <= t.start_time THEN t.start_time
-                                        ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                               ELSE 0 END
-                       WHERE (t.interval_secs IS NOT NULL AND (t.end_time IS NULL OR t.end_time > ?))
-                          OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
-                              AND t.start_time + t.available_duration_secs >= ?)
-                       GROUP BY t.id
-                       HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
-                    true,
-                ),
-                (false, true) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                           AND tc.time >= CASE
-                               WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
-                                   CASE WHEN ? <= t.start_time THEN t.start_time
-                                        ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                               ELSE 0 END
-                       WHERE t.interval_secs IS NOT NULL
-                       AND (t.end_time IS NULL OR t.end_time > ?)
-                       GROUP BY t.id
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
-                    false,
-                ),
-                (false, false) => (
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                           AND tc.time >= CASE
-                               WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
-                                   CASE WHEN ? <= t.start_time THEN t.start_time
-                                        ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                               ELSE 0 END
-                       WHERE t.interval_secs IS NOT NULL
-                       AND (t.end_time IS NULL OR t.end_time > ?)
-                       GROUP BY t.id
-                       HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY t.priority DESC, t.start_time ASC"#,
-                    false,
-                ),
-            };
-            let mut q = sqlx::query_as::<_, TaskRow>(sql).bind(now).bind(now);
-            if bind_scheduled {
-                q = q.bind(now).bind(now);
-            } else {
-                q = q.bind(now);
-            }
-            let tasks = q
-                .fetch_all(pool)
-                .await
-                .context("Failed to fetch recurring tasks")?;
+    let now = crate::date::now();
+    match (mode, show) {
+        // `@` All: not-done oneshots ∪ recurring (interval-scoped, not
+        // expired, availability-filtered in Rust) ∪ `ongoing(S)` only (D1:
+        // failed/auto-completed/completed scheduled excluded) ∪ any task
+        // with a completion entry in the last persist_pending_seconds (D9;
+        // the window is `[now - persist, now]` — inclusive upper bound so a
+        // same-second completion stays visible).
+        (ViewMode::PendingTasks, ShowVariant::All) => {
+            let tasks = sqlx::query_as::<_, TaskRow>(
+                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                   FROM todos t
+                   LEFT JOIN todo_completions tc ON tc.todo_id = t.id
+                       AND tc.time >= CASE
+                           WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
+                               CASE WHEN ? <= t.start_time THEN t.start_time
+                                    ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
+                           ELSE 0 END
+                   WHERE (t.interval_secs IS NULL AND t.available_duration_secs IS NULL)
+                      OR (t.interval_secs IS NOT NULL AND (t.end_time IS NULL OR t.end_time > ?))
+                      OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
+                          AND t.start_time + t.available_duration_secs >= ?)
+                      OR t.id IN (SELECT todo_id FROM todo_completions
+                                  WHERE time >= ? AND time <= ?)
+                   GROUP BY t.id
+                   HAVING (t.interval_secs IS NULL AND t.available_duration_secs IS NULL
+                           AND (completions IS NULL OR completions < t.target_count))
+                       OR (t.interval_secs IS NOT NULL
+                           AND (completions IS NULL OR completions < t.target_count))
+                       OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
+                           AND completions IS NULL)
+                       OR t.id IN (SELECT todo_id FROM todo_completions
+                                   WHERE time >= ? AND time <= ?)
+                   ORDER BY t.priority DESC, t.start_time ASC"#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(now - persist_pending_seconds)
+            .bind(now)
+            .bind(now - persist_pending_seconds)
+            .bind(now)
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch pending tasks")?;
 
-            // Keep only tasks currently within their availability window
+            // Keep only recurring tasks currently within their availability
+            // window (`recurring_available` skips expired tasks — they have
+            // no current interval; the SQL end_time filter already excluded
+            // them from the recurring branch, but the D9 recently-completed
+            // union can still surface them).
             Ok(tasks
                 .into_iter()
-                .filter(|t| recurring_available(t, now))
+                .filter(|t| !t.is_recurring() || recurring_available(t, now))
                 .collect())
         }
-        ViewMode::DoneTasks => {
-            // include_scheduled replaces the view with scheduled-only rows:
-            // resolved scheduled tasks. Without include_completed those are
-            // the auto-completed ones (window fully elapsed, no entry); with
-            // it, exactly the scheduled tasks that carry a completion entry
-            // (completed early/on time, or marked failed) — no window bound.
-            // See VIEWS.md.
-            let now = crate::date::now();
-            if include_scheduled {
-                let sql = if include_completed {
-                    r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE t.interval_secs IS NULL
-                         AND t.available_duration_secs IS NOT NULL
-                       GROUP BY t.id
-                       HAVING completions IS NOT NULL
-                       ORDER BY t.start_time DESC"#
-                } else {
-                    r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE t.interval_secs IS NULL
-                         AND t.available_duration_secs IS NOT NULL
-                         AND t.start_time + t.available_duration_secs < ?
-                       GROUP BY t.id
-                       HAVING completions IS NULL
-                       ORDER BY t.start_time DESC"#
-                };
-                let mut q = sqlx::query_as::<_, TaskRow>(sql);
-                if !include_completed {
-                    q = q.bind(now);
-                }
-                let tasks = q
-                    .fetch_all(pool)
-                    .await
-                    .context("Failed to fetch done scheduled tasks")?;
-                Ok(tasks)
-            } else {
-                // include_completed=true: done oneshot tasks plus recurring
-                // tasks complete within their current interval (and inside
-                // their active window). include_completed=false: done
-                // oneshot tasks only. The available_duration_secs guard and
-                // the interval_secs IS NOT NULL on the recurring branch keep
-                // scheduled rows from leaking into either variant.
-                let tasks = if include_completed {
-                    sqlx::query_as::<_, TaskRow>(
-                        r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
-                           FROM todos t
-                           LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                               AND tc.time >= CASE
-                                   WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
-                                       CASE WHEN ? <= t.start_time THEN t.start_time
-                                            ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                                   ELSE 0 END
-                           WHERE (t.interval_secs IS NULL AND t.available_duration_secs IS NULL)
-                              OR (t.interval_secs IS NOT NULL AND (t.start_time IS NULL OR t.start_time <= ?) AND (t.end_time IS NULL OR t.end_time > ?))
-                           GROUP BY t.id
-                           HAVING completions IS NOT NULL AND completions >= t.target_count
-                           ORDER BY COALESCE(MAX(tc.time), t.start_time) DESC"#,
-                    )
-                    .bind(now)
-                    .bind(now)
-                    .bind(now)
-                    .bind(now)
-                    .fetch_all(pool)
-                    .await
-                    .context("Failed to fetch done tasks")?
-                } else {
-                    sqlx::query_as::<_, TaskRow>(
-                        r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
-                           FROM todos t
-                           LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                           WHERE t.interval_secs IS NULL
-                             AND t.available_duration_secs IS NULL
-                           GROUP BY t.id
-                           HAVING completions IS NOT NULL AND completions >= t.target_count
-                           ORDER BY COALESCE(MAX(tc.time), t.start_time) DESC"#,
-                    )
-                    .fetch_all(pool)
-                    .await
-                    .context("Failed to fetch done tasks")?
-                };
-                Ok(tasks)
-            }
-        }
-        ViewMode::DueTasks => {
-            // Tasks due today or overdue: oneshot tasks whose due time
-            // (end_time when set, else the legacy start_time) is today or
-            // earlier, plus scheduled tasks (the same query — interval_secs
-            // IS NULL already matches them) when include_scheduled is set.
-            // The HAVING clause keeps only entry-less scheduled rows unless
-            // include_completed drops it. See VIEWS.md.
-            let today_end = crate::date::today_end();
-            let sql = if include_scheduled {
-                if include_completed {
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE t.interval_secs IS NULL
-                       AND COALESCE(t.end_time, t.start_time) <= ?
-                       GROUP BY t.id
-                       ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
-                } else {
-                    r#"SELECT t.*, SUM(tc.count) AS completions
-                       FROM todos t
-                       LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                       WHERE t.interval_secs IS NULL
-                       AND COALESCE(t.end_time, t.start_time) <= ?
-                       GROUP BY t.id
-                       HAVING completions IS NULL OR completions < t.target_count
-                       ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
-                }
-            } else if include_completed {
-                r#"SELECT t.*, SUM(tc.count) AS completions
+        // `@` A: not-done oneshot tasks only (old `!` list) ∪ D9: any
+        // oneshot (incl. done) with a completion entry in the last
+        // persist_pending_seconds.
+        (ViewMode::PendingTasks, ShowVariant::A) => {
+            let tasks = sqlx::query_as::<_, TaskRow>(
+                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
                    FROM todos t
                    LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                   WHERE t.interval_secs IS NULL
-                   AND t.available_duration_secs IS NULL
-                   AND COALESCE(t.end_time, t.start_time) <= ?
-                   GROUP BY t.id
-                   ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
-            } else {
-                r#"SELECT t.*, SUM(tc.count) AS completions
-                   FROM todos t
-                   LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                   WHERE t.interval_secs IS NULL
-                   AND t.available_duration_secs IS NULL
-                   AND COALESCE(t.end_time, t.start_time) <= ?
+                   WHERE t.interval_secs IS NULL AND t.available_duration_secs IS NULL
                    GROUP BY t.id
                    HAVING completions IS NULL OR completions < t.target_count
-                   ORDER BY COALESCE(t.end_time, t.start_time) ASC, t.priority DESC"#
-            };
-            let tasks = sqlx::query_as::<_, TaskRow>(sql)
-                .bind(today_end)
-                .fetch_all(pool)
-                .await
-                .context("Failed to fetch due tasks")?;
+                       OR t.id IN (SELECT todo_id FROM todo_completions
+                                   WHERE time >= ? AND time <= ?)
+                   ORDER BY t.priority DESC, t.start_time ASC"#,
+            )
+            .bind(now - persist_pending_seconds)
+            .bind(now)
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch pending oneshot tasks")?;
+            Ok(tasks)
+        }
+        // `@` B: not-done recurring (any not expired, NOT availability-
+        // filtered — tasks whose availability window has passed stay) ∪
+        // non-done scheduled with `window_open` (`now <= start + duration`
+        // — ongoing or failed-with-open-window; failed with a closed window
+        // belongs to @done) ∪ D9: sched/recur tasks (incl. done) with a
+        // completion entry in the last persist_pending_seconds.
+        (ViewMode::PendingTasks, ShowVariant::B) => {
+            let tasks = sqlx::query_as::<_, TaskRow>(
+                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                   FROM todos t
+                   LEFT JOIN todo_completions tc ON tc.todo_id = t.id
+                       AND tc.time >= CASE
+                           WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
+                               CASE WHEN ? <= t.start_time THEN t.start_time
+                                    ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
+                           ELSE 0 END
+                   WHERE (t.interval_secs IS NOT NULL AND (t.end_time IS NULL OR t.end_time > ?))
+                      OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
+                          AND t.start_time + t.available_duration_secs >= ?)
+                      OR (t.id IN (SELECT todo_id FROM todo_completions
+                                   WHERE time >= ? AND time <= ?)
+                          AND (t.interval_secs IS NOT NULL
+                               OR t.available_duration_secs IS NOT NULL))
+                   GROUP BY t.id
+                   HAVING (t.interval_secs IS NOT NULL
+                           AND (completions IS NULL OR completions < t.target_count))
+                       OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
+                           AND (completions IS NULL OR completions = 0)
+                           AND t.start_time + t.available_duration_secs >= ?)
+                       OR (t.id IN (SELECT todo_id FROM todo_completions
+                                    WHERE time >= ? AND time <= ?)
+                           AND (t.interval_secs IS NOT NULL
+                                OR t.available_duration_secs IS NOT NULL))
+                   ORDER BY t.priority DESC, t.start_time ASC"#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(now - persist_pending_seconds)
+            .bind(now)
+            .bind(now)
+            .bind(now - persist_pending_seconds)
+            .bind(now)
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch pending recurring/scheduled tasks")?;
+            Ok(tasks)
+        }
+        // `@done` All: done oneshots ∪ scheduled with any entry (completed
+        // or failed — D2) ∪ recurring done in the current interval.
+        (ViewMode::DoneTasks, ShowVariant::All) => {
+            let tasks = sqlx::query_as::<_, TaskRow>(
+                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                   FROM todos t
+                   LEFT JOIN todo_completions tc ON tc.todo_id = t.id
+                       AND tc.time >= CASE
+                           WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
+                               CASE WHEN ? <= t.start_time THEN t.start_time
+                                    ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
+                           ELSE 0 END
+                   WHERE (t.interval_secs IS NULL AND t.available_duration_secs IS NULL)
+                      OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL)
+                      OR (t.interval_secs IS NOT NULL
+                          AND (t.start_time IS NULL OR t.start_time <= ?)
+                          AND (t.end_time IS NULL OR t.end_time > ?))
+                   GROUP BY t.id
+                   HAVING (t.interval_secs IS NULL AND t.available_duration_secs IS NULL
+                           AND completions IS NOT NULL AND completions >= t.target_count)
+                       OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
+                           AND completions IS NOT NULL)
+                       OR (t.interval_secs IS NOT NULL
+                           AND completions IS NOT NULL AND completions >= t.target_count)
+                   ORDER BY COALESCE(MAX(tc.time), t.start_time + COALESCE(t.available_duration_secs, 0)) DESC"#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch done tasks")?;
+            Ok(tasks)
+        }
+        // `@done` A: done oneshot tasks only (`completions >= target_count`).
+        (ViewMode::DoneTasks, ShowVariant::A) => {
+            let tasks = sqlx::query_as::<_, TaskRow>(
+                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                   FROM todos t
+                   LEFT JOIN todo_completions tc ON tc.todo_id = t.id
+                   WHERE t.interval_secs IS NULL AND t.available_duration_secs IS NULL
+                   GROUP BY t.id
+                   HAVING completions IS NOT NULL AND completions >= t.target_count
+                   ORDER BY COALESCE(MAX(tc.time), t.start_time) DESC"#,
+            )
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch done oneshot tasks")?;
+            Ok(tasks)
+        }
+        // `@done` B: ALL recurring tasks (one row per task — history scope,
+        // no completions filter, includes expired and never-completed rows;
+        // D3) ∪ scheduled with any entry or auto-completed (no entry,
+        // window elapsed — D2).
+        (ViewMode::DoneTasks, ShowVariant::B) => {
+            let tasks = sqlx::query_as::<_, TaskRow>(
+                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                   FROM todos t
+                   LEFT JOIN todo_completions tc ON tc.todo_id = t.id
+                   WHERE t.interval_secs IS NOT NULL
+                      OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL)
+                   GROUP BY t.id
+                   HAVING t.interval_secs IS NOT NULL
+                       OR (t.interval_secs IS NULL AND t.available_duration_secs IS NOT NULL
+                           AND (completions IS NOT NULL
+                                OR t.start_time + t.available_duration_secs < ?))
+                   ORDER BY COALESCE(MAX(tc.time),
+                       CASE WHEN t.interval_secs IS NULL
+                            THEN t.start_time + COALESCE(t.available_duration_secs, 0)
+                            ELSE t.start_time END) DESC"#,
+            )
+            .bind(now)
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch done recurring/scheduled tasks")?;
             Ok(tasks)
         }
     }

@@ -28,12 +28,18 @@ pub const EMBED_DIM: usize = 768;
 /// pass.)
 const MAX_SEQ_LEN: usize = 2048;
 
-static EMBED_ONNX: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/model/embed.onnx"));
-static SALIENCY_ONNX: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/model/saliency_adaptor.onnx"));
-static TOKENIZER_JSON: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/model/tokenizer.json"));
+static EMBED_ONNX: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/model/embed.onnx"
+));
+static SALIENCY_ONNX: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/model/saliency_adaptor.onnx"
+));
+static TOKENIZER_JSON: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/model/tokenizer.json"
+));
 
 /// A loaded embedding model: ort sessions for the embedder and saliency
 /// adaptor, plus the WordPiece tokenizer.
@@ -107,8 +113,8 @@ impl Embedder {
             .context("Failed to create input_ids tensor")?;
         let attention_mask = Tensor::from_array((shape.clone(), mask.clone()))
             .context("Failed to create attention_mask tensor")?;
-        let token_type_ids =
-            Tensor::from_array((shape, type_ids)).context("Failed to create token_type_ids tensor")?;
+        let token_type_ids = Tensor::from_array((shape, type_ids))
+            .context("Failed to create token_type_ids tensor")?;
 
         let mut session = self
             .embed

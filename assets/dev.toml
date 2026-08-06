@@ -54,11 +54,14 @@ week_start = "Monday"
 
 [today_view]
 include_overdue = false
+# Merge a task's adjacent completion entries into a single done row
+# in the today view (accepted for future use; no behavior yet).
+coalesce_completions = false
 
 [tasks_view]
-# Start the TUI tasks app with scheduled tasks merged into ! / @ / @done /
-# @due (Ctrl+a toggles live).
-include_scheduled = false
+# Keep a just-completed task visible in the pending view (@) for this many
+# seconds after its last completion entry.
+persist_pending_seconds = 300
 
 [date]
 # uk | us — chrono-english dialect for date parsing. Only affects ambiguous

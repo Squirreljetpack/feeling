@@ -170,13 +170,29 @@ impl Default for DateConfig {
 }
 
 /// `[tasks_view]` section — options for the task-list view (TUI tasks app).
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TasksViewConfig {
-    /// Start the TUI tasks app with scheduled tasks included in the `!`,
-    /// `@`, `@done` and `@due` views (`Ctrl+a` toggles this live).
-    #[serde(default)]
-    pub include_scheduled: bool,
+    /// Keep a task visible in the pending view within this many seconds of
+    /// its last completion entry, so a just-completed task doesn't vanish
+    /// mid-session. Applies to every pending variant, kind-scoped: `All` =
+    /// any task, `A` = oneshots, `B` = sched/recur tasks (D9).
+    #[serde(default = "TasksViewConfig::default_persist_pending_seconds")]
+    pub persist_pending_seconds: i64,
+}
+
+impl Default for TasksViewConfig {
+    fn default() -> Self {
+        Self {
+            persist_pending_seconds: Self::default_persist_pending_seconds(),
+        }
+    }
+}
+
+impl TasksViewConfig {
+    fn default_persist_pending_seconds() -> i64 {
+        5 * 60
+    }
 }
 
 /// `[editor]` section — options for the external body editor (`..`).
@@ -217,6 +233,11 @@ pub struct TodayViewConfig {
     /// word). Omit the key to show no badge.
     #[serde(default)]
     pub journal_badge: Option<char>,
+    /// Merge a task's adjacent completion entries into a single "done" row
+    /// in the today view (currently accepted and stored on TodayApp; no
+    /// behavior yet).
+    #[serde(default)]
+    pub coalesce_completions: bool,
 }
 
 /// `[moods]` color settings — how mood words are turned into colors from

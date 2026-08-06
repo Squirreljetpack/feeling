@@ -93,7 +93,7 @@ echo "=== Done tasks view (@done) ==="
 cargo run --release --bin feeling -- @done
 
 echo ""
-echo "=== Due tasks view (@due) — excludes scheduled tasks by default ==="
+echo "=== Due tasks view (@due) — today view, tasks only ==="
 cargo run --release --bin feeling -- @due
 
 echo ""
@@ -101,8 +101,20 @@ echo "=== @scheduled view was removed (unknown view error) ==="
 cargo run --release --bin feeling -- @scheduled || true
 
 echo ""
-echo "=== Oneshot tasks view (!) — excludes scheduled tasks by default ==="
-cargo run --release --bin feeling -- !
+echo "=== Oneshot tasks view (@:o) ==="
+cargo run --release --bin feeling -- @:o
+
+echo ""
+echo "=== Recurring+scheduled pending view (@:O) ==="
+cargo run --release --bin feeling -- @:O
+
+echo ""
+echo "=== Recurring history / completed scheduled view (@done:O) ==="
+cargo run --release --bin feeling -- @done:O
+
+echo ""
+echo "=== Due view, tomorrow horizon (@due:t) ==="
+cargo run --release --bin feeling -- @due:t
 
 # ---------------------------------------------------------------------------
 # 4. Print the output file path to the original terminal

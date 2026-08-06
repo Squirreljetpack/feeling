@@ -1,24 +1,20 @@
-Better looking preview
-Customizable tui borders
-Support editing (not adding) tasks in TUI's, adding moods in Today view
-subcommands:
-:trackers [text|number|int|float]  list trackers
-support per-tracker colors config for binning
 
-### todo view
+
+### tui
+Matchmaker:
 alt-h/? to set previewpane to display binds
 columns: configurable, default: date, name.
+Customizable tui borders
+Support editing (not adding) tasks in TUI's, adding moods in Today view
 
 ### Drift correction
 Issues: DST, variable month/year durations, time zone changes, leap seconds
 @tomorrow -> maps to tomorrow same time instead of day end
 
 ### Perf
-bring back ort/fastembed under a feature flag as burn turned out to be slow to start
-embed cache is essentially useless since we expect most items to have embeddings. We want to cache the final colors keyed to mood string.
-
-
-our approach is good at using tokens to match to weighted topics, but no good at nuance such as contrastive logic i.e. stuffed triggers hungry more than full.
+bring burn under a feature flag
+tested nli: no good but what's better than embeddings?
+	- even with high accuracy, averaged and ordinary moods get muddied... solutions? top-2? what's top?
 
 # Gradations
 Mood color presets that can be selected on cli i.e. -[1-9]
@@ -40,7 +36,9 @@ recommend using fs with rg to search through all notes.
 config value, confirm before accepting scheduled
 interactive todo creation requires opening editor, a bit odd but not sure how to signal to enable easily.
 :query for a variety of items, categories, filters, output null seperated items
+time-sliced grid views.
 CliError instead of anyhow error, so that we can return Handled without logging the error
 support attaching additional mood/journal entries to Moods, display timestamped in preview (carry extra id column)
-
-# 
+subcommands:
+:trackers [text|number|int|float]  list trackers
+support per-tracker colors config for binning

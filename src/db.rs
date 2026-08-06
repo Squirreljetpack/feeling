@@ -24,8 +24,12 @@ pub async fn init_database(db_path: &Path) -> anyhow::Result<SqlitePool> {
                 sqlx::query("PRAGMA journal_mode = WAL;")
                     .execute(&mut *conn)
                     .await?;
-                sqlx::query("PRAGMA synchronous = NORMAL;").execute(&mut *conn).await?;
-                sqlx::query("PRAGMA foreign_keys = ON;").execute(&mut *conn).await?;
+                sqlx::query("PRAGMA synchronous = NORMAL;")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("PRAGMA foreign_keys = ON;")
+                    .execute(&mut *conn)
+                    .await?;
                 Ok(())
             })
         })
@@ -33,7 +37,7 @@ pub async fn init_database(db_path: &Path) -> anyhow::Result<SqlitePool> {
         .await?;
 
     run_migrations(&pool).await?;
-    
+
     log::debug!("Database initialized at {:?}", db_path);
     Ok(pool)
 }
@@ -44,7 +48,9 @@ pub async fn test_pool() -> anyhow::Result<SqlitePool> {
         .max_connections(1)
         .after_connect(|conn, _| {
             Box::pin(async move {
-                sqlx::query("PRAGMA foreign_keys = ON;").execute(&mut *conn).await?;
+                sqlx::query("PRAGMA foreign_keys = ON;")
+                    .execute(&mut *conn)
+                    .await?;
                 Ok(())
             })
         })
@@ -52,7 +58,7 @@ pub async fn test_pool() -> anyhow::Result<SqlitePool> {
         .await?;
 
     run_migrations(&pool).await?;
-    
+
     Ok(pool)
 }
 
@@ -172,9 +178,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_todo_completions_todo_id ON todo_completions(todo_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_todo_completions_todo_id ON todo_completions(todo_id)",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_todo_completions_todo_time ON todo_completions(todo_id, time)")
         .execute(pool)

@@ -2,6 +2,7 @@ use anyhow::Context;
 use std::env::args;
 
 use crate::types::{Entry, Task};
+use crate::views::TodayHorizon;
 
 /// Characters reserved as leading flags: `-q` (quiet) and `-v` (verbose),
 /// accepted in the *initial* position of any command line as single chars
@@ -47,8 +48,7 @@ pub enum Command {
     Entry(Entry),
     View {
         mode: ViewMode,
-        include_completed: bool,
-        include_scheduled: bool,
+        show: ShowVariant,
     },
     Tracker {
         period: TrackerPeriod,
@@ -65,10 +65,13 @@ pub enum Command {
         end: String,
     },
     /// `feeling` with no args — today view; `feeling @<date>` anchors it to
-    /// an arbitrary day (any date string that parses). `feeling -` (bare)
-    /// is TasksEdit.
+    /// an arbitrary day (any date string that parses); `feeling @due[:t|:w]`
+    /// opens the today view at `ShowVariant::B` with the day/tomorrow/week
+    /// horizon. `feeling -` (bare) is TasksEdit.
     Today {
         date: Option<String>,
+        show: ShowVariant,
+        horizon: TodayHorizon,
     },
     /// `feeling -` (bare) — tasks-edit entry point. The handler is a stub
     /// for now: `handle_tasks_edit` bails "not yet implemented" (interactive
@@ -111,10 +114,42 @@ pub enum UpdateTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
-    OneShotTasks,
-    RecurringTasks,
+    /// The pending view (`@`): not-done oneshots + recurring + scheduled.
+    PendingTasks,
+    /// The completed view (`@done`).
     DoneTasks,
-    DueTasks,
+}
+
+/// Which subset of tasks a view displays (see `docs/VIEWS.md`): `All` shows
+/// everything relevant to the view, `A` is the oneshot-only subset, `B` is
+/// the non-oneshot subset (recurring + scheduled), showing more of these
+/// where applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShowVariant {
+    #[default]
+    All,
+    A,
+    B,
+}
+
+impl ShowVariant {
+    /// Short suffix label used in TUI titles: `[show: a|b|all]`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ShowVariant::All => "all",
+            ShowVariant::A => "a",
+            ShowVariant::B => "b",
+        }
+    }
+
+    /// Cycle order: All → A → B → All (D5).
+    pub fn next(&self) -> Self {
+        match self {
+            ShowVariant::All => ShowVariant::A,
+            ShowVariant::A => ShowVariant::B,
+            ShowVariant::B => ShowVariant::All,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +237,11 @@ pub fn parse_from(args: Vec<String>) -> anyhow::Result<Command> {
     // parse_cli (`-h` / `--help`, initial position only) — parse_from treats
     // a `-h`-style token as entry text.
     if args.is_empty() {
-        return Ok(Command::Today { date: None });
+        return Ok(Command::Today {
+            date: None,
+            show: ShowVariant::All,
+            horizon: TodayHorizon::Today,
+        });
     }
 
     let first = &args[0];
@@ -350,13 +389,20 @@ fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
     // The leading "!" has already been stripped by the caller — `args` holds
     // everything after it.
 
-    // ! alone → list oneshot tasks
+    // ! alone → interactive oneshot creation (the name is prompted; the
+    // editor flow runs for priority/target/body). `!` is no longer a list
+    // view — the pending-oneshots list lives at `@:o`.
     if args.is_empty() {
-        return Ok(Command::View {
-            mode: ViewMode::OneShotTasks,
-            include_completed: false,
-            include_scheduled: false,
-        });
+        return Ok(Command::Task(Task {
+            task_type: TaskType::OneShot,
+            name: None,
+            priority: None,
+            date: None,
+            body: String::new(),
+            open_editor: true,
+            prefill: None,
+            available_duration: None,
+        }));
     }
 
     // `! @ [description] [.. body]` → interactive recurring task creation.
@@ -643,31 +689,73 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
 
 fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
     let first = &args[0];
+    let token = first.strip_prefix('@').unwrap_or(first);
+    let (base, suffix) = match token.split_once(':') {
+        Some((base, suffix)) => (base, Some(suffix)),
+        None => (token, None),
+    };
 
-    let mode = match first.as_str() {
-        "@" => ViewMode::RecurringTasks,
-        "@done" => ViewMode::DoneTasks,
-        "@due" => ViewMode::DueTasks,
+    match base {
+        // `@[:o|:O]` → pending view; suffix `` → All, `o` → A, `O` → B.
+        // The variant suffix is `o` (A) or `O` (B) — there is no `a`
+        // suffix, so `@:a` is invalid.
+        "" => Ok(Command::View {
+            mode: ViewMode::PendingTasks,
+            show: parse_variant_suffix(suffix)?,
+        }),
+        // `@done[:o|:O]` → completed view with the same suffixes.
+        "done" => Ok(Command::View {
+            mode: ViewMode::DoneTasks,
+            show: parse_variant_suffix(suffix)?,
+        }),
+        // `@due[:t|:w]` → TodayView at ShowVariant::B, horizon per suffix
+        // (`` → Today, `t` → Tomorrow, `w` → Week).
+        "due" => {
+            let horizon = match suffix {
+                None => TodayHorizon::Today,
+                Some("t") => TodayHorizon::Tomorrow,
+                Some("w") => TodayHorizon::Week,
+                Some(other) => anyhow::bail!("Unknown @due suffix: ':{}' (use :t or :w)", other),
+            };
+            Ok(Command::Today {
+                date: None,
+                show: ShowVariant::B,
+                horizon,
+            })
+        }
         // Any other @-word is a today-view date: `feeling @2024-03-20`.
         // Parsing itself happens in the handler with the configured date
         // dialect (the CLI parser has no config), so an unparseable date
         // fails there with a clear error rather than here.
         _ => {
-            let rest = first.strip_prefix('@').unwrap_or(first);
-            return Ok(Command::Today {
-                date: Some(rest.to_string()),
-            });
+            if suffix.is_some() {
+                anyhow::bail!(
+                    "Unknown view suffix: '{}' (use :o or :O after @/@done, :t or :w after @due)",
+                    first
+                );
+            }
+            Ok(Command::Today {
+                date: Some(base.to_string()),
+                show: ShowVariant::All,
+                horizon: TodayHorizon::Today,
+            })
         }
-    };
+    }
+}
 
-    Ok(Command::View {
-        mode,
-        // No way to set either flag from the CLI yet; both default to
-        // false (scheduled tasks surface in `feeling today`, the TUI
-        // toggles, and the interactive creation flow).
-        include_completed: false,
-        include_scheduled: false,
-    })
+/// The `ShowVariant` for a `@` / `@done` suffix: `` → All, `o` → A,
+/// `O` → B; anything else is rejected (there is no `a` suffix — starting
+/// in `A` is only possible via `:o`).
+fn parse_variant_suffix(suffix: Option<&str>) -> anyhow::Result<ShowVariant> {
+    match suffix {
+        None => Ok(ShowVariant::All),
+        Some("o") => Ok(ShowVariant::A),
+        Some("O") => Ok(ShowVariant::B),
+        Some(other) => anyhow::bail!(
+            "Unknown view suffix: ':{}' (use :o for oneshots or :O for recurring+scheduled)",
+            other
+        ),
+    }
 }
 
 fn parse_dash_command(args: &[String]) -> anyhow::Result<Command> {
@@ -1233,12 +1321,16 @@ mod tests {
 
     #[test]
     fn test_parse_view_oneshot_list() {
+        // Bare `!` is interactive oneshot creation now — name prompted,
+        // editor flow on. The pending-oneshots list lives at `@:o`.
         let cmd = parse_from(args(&["!"])).unwrap();
         match cmd {
-            Command::View { mode, .. } => {
-                assert_eq!(mode, ViewMode::OneShotTasks);
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.name, None);
+                assert!(task.open_editor);
             }
-            _ => panic!("Expected View command"),
+            _ => panic!("Expected Task command"),
         }
     }
 
@@ -1246,19 +1338,76 @@ mod tests {
     fn test_parse_view_recurring() {
         let cmd = parse_from(args(&["@"])).unwrap();
         match cmd {
-            Command::View { mode, .. } => {
-                assert_eq!(mode, ViewMode::RecurringTasks);
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::PendingTasks);
+                assert_eq!(show, ShowVariant::All);
             }
             _ => panic!("Expected View command"),
         }
     }
 
     #[test]
+    fn test_parse_view_variant_suffixes() {
+        // @:o / @:O → pending view at A / B.
+        let cmd = parse_from(args(&["@:o"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::PendingTasks);
+                assert_eq!(show, ShowVariant::A);
+            }
+            _ => panic!("Expected View command"),
+        }
+        let cmd = parse_from(args(&["@:O"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::PendingTasks);
+                assert_eq!(show, ShowVariant::B);
+            }
+            _ => panic!("Expected View command"),
+        }
+        // @done:o / @done:O / @done → done view at A / B / All.
+        let cmd = parse_from(args(&["@done:o"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ShowVariant::A);
+            }
+            _ => panic!("Expected View command"),
+        }
+        let cmd = parse_from(args(&["@done:O"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ShowVariant::B);
+            }
+            _ => panic!("Expected View command"),
+        }
+        let cmd = parse_from(args(&["@done"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ShowVariant::All);
+            }
+            _ => panic!("Expected View command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_invalid_suffixes() {
+        // There is no `a` suffix; unknown suffixes are rejected.
+        assert!(parse_from(args(&["@:a"])).is_err());
+        assert!(parse_from(args(&["@done:a"])).is_err());
+        assert!(parse_from(args(&["@:x"])).is_err());
+        assert!(parse_from(args(&["@due:x"])).is_err());
+    }
+
+    #[test]
     fn test_parse_view_done() {
         let cmd = parse_from(args(&["@done"])).unwrap();
         match cmd {
-            Command::View { mode, .. } => {
+            Command::View { mode, show } => {
                 assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ShowVariant::All);
             }
             _ => panic!("Expected View command"),
         }
@@ -1266,12 +1415,50 @@ mod tests {
 
     #[test]
     fn test_parse_view_due() {
+        // @due → TodayView at ShowVariant::B with the Today horizon.
         let cmd = parse_from(args(&["@due"])).unwrap();
         match cmd {
-            Command::View { mode, .. } => {
-                assert_eq!(mode, ViewMode::DueTasks);
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
+                assert_eq!(date, None);
+                assert_eq!(show, ShowVariant::B);
+                assert_eq!(horizon, TodayHorizon::Today);
             }
-            _ => panic!("Expected View command"),
+            _ => panic!("Expected Today command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_due_horizons() {
+        // @due:t / @due:w → TodayView at B with the Tomorrow / Week horizon.
+        let cmd = parse_from(args(&["@due:t"])).unwrap();
+        match cmd {
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
+                assert_eq!(date, None);
+                assert_eq!(show, ShowVariant::B);
+                assert_eq!(horizon, TodayHorizon::Tomorrow);
+            }
+            _ => panic!("Expected Today command"),
+        }
+        let cmd = parse_from(args(&["@due:w"])).unwrap();
+        match cmd {
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
+                assert_eq!(date, None);
+                assert_eq!(show, ShowVariant::B);
+                assert_eq!(horizon, TodayHorizon::Week);
+            }
+            _ => panic!("Expected Today command"),
         }
     }
 
@@ -1648,15 +1835,15 @@ mod tests {
             })
         );
 
-        // -v before a task view
+        // -v before a task view (bare `!` is interactive creation now)
         let cli = parse_cli(args(&["-v", "!"])).unwrap();
         assert_eq!(cli.opts.qv, [0, 1]);
         assert!(matches!(
             cli.cmd,
-            Command::View {
-                mode: ViewMode::OneShotTasks,
+            Command::Task(Task {
+                task_type: TaskType::OneShot,
                 ..
-            }
+            })
         ));
 
         // both flags, before a tracker view
@@ -1682,7 +1869,14 @@ mod tests {
         // flag alone → Today (same as no args)
         let cli = parse_cli(args(&["-q"])).unwrap();
         assert_eq!(cli.opts.qv, [1, 0]);
-        assert_eq!(cli.cmd, Command::Today { date: None });
+        assert_eq!(
+            cli.cmd,
+            Command::Today {
+                date: None,
+                show: ShowVariant::All,
+                horizon: TodayHorizon::Today,
+            }
+        );
 
         // no flags
         let cli = parse_cli(args(&["ok"])).unwrap();
@@ -1731,46 +1925,54 @@ mod tests {
 
     #[test]
     fn test_parse_empty_returns_today() {
-        // `feeling` with no args → Today view.
+        // `feeling` with no args → Today view (All, Today horizon).
+        let today = Command::Today {
+            date: None,
+            show: ShowVariant::All,
+            horizon: TodayHorizon::Today,
+        };
         let cmd = parse_from(vec![]).unwrap();
-        assert_eq!(cmd, Command::Today { date: None });
+        assert_eq!(cmd, today.clone());
 
         // The same through parse_cli, with or without a leading flag.
-        assert_eq!(
-            parse_cli(vec![]).unwrap().cmd,
-            Command::Today { date: None }
-        );
-        assert_eq!(
-            parse_cli(args(&["-q"])).unwrap().cmd,
-            Command::Today { date: None }
-        );
+        assert_eq!(parse_cli(vec![]).unwrap().cmd, today.clone());
+        assert_eq!(parse_cli(args(&["-q"])).unwrap().cmd, today);
     }
 
     #[test]
     fn test_parse_today_with_date() {
-        // `feeling @2024-03-20` → today view anchored to that date.
+        // `feeling @2024-03-20` → today view anchored to that date
+        // (All, Today horizon).
         let cmd = parse_from(args(&["@2024-03-20"])).unwrap();
         assert_eq!(
             cmd,
             Command::Today {
                 date: Some("2024-03-20".to_string()),
+                show: ShowVariant::All,
+                horizon: TodayHorizon::Today,
             }
         );
 
         // Multi-word datetimes still work through the @ token.
         let cmd = parse_from(args(&["@2024-03-20", "14:30"])).unwrap();
         match cmd {
-            Command::Today { date } => {
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
                 // Only the first token is the date; the rest is ignored by
                 // the view dispatcher (parse_from sees the full args).
                 assert_eq!(date, Some("2024-03-20".to_string()));
+                assert_eq!(show, ShowVariant::All);
+                assert_eq!(horizon, TodayHorizon::Today);
             }
             _ => panic!("Expected Today command"),
         }
 
         // Relative dates parse too.
         let cmd = parse_from(args(&["@yesterday"])).unwrap();
-        assert!(matches!(cmd, Command::Today { date: Some(_) }));
+        assert!(matches!(cmd, Command::Today { date: Some(_), .. }));
 
         // Unparseable dates still parse at the CLI level (the handler is
         // the authority, using the config dialect) — assert the date is
@@ -1780,6 +1982,8 @@ mod tests {
             cmd,
             Command::Today {
                 date: Some("bogus".to_string()),
+                show: ShowVariant::All,
+                horizon: TodayHorizon::Today,
             }
         );
 
