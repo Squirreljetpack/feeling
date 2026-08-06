@@ -253,6 +253,7 @@ mod tests {
             target_count: 0,
             optional: 0,
             end_time: None,
+            parent: None,
             completions,
             last_time: None,
         }
@@ -318,6 +319,7 @@ mod tests {
                 target_count: target,
                 optional,
                 end_time: None,
+                parent: None,
                 completions,
                 last_time: None,
             };

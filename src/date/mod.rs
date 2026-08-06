@@ -16,6 +16,12 @@ pub mod parse_duration;
 /// Type alias for Unix epoch seconds.
 pub type Epoch = i64;
 
+/// Date formatting dialect for English locales.
+///
+/// `Us` uses month-first ordering (`Aug 6`); `Uk` uses day-first
+/// ordering (`6 Aug`).
+pub const DATE_DIALECT: chrono_english::Dialect = chrono_english::Dialect::Uk;
+
 // cba::define_transparent_wrapper!(Epoch: i64);
 
 // Re-export sub-module functions at the crate::date level.

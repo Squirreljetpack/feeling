@@ -50,12 +50,6 @@ coalesce_completions = true
 # seconds after its last completion entry.
 persist_pending_seconds = 300
 
-[date]
-# uk | us — chrono-english dialect for date parsing. Only affects ambiguous
-# slash forms like "3/5/2024" (uk = 5 March, us = March 5); ISO dates and
-# relative phrases ("yesterday", "3 days ago") are unaffected.
-dialect = "uk"
-
 [editor]
 # Display a hint at the top of the editor when writing entry bodies.
 hint = true

@@ -84,7 +84,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS custom (
+        CREATE TABLE IF NOT EXISTS tracker (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL,
             -- BLOB decltype = no type affinity: storage class is preserved
@@ -117,7 +117,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             interval_secs INTEGER,
             target_count INTEGER NOT NULL DEFAULT 0,
             optional INTEGER NOT NULL DEFAULT 0,
-            end_time INTEGER
+            end_time INTEGER,
+            -- Parent task id for the task tree (NULL = root-level task).
+            -- Deleting a parent re-parents its children to root level
+            -- (ON DELETE SET NULL) rather than cascading or failing.
+            parent INTEGER REFERENCES todos(id) ON DELETE SET NULL
         )
         "#,
     )
@@ -154,15 +158,15 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_custom_time ON custom(time)")
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracker_time ON tracker(time)")
         .execute(pool)
         .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_custom_feeling ON custom(feeling)")
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracker_feeling ON tracker(feeling)")
         .execute(pool)
         .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_custom_type ON custom(type)")
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracker_type ON tracker(type)")
         .execute(pool)
         .await?;
 
@@ -175,6 +179,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_todos_start_time ON todos(start_time)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_todos_parent ON todos(parent)")
         .execute(pool)
         .await?;
 

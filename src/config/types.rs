@@ -45,7 +45,7 @@ impl Default for ColorBins {
     }
 }
 
-/// Payload type for a custom tracker entry.
+/// Payload type for a tracker entry.
 ///
 /// `Text` stores a string (e.g. `-accomplishment "fixed 2 bugs"`), `Number` an
 /// integer, `Float` a decimal. min/max apply to `Number` and `Float`; they are

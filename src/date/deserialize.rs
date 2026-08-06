@@ -1,4 +1,4 @@
-//! Serde helpers for the `Epoch` (i64) duration type used in custom tracker
+//! Serde helpers for the `Epoch` (i64) duration type used in tracker
 //! config.  Durations are stored as human-readable strings in TOML (e.g.
 //! `"1 day"`, `"2 hours"`, `"1 week"`) and deserialized to seconds via
 //! [`crate::date::parse_duration_secs`].  The reverse direction uses

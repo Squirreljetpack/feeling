@@ -6,8 +6,6 @@
 
 use anyhow::Result;
 
-use crate::date::DateDialect;
-
 /// Maximum allowed task priority. Anything higher is rejected at ingestion
 /// time (cliclack validation in `prompt_priority`). Lower bound is 1 — zero
 /// and negative priorities are not meaningful.
@@ -44,14 +42,15 @@ pub fn prompt_priority(default: i32) -> Result<i32> {
 
 /// Prompt for a task's start time. Blank input falls back to the default:
 /// `Some(default)` (recurring creation — the placeholder shows the formatted
-/// `default`) or `now` for scheduled creation. Validated against the configured date
-/// dialect so a bad time fails before the task is created.
-pub fn prompt_start_time(default: Option<&str>, dialect: DateDialect) -> Result<i64> {
+/// `default`) or `now` for scheduled creation. Validated against the fixed
+/// `crate::date::DATE_DIALECT` so a bad time fails before the task is created.
+pub fn prompt_start_time(default: Option<&str>) -> Result<i64> {
     use cliclack::input;
 
     let (default_time, placeholder) = match default {
         Some(s) => (
-            crate::date::parse_datetime(s, dialect).expect("Placeholder should parse"),
+            crate::date::parse_datetime(s, crate::date::DATE_DIALECT)
+                .expect("Placeholder should parse"),
             s.to_string(),
         ),
         None => {
@@ -67,7 +66,7 @@ pub fn prompt_start_time(default: Option<&str>, dialect: DateDialect) -> Result<
             if input.trim().is_empty() {
                 Ok(())
             } else {
-                crate::date::parse_datetime(input, dialect)
+                crate::date::parse_datetime(input, crate::date::DATE_DIALECT)
                     .map(|_| ())
                     .map_err(|e| format!("Invalid time: {}", e))
             }
@@ -78,7 +77,7 @@ pub fn prompt_start_time(default: Option<&str>, dialect: DateDialect) -> Result<
     if raw.trim().is_empty() {
         Ok(default_time)
     } else {
-        crate::date::parse_datetime(&raw, dialect)
+        crate::date::parse_datetime(&raw, crate::date::DATE_DIALECT)
     }
 }
 
@@ -109,9 +108,37 @@ pub fn prompt_target_count() -> Result<i32> {
     Ok(raw.trim().parse::<i32>().unwrap_or(0))
 }
 
+/// Prompt for an optional parent task short id (`! -<parent_id>`). Blank
+/// input means no parent. The short id is not validated against the
+/// database here (that needs the pool — the caller resolves it and errors
+/// on an unknown id).
+pub fn prompt_parent_id() -> Result<Option<i64>> {
+    use cliclack::input;
+
+    let raw: String = input("(Optional) Parent id:")
+        .placeholder("none")
+        .default_input("")
+        .validate(|value: &String| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Ok(())
+            } else {
+                match trimmed.parse::<i64>() {
+                    Ok(n) if n > 0 => Ok(()),
+                    Ok(_) => Err(String::from("Must be positive")),
+                    Err(_) => Err(String::from("Must be a number")),
+                }
+            }
+        })
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))?;
+
+    Ok(raw.trim().parse::<i64>().ok())
+}
+
 /// Prompt for a task name (required, no tabs, trimmed). The duplicate-name
 /// check against the database is the caller's responsibility (it needs the
-/// pool); `prefill` seeds the input for `feeling ! @ <description>`.
+/// pool); `prefill` seeds the input for `feeling ! @ <name>`.
 pub fn prompt_name(prefill: Option<&str>) -> Result<String> {
     use cliclack::input;
 
@@ -146,9 +173,11 @@ pub fn prompt_interval(default: Option<&str>) -> Result<String> {
             if input.is_empty() {
                 Err(String::from("Interval is required"))
             } else {
-                crate::date::parse_duration_secs(input)
-                    .map(|_| ())
-                    .map_err(|e| format!("Invalid duration: {}", e))
+                match crate::date::parse_duration_secs(input) {
+                    Ok(secs) if secs > 0 => Ok(()),
+                    Ok(_) => Err(String::from("Interval must be positive")),
+                    Err(e) => Err(format!("Invalid duration: {}", e)),
+                }
             }
         })
         .interact()
@@ -196,15 +225,19 @@ pub fn prompt_available_duration(
 
 /// Prompt for a recurring-task end time. The label is "Duration or end time":
 /// input is validated as a duration first (e.g. "1 year", relative to now)
-/// and then as an absolute date/time via `dialect`. Blank = never ends.
+/// and then as an absolute date/time via the fixed `crate::date::DATE_DIALECT`.
+/// Blank = never ends.
 /// Returns the resolved Unix-epoch end time, or `None` for never. `default`
 /// is the remaining time in seconds (pre-filled as a formatted duration).
-pub fn prompt_end(default: Option<&str>, dialect: DateDialect) -> Result<Option<i64>> {
+pub fn prompt_end(default: Option<&str>) -> Result<Option<i64>> {
     use cliclack::input;
 
     let (default_time, placeholder) = match default {
         Some(s) => (
-            Some(crate::date::parse_datetime(s, dialect).expect("Placeholder should parse")),
+            Some(
+                crate::date::parse_datetime(s, crate::date::DATE_DIALECT)
+                    .expect("Placeholder should parse"),
+            ),
             s.to_string(),
         ),
         None => (None, "never".to_string()),
@@ -220,7 +253,7 @@ pub fn prompt_end(default: Option<&str>, dialect: DateDialect) -> Result<Option<
             {
                 Ok(())
             } else {
-                crate::date::parse_datetime(input, dialect)
+                crate::date::parse_datetime(input, crate::date::DATE_DIALECT)
                     .map(|_| ())
                     .map_err(|e| format!("Invalid duration or time: {}", e))
             }
@@ -233,7 +266,7 @@ pub fn prompt_end(default: Option<&str>, dialect: DateDialect) -> Result<Option<
     } else if let Ok(dur) = crate::date::parse_duration_secs(&raw) {
         Ok(Some(crate::date::now() + dur))
     } else {
-        crate::date::parse_datetime(&raw, dialect).map(Some)
+        crate::date::parse_datetime(&raw, crate::date::DATE_DIALECT).map(Some)
     }
 }
 

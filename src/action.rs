@@ -29,8 +29,8 @@ pub enum Action {
     /// Edit the selected item.
     ///
     /// - Tasks (oneshot and recurring): edit body via external editor.
-    /// - Custom tracker (Text): edit value via external editor.
-    /// - Custom tracker (Number / Float): edit numeric value via external
+    /// - Tracker (Text): edit value via external editor.
+    /// - Tracker (Number / Float): edit numeric value via external
     ///   editor.
     /// - Mood entry: edit body via external editor.
     Edit,

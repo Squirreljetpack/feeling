@@ -12,7 +12,7 @@ pub fn task_intro(title: &str) -> Result<()> {
     Ok(())
 }
 
-/// Display a logged entry: mood, custom trackers, and body as field/value
+/// Display a logged entry: mood, trackers, and body as field/value
 /// rows (tab-separated, vertically aligned). Quiet suppresses the whole
 /// confirmation; otherwise all rows are always shown.
 pub fn display_entry(entry: &crate::sql::EntryObject, opts: &CliOpts) -> Result<()> {
@@ -23,8 +23,8 @@ pub fn display_entry(entry: &crate::sql::EntryObject, opts: &CliOpts) -> Result<
     if !entry.mood.is_empty() {
         rows.push(("Feeling".to_string(), entry.mood.clone()));
     }
-    for custom in &entry.customs {
-        rows.push((custom.tracker_type.clone(), custom.value.to_string()));
+    for tracker in &entry.trackers {
+        rows.push((tracker.tracker_type.clone(), tracker.value.to_string()));
     }
     if !entry.body.is_empty() {
         rows.push(("Body".to_string(), entry.body.clone()));
@@ -235,6 +235,7 @@ mod tests {
             target_count: 20,
             optional: false,
             end_time: None,
+            parent: None,
         };
         let rows = task_rows(&task);
         let type_row = rows.iter().find(|(l, _)| l == "Type").unwrap();

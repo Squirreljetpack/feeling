@@ -1,5 +1,5 @@
 //! Seed the feeling database with all variations of mood entries,
-//! custom-tracker entries, oneshot tasks, recurring tasks, and
+//! tracker entries, oneshot tasks, recurring tasks, and
 //! scheduled tasks — constructed directly as `sql::EntryObject` /
 //! `sql::TaskObject` payloads (no CLI, no interactive prompts, no
 //! command dispatch).
@@ -25,8 +25,8 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 use feeling::date;
 use feeling::sql::{
-    create_entry, create_task, set_scheduled_completion, update_task, CustomObject, CustomValue,
-    EntryObject, TaskObject,
+    create_entry, create_task, set_scheduled_completion, update_task, EntryObject, TaskObject,
+    TrackerObject, TrackerValue,
 };
 
 fn main() -> Result<()> {
@@ -78,7 +78,7 @@ async fn populate(pool: &sqlx::SqlitePool, config: &Config) -> Result<()> {
 // 1. Mood & tracker entries
 // ---------------------------------------------------------------------------
 
-/// Mood + custom-tracker entries, each with `embedding: None`. Times are
+/// Mood + tracker entries, each with `embedding: None`. Times are
 /// chosen so every tracker grid period gets structure:
 ///
 /// - *today*: one entry per hour covering every tracker kind and bin edge.
@@ -305,7 +305,7 @@ async fn seed_oneshot_tasks(
     )
     .await?;
     // Old past with a body (specific datetime).
-    let old = date::parse_datetime("2024-03-20 14:30:00", date::DateDialect::Uk)?;
+    let old = date::parse_datetime("2024-03-20 14:30:00", date::DATE_DIALECT)?;
     seed_task(
         pool,
         "team sync",
@@ -598,22 +598,22 @@ async fn seed_scheduled_tasks(
 // ---------------------------------------------------------------------------
 
 /// Resolve a raw tracker value into the typed payload per the config's
-/// declared kind (mirrors `handlers::parse_custom_value`; the seed script
+/// declared kind (mirrors `handlers::parse_tracker_value`; the seed script
 /// does not go through the CLI).
-fn custom_value(config: &Config, name: &str, raw: &str) -> Result<CustomValue> {
+fn tracker_value(config: &Config, name: &str, raw: &str) -> Result<TrackerValue> {
     let tracker = config
         .tracker
         .get(name)
-        .with_context(|| format!("Unknown custom tracker type '{name}' not found in config"))?;
+        .with_context(|| format!("Unknown tracker type '{name}' not found in config"))?;
     Ok(match tracker.kind {
-        TrackerKind::Text => CustomValue::Text(raw.to_string()),
+        TrackerKind::Text => TrackerValue::Text(raw.to_string()),
         TrackerKind::Number => {
-            CustomValue::Number(raw.parse().with_context(|| {
+            TrackerValue::Number(raw.parse().with_context(|| {
                 format!("Cannot parse '{raw}' as an integer for tracker '{name}'")
             })?)
         }
         TrackerKind::Float => {
-            CustomValue::Float(raw.parse().with_context(|| {
+            TrackerValue::Float(raw.parse().with_context(|| {
                 format!("Cannot parse '{raw}' as a number for tracker '{name}'")
             })?)
         }
@@ -639,7 +639,7 @@ fn replace_slot(config: &Config, name: &str, time: i64) -> Option<(i64, i64)> {
         })
 }
 
-/// Insert one mood/custom entry with `embedding: None`. The grid and today
+/// Insert one mood/tracker entry with `embedding: None`. The grid and today
 /// views recompute embeddings on the fly and backfill them on first render.
 async fn seed_entry(
     pool: &sqlx::SqlitePool,
@@ -647,14 +647,14 @@ async fn seed_entry(
     mood: &str,
     body: &str,
     time: i64,
-    customs: &[(&str, &str)],
+    trackers: &[(&str, &str)],
 ) -> Result<()> {
-    let customs = customs
+    let trackers = trackers
         .iter()
-        .map(|(name, raw)| -> Result<CustomObject> {
-            Ok(CustomObject {
+        .map(|(name, raw)| -> Result<TrackerObject> {
+            Ok(TrackerObject {
                 tracker_type: name.to_string(),
-                value: custom_value(config, name, raw)?,
+                value: tracker_value(config, name, raw)?,
                 replace_slot: replace_slot(config, name, time),
             })
         })
@@ -665,7 +665,7 @@ async fn seed_entry(
         time,
         embedding: None,
         score: None,
-        customs,
+        trackers,
     };
     create_entry(pool, &entry).await?;
     Ok(())
@@ -698,6 +698,7 @@ async fn seed_task(
         target_count,
         optional,
         end_time,
+        parent: None,
     };
     let (id, _) = create_task(pool, &task).await?;
     Ok(id)

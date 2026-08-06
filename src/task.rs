@@ -108,6 +108,33 @@ pub fn completion_percentage(target_count: i32, completions: Option<i32>) -> Opt
     }
 }
 
+/// Category of a task, derived from its scheduling fields.
+///
+/// Order matters when deriving from a row: recurring > scheduled >
+/// threshold > oneshot (see [`crate::sql::TaskRow::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    /// One-shot task without a completion target (`target_count == 0`).
+    Oneshot,
+    /// One-shot task with a completion target (`target_count > 0`).
+    Threshold,
+    /// Recurring task (has an interval).
+    Recurring,
+    /// Scheduled task (no interval; has an availability window).
+    Scheduled,
+}
+
+impl std::fmt::Display for TaskKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TaskKind::Oneshot => "oneshot",
+            TaskKind::Threshold => "threshold",
+            TaskKind::Recurring => "recurring",
+            TaskKind::Scheduled => "scheduled",
+        })
+    }
+}
+
 /// What Enter should do with a task — decided by the shared pure fn so both
 /// TUIs behave identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +323,7 @@ mod tests {
             target_count: 0,
             optional: 0,
             end_time: None,
+            parent: None,
             completions: None,
             last_time: None,
         };

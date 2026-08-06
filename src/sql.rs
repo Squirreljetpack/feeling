@@ -33,6 +33,9 @@ pub struct TaskObject {
     pub target_count: i32,
     pub optional: bool,
     pub end_time: Option<i64>,
+    /// Parent task id (task tree); `None` for root-level tasks. Not
+    /// settable through the CLI yet — creation always inserts root tasks.
+    pub parent: Option<i64>,
 }
 
 impl TaskObject {
@@ -58,9 +61,9 @@ pub struct UpdateTaskObject {
     pub end_time: Option<i64>,
 }
 
-/// A logged mood entry plus any linked custom-tracker values.
+/// A logged mood entry plus any linked tracker values.
 ///
-/// `customs` carries the pre-resolved `CustomValue`s and, for Text/Float
+/// `trackers` carries the pre-resolved `TrackerValue`s and, for Text/Float
 /// trackers with an interval, the slot `(start, end)` whose previous entry
 /// is replaced inside the insert transaction.
 #[derive(Debug, Clone)]
@@ -72,30 +75,30 @@ pub struct EntryObject {
     /// Cached emotional-saliency score for the mood text, computed at entry
     /// creation (`None` for journal-only rows or failed embeddings).
     pub score: Option<f32>,
-    pub customs: Vec<CustomObject>,
+    pub trackers: Vec<TrackerObject>,
 }
 
 #[derive(Debug, Clone)]
-pub struct CustomObject {
+pub struct TrackerObject {
     pub tracker_type: String,
-    pub value: CustomValue,
+    pub value: TrackerValue,
     pub replace_slot: Option<(i64, i64)>,
 }
 
-/// Typed payload of a custom tracker entry, determined by its configured kind.
+/// Typed payload of a tracker entry, determined by its configured kind.
 #[derive(Debug, Clone)]
-pub enum CustomValue {
+pub enum TrackerValue {
     Text(String),
     Number(i64),
     Float(f64),
 }
 
-impl std::fmt::Display for CustomValue {
+impl std::fmt::Display for TrackerValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CustomValue::Text(s) => write!(f, "{}", s),
-            CustomValue::Number(n) => write!(f, "{}", n),
-            CustomValue::Float(x) => write!(f, "{}", x),
+            TrackerValue::Text(s) => write!(f, "{}", s),
+            TrackerValue::Number(n) => write!(f, "{}", n),
+            TrackerValue::Float(x) => write!(f, "{}", x),
         }
     }
 }
@@ -115,6 +118,8 @@ pub struct TaskRow {
     pub target_count: i32,
     pub optional: i32,
     pub end_time: Option<i64>,
+    /// Parent task id (task tree); `None` for root-level tasks.
+    pub parent: Option<i64>,
     pub completions: Option<i32>,
     #[sqlx(default)]
     pub last_time: Option<i64>,
@@ -130,6 +135,22 @@ impl TaskRow {
     /// available duration too, so the interval check is what separates them.
     pub fn is_scheduled(&self) -> bool {
         self.interval_secs.is_none() && self.available_duration_secs.is_some()
+    }
+
+    /// The task's [`TaskKind`](crate::task::TaskKind), derived from its
+    /// scheduling fields: recurring (has an interval) > scheduled
+    /// (availability window, no interval) > threshold (`target_count > 0`)
+    /// > oneshot.
+    pub fn kind(&self) -> crate::task::TaskKind {
+        if self.is_recurring() {
+            crate::task::TaskKind::Recurring
+        } else if self.is_scheduled() {
+            crate::task::TaskKind::Scheduled
+        } else if self.target_count > 0 {
+            crate::task::TaskKind::Threshold
+        } else {
+            crate::task::TaskKind::Oneshot
+        }
     }
 
     pub fn is_done(&self) -> bool {
@@ -172,11 +193,11 @@ pub struct FeelingRow {
     pub score: Option<f32>,
 }
 
-/// A custom-tracker row with the score decoded as text (the `score` column
-/// is a BLOB with dynamic typing; `CAST(score AS TEXT)` makes every storage
-/// type decodable).
+/// A tracker row with the score decoded as text (the `score` column is a
+/// BLOB with dynamic typing; `CAST(score AS TEXT)` makes every storage type
+/// decodable).
 #[derive(Debug, Clone)]
-pub struct CustomEntryRow {
+pub struct TrackerEntryRow {
     pub id: i64,
     pub tracker_type: String,
     pub score: String,
@@ -238,11 +259,16 @@ pub async fn create_task(pool: &SqlitePool, task: &TaskObject) -> Result<(i64, i
         task.id.is_none(),
         "create_task assigns the row id itself; the task must not carry one"
     );
+    assert!(
+        task.interval_secs.is_none_or(|i| i > 0),
+        "interval_secs must be None or positive, got {:?}",
+        task.interval_secs
+    );
     let short_id = allocate_short_id(pool).await?;
 
     let row = sqlx::query(
-        r#"INSERT INTO todos (name, body, priority, short_id, start_time, available_duration_secs, interval_secs, target_count, optional, end_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        r#"INSERT INTO todos (name, body, priority, short_id, start_time, available_duration_secs, interval_secs, target_count, optional, end_time, parent)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING id"#,
     )
     .bind(&task.name)
@@ -255,6 +281,7 @@ pub async fn create_task(pool: &SqlitePool, task: &TaskObject) -> Result<(i64, i
     .bind(task.target_count)
     .bind(if task.optional { 1 } else { 0 })
     .bind(task.end_time)
+    .bind(task.parent)
     .fetch_one(pool)
     .await
     .context("Failed to create task")?;
@@ -266,6 +293,11 @@ pub async fn create_task(pool: &SqlitePool, task: &TaskObject) -> Result<(i64, i
 /// Update the recurring-task fields of an existing task. Returns the number
 /// of affected rows.
 pub async fn edit_task(pool: &SqlitePool, update: &UpdateTaskObject) -> Result<u64> {
+    assert!(
+        update.interval_secs.is_none_or(|i| i > 0),
+        "interval_secs must be None or positive, got {:?}",
+        update.interval_secs
+    );
     let res = sqlx::query(
         r#"UPDATE todos SET interval_secs = ?, available_duration_secs = ?, target_count = ?,
                    optional = ?, end_time = ? WHERE id = ?"#,
@@ -570,6 +602,18 @@ pub async fn fetch_task_short_id(pool: &SqlitePool, id: i64) -> Result<Option<i6
     Ok(short_id)
 }
 
+/// Resolve a user-facing `short_id` to a stable row id (task-tree parent
+/// lookup for `! -<parent_id>`). `None` when no task holds that short id
+/// — completed oneshot tasks hold `NULL`, so they are never resolvable.
+pub async fn fetch_task_id_by_short_id(pool: &SqlitePool, short_id: i64) -> Result<Option<i64>> {
+    let row = sqlx::query("SELECT id FROM todos WHERE short_id = ?")
+        .bind(short_id)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to fetch task by short id")?;
+    Ok(row.map(|r| r.get("id")))
+}
+
 /// Whether a task with the given name already exists. `task_type` scopes
 /// the check to a task kind, using the same column discriminators as the
 /// views: recurring tasks have `interval_secs` set, scheduled tasks have
@@ -604,11 +648,10 @@ pub async fn task_name_exists(
 // Entry insertion
 // ---------------------------------------------------------------------------
 
-/// Insert a mood entry and its linked custom tracker values in one
-/// transaction. For Text/Float interval trackers, `replace_slot` deletes the
-/// previous entry in the same interval slot before inserting. Returns the
-/// feeling row id, or `None` when no feeling row was inserted (custom-only
-/// entry).
+/// Insert a mood entry and its linked tracker values in one transaction.
+/// For Text/Float interval trackers, `replace_slot` deletes the previous
+/// entry in the same interval slot before inserting. Returns the feeling
+/// row id, or `None` when no feeling row was inserted (tracker-only entry).
 pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Option<i64>> {
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
 
@@ -645,10 +688,10 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
         None
     };
 
-    for custom in &entry.customs {
-        if let Some((slot_start, slot_end)) = custom.replace_slot {
-            sqlx::query("DELETE FROM custom WHERE type = ? AND time >= ? AND time < ?")
-                .bind(&custom.tracker_type)
+    for tracker in &entry.trackers {
+        if let Some((slot_start, slot_end)) = tracker.replace_slot {
+            sqlx::query("DELETE FROM tracker WHERE type = ? AND time >= ? AND time < ?")
+                .bind(&tracker.tracker_type)
                 .bind(slot_start)
                 .bind(slot_end)
                 .execute(&mut *tx)
@@ -656,26 +699,24 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
                 .with_context(|| {
                     format!(
                         "Failed to delete old entry for tracker '{}' in slot {}..{}",
-                        custom.tracker_type, slot_start, slot_end
+                        tracker.tracker_type, slot_start, slot_end
                     )
                 })?;
         }
 
         let mut q =
-            sqlx::query("INSERT INTO custom (type, score, time, feeling) VALUES (?, ?, ?, ?)")
-                .bind(&custom.tracker_type);
-        q = match &custom.value {
-            CustomValue::Text(s) => q.bind(s),
-            CustomValue::Number(n) => q.bind(n),
-            CustomValue::Float(f) => q.bind(f),
+            sqlx::query("INSERT INTO tracker (type, score, time, feeling) VALUES (?, ?, ?, ?)")
+                .bind(&tracker.tracker_type);
+        q = match &tracker.value {
+            TrackerValue::Text(s) => q.bind(s),
+            TrackerValue::Number(n) => q.bind(n),
+            TrackerValue::Float(f) => q.bind(f),
         };
         q.bind(entry.time)
             .bind(feeling_id)
             .execute(&mut *tx)
             .await
-            .with_context(|| {
-                format!("Failed to insert custom tracker '{}'", custom.tracker_type)
-            })?;
+            .with_context(|| format!("Failed to insert tracker '{}'", tracker.tracker_type))?;
     }
 
     tx.commit().await.context("Failed to commit transaction")?;
@@ -683,7 +724,7 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
 }
 
 /// Count mood entries in `[start_time, end_time]`; when `delete` is true,
-/// delete them (plus their linked custom rows, in a transaction) and return
+/// delete them (plus their linked tracker rows, in a transaction) and return
 /// the number deleted instead.
 pub async fn clear_moods(
     pool: &SqlitePool,
@@ -706,13 +747,13 @@ pub async fn clear_moods(
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
 
     sqlx::query(
-        "DELETE FROM custom WHERE feeling IN (SELECT id FROM feeling WHERE time >= ? AND time <= ?)",
+        "DELETE FROM tracker WHERE feeling IN (SELECT id FROM feeling WHERE time >= ? AND time <= ?)",
     )
     .bind(start_time)
     .bind(end_time)
     .execute(&mut *tx)
     .await
-    .context("Failed to delete linked custom entries")?;
+    .context("Failed to delete linked tracker entries")?;
 
     let res = sqlx::query("DELETE FROM feeling WHERE time >= ? AND time <= ?")
         .bind(start_time)
@@ -757,26 +798,26 @@ pub async fn fetch_feelings_between(
         .collect())
 }
 
-/// Custom-tracker entries of one tracker in `[start, end]`, oldest first.
-pub async fn fetch_customs_for_tracker(
+/// Entries of one tracker in `[start, end]`, oldest first.
+pub async fn fetch_tracker_entries(
     pool: &SqlitePool,
     tracker_type: &str,
     start: i64,
     end: i64,
-) -> Result<Vec<CustomEntryRow>> {
+) -> Result<Vec<TrackerEntryRow>> {
     let rows = sqlx::query(
-        "SELECT id, type, CAST(score AS TEXT) AS score, time FROM custom WHERE type = ? AND time >= ? AND time <= ? ORDER BY time ASC",
+        "SELECT id, type, CAST(score AS TEXT) AS score, time FROM tracker WHERE type = ? AND time >= ? AND time <= ? ORDER BY time ASC",
     )
     .bind(tracker_type)
     .bind(start)
     .bind(end)
     .fetch_all(pool)
     .await
-    .context("Failed to fetch custom tracker entries")?;
+    .context("Failed to fetch tracker entries")?;
 
     Ok(rows
         .iter()
-        .map(|row| CustomEntryRow {
+        .map(|row| TrackerEntryRow {
             id: row.get("id"),
             tracker_type: row.get("type"),
             score: row.get("score"),
@@ -785,24 +826,24 @@ pub async fn fetch_customs_for_tracker(
         .collect())
 }
 
-/// All custom-tracker entries in `[start, end]`, oldest first (today view).
-pub async fn fetch_customs_today(
+/// All tracker entries in `[start, end]`, oldest first (today view).
+pub async fn fetch_tracker_entries_today(
     pool: &SqlitePool,
     start: i64,
     end: i64,
-) -> Result<Vec<CustomEntryRow>> {
+) -> Result<Vec<TrackerEntryRow>> {
     let rows = sqlx::query(
-        "SELECT id, type, CAST(score AS TEXT) AS score, time FROM custom WHERE time >= ? AND time <= ? ORDER BY time ASC",
+        "SELECT id, type, CAST(score AS TEXT) AS score, time FROM tracker WHERE time >= ? AND time <= ? ORDER BY time ASC",
     )
     .bind(start)
     .bind(end)
     .fetch_all(pool)
     .await
-    .context("Failed to fetch today's custom entries")?;
+    .context("Failed to fetch today's tracker entries")?;
 
     Ok(rows
         .iter()
-        .map(|row| CustomEntryRow {
+        .map(|row| TrackerEntryRow {
             id: row.get("id"),
             tracker_type: row.get("type"),
             score: row.get("score"),
@@ -1139,13 +1180,13 @@ pub async fn fetch_recurring_windows_for_period(
     Ok(windows)
 }
 
-/// Delete a custom tracker entry row.
-pub async fn delete_custom(pool: &SqlitePool, id: i64) -> Result<u64> {
-    let result = sqlx::query("DELETE FROM custom WHERE id = ?")
+/// Delete a tracker entry row.
+pub async fn delete_tracker_entry(pool: &SqlitePool, id: i64) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM tracker WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await
-        .context("Failed to delete custom row")?;
+        .context("Failed to delete tracker row")?;
     Ok(result.rows_affected())
 }
 
@@ -1182,7 +1223,7 @@ pub async fn fetch_recurring_task_by_name(
     let row = sqlx::query(
         r#"SELECT id, name, body, priority, short_id, start_time,
                    available_duration_secs, interval_secs, target_count,
-                   optional, end_time
+                   optional, end_time, parent
            FROM todos WHERE name = ? AND interval_secs IS NOT NULL"#,
     )
     .bind(name)
@@ -1202,6 +1243,7 @@ pub async fn fetch_recurring_task_by_name(
         target_count: r.get("target_count"),
         optional: r.get::<i32, _>("optional") != 0,
         end_time: r.get("end_time"),
+        parent: r.get("parent"),
     }))
 }
 
@@ -1533,15 +1575,15 @@ pub async fn update_feeling_body(pool: &SqlitePool, id: i64, body: &str) -> Resu
     Ok(res.rows_affected())
 }
 
-/// Update a custom entry's score, binding the value per its configured kind
-/// (Text → string, Number → i64, Float → f64). Returns affected rows.
-pub async fn update_custom_score(
+/// Update a tracker entry's score, binding the value per its configured
+/// kind (Text → string, Number → i64, Float → f64). Returns affected rows.
+pub async fn update_tracker_score(
     pool: &SqlitePool,
     id: i64,
     kind: TrackerKind,
     value: &str,
 ) -> Result<u64> {
-    let mut q = sqlx::query("UPDATE custom SET score = ? WHERE id = ?");
+    let mut q = sqlx::query("UPDATE tracker SET score = ? WHERE id = ?");
     q = match kind {
         TrackerKind::Text => q.bind(value),
         TrackerKind::Number => q.bind(value.parse::<i64>().unwrap_or(0)),
@@ -1551,7 +1593,7 @@ pub async fn update_custom_score(
         .bind(id)
         .execute(pool)
         .await
-        .context("Failed to update custom score")?;
+        .context("Failed to update tracker score")?;
     Ok(res.rows_affected())
 }
 
@@ -1578,16 +1620,16 @@ pub async fn update_feeling_score(pool: &SqlitePool, id: i64, score: f32) -> Res
     Ok(res.rows_affected())
 }
 
-/// Delete a feeling row and any linked custom rows in a transaction
-/// (`custom.feeling` has a FK with no `ON DELETE CASCADE`).
+/// Delete a feeling row and any linked tracker rows in a transaction
+/// (`tracker.feeling` has a FK with no `ON DELETE CASCADE`).
 pub async fn delete_feeling(pool: &SqlitePool, id: i64) -> Result<()> {
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
 
-    sqlx::query("DELETE FROM custom WHERE feeling = ?")
+    sqlx::query("DELETE FROM tracker WHERE feeling = ?")
         .bind(id)
         .execute(&mut *tx)
         .await
-        .context("Failed to delete linked custom rows")?;
+        .context("Failed to delete linked tracker rows")?;
 
     sqlx::query("DELETE FROM feeling WHERE id = ?")
         .bind(id)

@@ -72,7 +72,7 @@ async fn test_create_feeling_entry() {
 }
 
 #[tokio::test]
-async fn test_create_feeling_with_customs() {
+async fn test_create_feeling_with_trackers() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
@@ -124,8 +124,8 @@ async fn test_create_feeling_with_customs() {
     let feeling_id: i64 = feeling.get("id");
     assert_eq!(feeling.get::<String, _>("mood"), "good");
 
-    // Verify custom trackers were inserted and linked
-    let rows = sqlx::query("SELECT type, score, feeling FROM custom ORDER BY type")
+    // Verify tracker trackers were inserted and linked
+    let rows = sqlx::query("SELECT type, score, feeling FROM tracker ORDER BY type")
         .fetch_all(&pool)
         .await
         .unwrap();
@@ -140,7 +140,7 @@ async fn test_create_feeling_with_customs() {
 }
 
 #[tokio::test]
-async fn test_create_custom_only() {
+async fn test_create_tracker_only() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
@@ -173,19 +173,19 @@ async fn test_create_custom_only() {
         .unwrap();
     assert_eq!(feeling_count, 0);
 
-    // Custom tracker inserted without feeling link
-    let custom = sqlx::query("SELECT type, score, feeling FROM custom")
+    // Tracker entry inserted without feeling link
+    let tracker = sqlx::query("SELECT type, score, feeling FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
 
-    assert_eq!(custom.get::<String, _>("type"), "sleep");
-    assert_eq!(custom.get::<f64, _>("score"), 10.0);
-    assert_eq!(custom.get::<Option<i64>, _>("feeling"), None);
+    assert_eq!(tracker.get::<String, _>("type"), "sleep");
+    assert_eq!(tracker.get::<f64, _>("score"), 10.0);
+    assert_eq!(tracker.get::<Option<i64>, _>("feeling"), None);
 }
 
 #[tokio::test]
-async fn test_custom_tracker_interval_insert_strategies() {
+async fn test_tracker_interval_insert_strategies() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     // text + interval: re-logging replaces the previous entry in the slot
@@ -245,7 +245,7 @@ async fn test_custom_tracker_interval_insert_strategies() {
     }
 
     // Float: replaced by the latest value in the slot (1 row, score 6).
-    let sleep_rows: Vec<(f64,)> = sqlx::query_as("SELECT score FROM custom WHERE type = 'sleep'")
+    let sleep_rows: Vec<(f64,)> = sqlx::query_as("SELECT score FROM tracker WHERE type = 'sleep'")
         .fetch_all(&pool)
         .await
         .unwrap();
@@ -258,7 +258,7 @@ async fn test_custom_tracker_interval_insert_strategies() {
 
     // Text: replaced by the latest value in the slot (1 row, 'second').
     let text_rows: Vec<(String,)> =
-        sqlx::query_as("SELECT score FROM custom WHERE type = 'affirmation'")
+        sqlx::query_as("SELECT score FROM tracker WHERE type = 'affirmation'")
             .fetch_all(&pool)
             .await
             .unwrap();
@@ -270,7 +270,7 @@ async fn test_custom_tracker_interval_insert_strategies() {
     assert_eq!(text_rows[0].0, "second");
 
     // Number: plain insert, both rows kept (the view sums them).
-    let runs_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom WHERE type = 'runs'")
+    let runs_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker WHERE type = 'runs'")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -302,7 +302,7 @@ async fn test_custom_tracker_interval_insert_strategies() {
         .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     }
-    let water_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom WHERE type = 'water'")
+    let water_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker WHERE type = 'water'")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -388,6 +388,98 @@ async fn test_create_oneshot_task_duplicate_name_fails() {
 }
 
 #[tokio::test]
+async fn test_create_oneshot_task_with_parent() {
+    // `! -<parent_id> <name>` attaches the new task under the parent's
+    // row id (the flag takes the parent's short id).
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    let parent_id = create_oneshot_task(&pool, "parent task").await;
+    let parent_short: i64 = sqlx::query_scalar("SELECT short_id FROM todos WHERE id = ?")
+        .bind(parent_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let cmd = parse_from(vec![
+        "!".to_string(),
+        format!("-{parent_short}"),
+        "child task".to_string(),
+    ])
+    .unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let child = sqlx::query("SELECT parent FROM todos WHERE name = ?")
+        .bind("child task")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(child.get::<Option<i64>, _>("parent"), Some(parent_id));
+
+    // Without the flag the task stays root-level.
+    let cmd = parse_from(vec!["!".to_string(), "root task".to_string()]).unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    let root = sqlx::query("SELECT parent FROM todos WHERE name = ?")
+        .bind("root task")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(root.get::<Option<i64>, _>("parent"), None);
+}
+
+#[tokio::test]
+async fn test_create_oneshot_task_with_invalid_parent_errors() {
+    // An unknown short id must fail before the task is created.
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    let cmd = parse_from(vec![
+        "!".to_string(),
+        "-999".to_string(),
+        "orphan".to_string(),
+    ])
+    .unwrap();
+    let err = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("No task with short id 999"),
+        "unexpected error: {err}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM todos")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "the orphan must not be inserted");
+}
+
+#[tokio::test]
 async fn test_create_oneshot_task_with_date() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
@@ -421,14 +513,14 @@ async fn test_create_oneshot_task_with_date() {
     let end_time: i64 = task.get("end_time");
     assert_eq!(
         end_time,
-        feeling::date::parse_datetime("2024-03-20", config.date.dialect).unwrap()
+        feeling::date::parse_datetime("2024-03-20", feeling::date::DATE_DIALECT).unwrap()
     );
     let start_time: i64 = task.get("start_time");
     assert!(start_time > 0);
 }
 
 #[tokio::test]
-async fn test_custom_tracker_range_not_enforced() {
+async fn test_tracker_range_not_enforced() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
 
@@ -459,7 +551,7 @@ async fn test_custom_tracker_range_not_enforced() {
         .unwrap();
     }
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom")
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -467,7 +559,7 @@ async fn test_custom_tracker_range_not_enforced() {
 }
 
 #[tokio::test]
-async fn test_multiple_customs_same_feeling() {
+async fn test_multiple_trackers_same_feeling() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
@@ -529,14 +621,14 @@ async fn test_multiple_customs_same_feeling() {
         .unwrap();
     assert_eq!(feeling_count, 1);
 
-    let custom_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom")
+    let tracker_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(custom_count, 3);
+    assert_eq!(tracker_count, 3);
 
     let linked_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM custom c JOIN feeling f ON c.feeling = f.id")
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracker c JOIN feeling f ON c.feeling = f.id")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -903,7 +995,7 @@ async fn test_create_feeling_tracker_in_final_position() {
         .await
         .unwrap();
 
-    let rows = sqlx::query("SELECT type, score, feeling FROM custom ORDER BY type")
+    let rows = sqlx::query("SELECT type, score, feeling FROM tracker ORDER BY type")
         .fetch_all(&pool)
         .await
         .unwrap();
@@ -917,7 +1009,7 @@ async fn test_create_feeling_tracker_in_final_position() {
 }
 
 #[tokio::test]
-async fn test_out_of_range_custom_still_inserts() {
+async fn test_out_of_range_tracker_still_inserts() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
 
@@ -933,7 +1025,7 @@ async fn test_out_of_range_custom_still_inserts() {
     );
 
     // sleep=2 is below min=4, but min/max only affect binning:
-    // the feeling and its custom entry are still inserted.
+    // the feeling and its tracker entry are still inserted.
     let cmd = parse_from(vec![
         "-sleep".to_string(),
         "2".to_string(),
@@ -958,11 +1050,11 @@ async fn test_out_of_range_custom_still_inserts() {
         .unwrap();
     assert_eq!(feeling_count, 1);
 
-    let custom_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom")
+    let tracker_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(custom_count, 1);
+    assert_eq!(tracker_count, 1);
 }
 
 #[test]
@@ -994,7 +1086,7 @@ async fn test_unknown_tracker_rejected() {
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Unknown custom tracker"));
+        .contains("Unknown tracker type"));
 }
 
 #[tokio::test]
@@ -1035,7 +1127,7 @@ async fn test_today_view_with_data() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
 
-    // Register custom trackers
+    // Register tracker trackers
     config.tracker.insert(
         "sleep".to_string(),
         TrackerSetting {
@@ -1077,7 +1169,7 @@ async fn test_today_view_with_data() {
         .await
         .unwrap();
 
-    // Create a custom-only entry via the CLI path
+    // Create a tracker-only entry via the CLI path
     handle_command(
         parse_from(vec!["-sleep".to_string(), "8".to_string()]).unwrap(),
         &pool,
@@ -1138,7 +1230,8 @@ async fn test_today_view_with_date() {
         .unwrap();
 
     // Seed a feeling on a fixed past date directly.
-    let target = feeling::date::parse_datetime("2024-03-15 09:00", Default::default()).unwrap();
+    let target =
+        feeling::date::parse_datetime("2024-03-15 09:00", feeling::date::DATE_DIALECT).unwrap();
     sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('ancient', '', ?)")
         .bind(target)
         .execute(&pool)
@@ -2221,7 +2314,7 @@ async fn test_tracker_mood_dots() {
 }
 
 #[tokio::test]
-async fn test_tracker_custom_dots() {
+async fn test_tracker_dots() {
     use feeling::config::{TrackerKind, TrackerSetting};
 
     let pool = test_pool().await.unwrap();
@@ -2237,7 +2330,7 @@ async fn test_tracker_custom_dots() {
         },
     );
 
-    // Custom entry via CLI
+    // Tracker entry via CLI
     let cmd = parse_from(vec!["-sleep".to_string(), "8".to_string()]).unwrap();
     handle_command(
         cmd,
@@ -2570,7 +2663,7 @@ async fn test_recurring_previous_interval_completions_still_shown() {
     );
 }
 
-// ---------- Custom tracker payload types (text | number | float) ----------
+// ---------- Tracker payload types (text | number | float) ----------
 
 #[tokio::test]
 async fn test_text_tracker_entry_today_badge_and_listing() {
@@ -2606,7 +2699,7 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
     .unwrap();
 
     // Stored as text with the string payload
-    let row = sqlx::query("SELECT score, typeof(score) AS t FROM custom")
+    let row = sqlx::query("SELECT score, typeof(score) AS t FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -2627,7 +2720,7 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
     );
     assert!(
         output.contains('\t') && output.contains('◆'),
-        "text custom entries must use the ◆ badge: {output:?}"
+        "text tracker entries must use the ◆ badge: {output:?}"
     );
 
     // : accomplishment lists entries as dark-gray '> text' lines
@@ -2687,7 +2780,7 @@ async fn test_text_tracker_lists_all_entries_in_range() {
 }
 
 #[tokio::test]
-async fn test_custom_tracker_parse_errors() {
+async fn test_tracker_parse_errors() {
     let pool = test_pool().await.unwrap();
 
     // Float tracker: non-numeric argument must error with a clear message
@@ -2752,7 +2845,7 @@ async fn test_custom_tracker_parse_errors() {
     );
 
     // Nothing was stored
-    let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM custom")
+    let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap()
@@ -2788,7 +2881,7 @@ async fn test_number_tracker_stored_as_integer() {
     .unwrap();
 
     // Number trackers store INTEGER payloads.
-    let row = sqlx::query("SELECT score, typeof(score) AS t FROM custom")
+    let row = sqlx::query("SELECT score, typeof(score) AS t FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -2808,7 +2901,7 @@ async fn test_number_tracker_stored_as_integer() {
     .await
     .unwrap();
 
-    let row = sqlx::query("SELECT score, typeof(score) AS t FROM custom ORDER BY id DESC")
+    let row = sqlx::query("SELECT score, typeof(score) AS t FROM tracker ORDER BY id DESC")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -2894,7 +2987,7 @@ async fn test_config_view_sections_deserialize() {
     assert_eq!(config.grid.week_start, chrono::Weekday::Sun);
 
     // Unknown sections are rejected (serde deny_unknown_fields on Config).
-    let err = toml::from_str::<Config>("[custom.accomplishment]\n").unwrap_err();
+    let err = toml::from_str::<Config>("[unknown.accomplishment]\n").unwrap_err();
     assert!(
         err.to_string().contains("unknown field"),
         "unexpected error: {err}"
@@ -3740,66 +3833,36 @@ async fn test_prune_clears_embedding_cache() {
 // ---- Invalid timestamps must fail task creation ----
 
 /// Garbage `@<time>` values (and invalid calendar dates) must fail task
-/// creation — oneshot and scheduled — rather than silently landing in the
-/// task name.
+/// parsing — oneshot and scheduled — rather than silently landing in the
+/// task name. The date is resolved to an epoch at CLI parse time
+/// (`DATE_DIALECT`), so a bad value fails there, before anything is created.
 #[tokio::test]
 async fn test_task_creation_invalid_timestamps_fail() {
     let pool = test_pool().await.unwrap();
-    let config = Config::default();
 
     // Oneshot with a garbage date: `! task @x`.
-    let cmd = parse_from(vec!["!".to_string(), "task".to_string(), "@x".to_string()]).unwrap();
-    let err = handle_command(
-        cmd,
-        &pool,
-        &config,
-        &CliOpts::default(),
-        &mut Vec::new(),
-        false,
-    )
-    .await
-    .unwrap_err();
+    let err = parse_from(vec!["!".to_string(), "task".to_string(), "@x".to_string()]).unwrap_err();
     assert!(
-        format!("{err:#}").contains("Failed to parse datetime"),
+        format!("{err:#}").contains("Invalid task start time"),
         "unexpected error: {err:#}"
     );
 
     // Invalid calendar date: `! task @2024-99-99`.
-    let cmd = parse_from(vec![
+    let err = parse_from(vec![
         "!".to_string(),
         "task".to_string(),
         "@2024-99-99".to_string(),
     ])
-    .unwrap();
-    let err = handle_command(
-        cmd,
-        &pool,
-        &config,
-        &CliOpts::default(),
-        &mut Vec::new(),
-        false,
-    )
-    .await
     .unwrap_err();
     assert!(
-        format!("{err:#}").contains("Failed to parse datetime"),
+        format!("{err:#}").contains("Invalid task start time"),
         "unexpected error: {err:#}"
     );
 
     // Scheduled with a garbage start: `! @x`.
-    let cmd = parse_from(vec!["!".to_string(), "@x".to_string()]).unwrap();
-    let err = handle_command(
-        cmd,
-        &pool,
-        &config,
-        &CliOpts::default(),
-        &mut Vec::new(),
-        false,
-    )
-    .await
-    .unwrap_err();
+    let err = parse_from(vec!["!".to_string(), "@x".to_string()]).unwrap_err();
     assert!(
-        format!("{err:#}").contains("Failed to parse datetime"),
+        format!("{err:#}").contains("Invalid scheduled task start time"),
         "unexpected error: {err:#}"
     );
 
@@ -3874,7 +3937,7 @@ async fn test_bundled_config_defaults_load_through_serde() {
 /// tests pin the semantics the action handlers rely on.
 
 #[tokio::test]
-async fn test_delete_feeling_removes_linked_custom_rows() {
+async fn test_delete_feeling_removes_linked_tracker_rows() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
@@ -3888,7 +3951,7 @@ async fn test_delete_feeling_removes_linked_custom_rows() {
         },
     );
 
-    // Insert a feeling with a linked custom row (like `feeling ok -sleep 8`).
+    // Insert a feeling with a linked tracker row (like `feeling ok -sleep 8`).
     let cmd = parse_from(vec![
         "ok".to_string(),
         "-sleep".to_string(),
@@ -3910,17 +3973,17 @@ async fn test_delete_feeling_removes_linked_custom_rows() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    let linked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom WHERE feeling = ?")
+    let linked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker WHERE feeling = ?")
         .bind(feeling_id)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(linked, 1);
 
-    // The today TUI delete path: delete custom rows first (FK, no cascade),
+    // The today TUI delete path: delete tracker rows first (FK, no cascade),
     // then the feeling row, in a transaction.
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query("DELETE FROM custom WHERE feeling = ?")
+    sqlx::query("DELETE FROM tracker WHERE feeling = ?")
         .bind(feeling_id)
         .execute(&mut *tx)
         .await
@@ -3937,17 +4000,17 @@ async fn test_delete_feeling_removes_linked_custom_rows() {
         .await
         .unwrap();
     assert_eq!(feelings, 0);
-    let customs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom")
+    let trackers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(customs, 0);
+    assert_eq!(trackers, 0);
 }
 
-/// `sql::delete_custom` (the today view's custom-entry delete path) removes
+/// `sql::delete_tracker_entry` (the today view's tracker-entry delete path) removes
 /// exactly the targeted row.
 #[tokio::test]
-async fn test_delete_custom_row() {
+async fn test_delete_tracker_row() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
@@ -3961,7 +4024,7 @@ async fn test_delete_custom_row() {
         },
     );
 
-    // Two custom entries, one linked to a feeling.
+    // Two tracker entries, one linked to a feeling.
     let cmd = parse_from(vec![
         "ok".to_string(),
         "-sleep".to_string(),
@@ -3990,16 +4053,18 @@ async fn test_delete_custom_row() {
     .await
     .unwrap();
 
-    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM custom ORDER BY id")
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracker ORDER BY id")
         .fetch_all(&pool)
         .await
         .unwrap();
     assert_eq!(ids.len(), 2);
 
     // Delete the unlinked row; the linked one (and its feeling) survive.
-    let affected = feeling::sql::delete_custom(&pool, ids[1]).await.unwrap();
+    let affected = feeling::sql::delete_tracker_entry(&pool, ids[1])
+        .await
+        .unwrap();
     assert_eq!(affected, 1);
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom")
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -4013,9 +4078,9 @@ async fn test_delete_custom_row() {
 
 #[tokio::test]
 async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
-    // The custom.feeling FK has no ON DELETE CASCADE, so deleting a feeling
-    // row while linked custom rows still exist must fail under PRAGMA
-    // foreign_keys = ON. This is why the today delete path deletes custom
+    // The tracker.feeling FK has no ON DELETE CASCADE, so deleting a feeling
+    // row while linked tracker rows still exist must fail under PRAGMA
+    // foreign_keys = ON. This is why the today delete path deletes tracker
     // rows first.
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -4057,7 +4122,7 @@ async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
         .await;
     assert!(
         r.is_err(),
-        "FK must block deleting a feeling with linked customs"
+        "FK must block deleting a feeling with linked trackers"
     );
 }
 
@@ -4113,7 +4178,7 @@ async fn test_edit_todo_body_updates_in_place() {
 }
 
 #[tokio::test]
-async fn test_edit_custom_text_payload() {
+async fn test_edit_tracker_text_payload() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
@@ -4138,20 +4203,20 @@ async fn test_edit_custom_text_payload() {
     )
     .await
     .unwrap();
-    let custom_id: i64 = sqlx::query_scalar("SELECT id FROM custom WHERE type = 'note'")
+    let tracker_id: i64 = sqlx::query_scalar("SELECT id FROM tracker WHERE type = 'note'")
         .fetch_one(&pool)
         .await
         .unwrap();
 
-    sqlx::query("UPDATE custom SET score = ? WHERE id = ?")
+    sqlx::query("UPDATE tracker SET score = ? WHERE id = ?")
         .bind("edited text")
-        .bind(custom_id)
+        .bind(tracker_id)
         .execute(&pool)
         .await
         .unwrap();
 
-    let score: String = sqlx::query_scalar("SELECT score FROM custom WHERE id = ?")
-        .bind(custom_id)
+    let score: String = sqlx::query_scalar("SELECT score FROM tracker WHERE id = ?")
+        .bind(tracker_id)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -4159,7 +4224,7 @@ async fn test_edit_custom_text_payload() {
 }
 
 #[tokio::test]
-async fn test_edit_custom_float_payload() {
+async fn test_edit_tracker_float_payload() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
@@ -4184,21 +4249,21 @@ async fn test_edit_custom_float_payload() {
     )
     .await
     .unwrap();
-    let custom_id: i64 = sqlx::query_scalar("SELECT id FROM custom WHERE type = 'sleep'")
+    let tracker_id: i64 = sqlx::query_scalar("SELECT id FROM tracker WHERE type = 'sleep'")
         .fetch_one(&pool)
         .await
         .unwrap();
 
     // The EditTracker modal path: float kind parses f64, then UPDATE.
-    sqlx::query("UPDATE custom SET score = ? WHERE id = ?")
+    sqlx::query("UPDATE tracker SET score = ? WHERE id = ?")
         .bind(7.5f64)
-        .bind(custom_id)
+        .bind(tracker_id)
         .execute(&pool)
         .await
         .unwrap();
 
-    let score: f64 = sqlx::query_scalar("SELECT score FROM custom WHERE id = ?")
-        .bind(custom_id)
+    let score: f64 = sqlx::query_scalar("SELECT score FROM tracker WHERE id = ?")
+        .bind(tracker_id)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -4328,8 +4393,8 @@ async fn test_reset_progress_recurring_only_current_interval() {
 }
 
 #[tokio::test]
-async fn test_fetch_today_entries_carries_custom_ids() {
-    // The today view's Edit/Delete dispatch relies on custom entries
+async fn test_fetch_today_entries_carries_tracker_ids() {
+    // The today view's Edit/Delete dispatch relies on tracker entries
     // carrying their row id so the SQL update/delete can target them.
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -4370,18 +4435,18 @@ async fn test_fetch_today_entries_carries_custom_ids() {
     )
     .await
     .unwrap();
-    let custom = entries
+    let tracker = entries
         .iter()
-        .find(|e| e.kind == feeling::views::EntryKind::Custom)
-        .expect("custom entry must appear in today view");
-    assert!(custom.id.is_some(), "custom entry must carry its row id");
+        .find(|e| e.kind == feeling::views::EntryKind::Tracker(TrackerKind::Float))
+        .expect("tracker entry must appear in today view");
+    assert!(tracker.id.is_some(), "tracker entry must carry its row id");
 
     // And the id must match the DB row.
-    let db_id: i64 = sqlx::query_scalar("SELECT id FROM custom WHERE type = 'sleep'")
+    let db_id: i64 = sqlx::query_scalar("SELECT id FROM tracker WHERE type = 'sleep'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(custom.id, Some(db_id));
+    assert_eq!(tracker.id, Some(db_id));
 }
 
 #[tokio::test]

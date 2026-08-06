@@ -398,13 +398,24 @@ fn parse_tracker_command(args: &[String]) -> anyhow::Result<Command> {
     Ok(Command::Tracker { period, items })
 }
 
-fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
+fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command> {
     // The leading "!" has already been stripped by the caller — `args` holds
     // everything after it.
 
+    let parent = if !args.is_empty() {
+        parse_parent_flag(&args[0])?
+    } else {
+        None
+    };
+
+    if parent.is_some() {
+        args = &args[1..];
+    }
+
     // ! alone → interactive oneshot creation (the name is prompted; the
     // editor flow runs for priority/target/body). `!` is no longer a list
-    // view — the pending-oneshots list lives at `@:o`.
+    // view — the pending-oneshots list lives at `@:o`. An optional
+    // `-<parent_id>` (short id) pre-fills the parent prompt.
     if args.is_empty() {
         return Ok(Command::Task(Task {
             task_type: TaskType::OneShot,
@@ -415,79 +426,65 @@ fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
             open_editor: true,
             prefill: None,
             available_duration: None,
+            parent,
         }));
     }
 
-    // `! @ [description] [.. body]` → interactive recurring task creation.
-    // An optional description after the bare '@' pre-fills the name prompt,
+    // `! @ [name] [.. body]` → interactive recurring task creation.
+    // An optional name after the bare '@' pre-fills the name prompt,
     // mirroring oneshot creation where the name comes from the command
     // line; a trailing `..` carries the body text (empty body → body
-    // editor). The description is trimmed; if it trims to empty it is
+    // editor). The name is trimmed; if it trims to empty it is
     // treated as absent.
     if args[0] == "@" {
         return parse_recurring_task(args);
     }
 
-    // `! @<time> [:description] [%<duration>] [.. [body]]` → scheduled task
+    // `! @<time> [:name] [%<duration>] [.. [body]]` → scheduled task
     // creation. The first '@' word is the start time (multi-word forms like
     // `@2024-03-20 14:30` survive shell word-splitting); a word beginning
-    // with ':' starts the description, a word beginning with '%' starts the
+    // with ':' starts the name, a word beginning with '%' starts the
     // duration. Note the space discriminator: `! @ 10pm` is a recurring
     // task named "10pm", while `! @10pm` is a scheduled task.
     if args[0].starts_with('@') {
         return parse_scheduled_task(args);
     }
 
-    // Creating oneshot task: ! <description> [@<time> [more time words]] [..]
+    // Creating oneshot task: ! <name> [@<time> [more time words]] [..]
     //
-    // The first (and only) word starting with '@' marks the start of the
-    // time field: everything from that word (leading '@' stripped) until
-    // '..' is joined (space-separated) into `date`, so multi-word times
-    // like `@2024-03-20 14:30:00` survive shell word-splitting. Words
-    // before it form the description. A second '@' word is rejected with an
-    // error. After '..' (body state) '@' is literal and never looked for.
-    //
-    // `..` may appear anywhere in the args (not only as the last token).
-    // Everything before the *first* `..` contributes to the name and time;
-    // everything after is joined (space-separated) into `body`. The editor
+    // The grammar is positional, not stateful: split at the first `..` —
+    // everything before it goes to name/time, everything after is body —
+    // then within that head split at the first '@'-word into name | time.
+    // `..` may appear anywhere in the args: a later `..` inside the body is
+    // plain body text. The first time word's leading '@' is stripped and the
+    // following words append, so multi-word times like `@2024-03-20
+    // 14:30:00` survive shell word-splitting. Words before it form the
+    // name; a second '@'-word in the time field is rejected with an
+    // error; after `..`, '@' is literal and never looked for. The editor
     // opens (with priority/target_count prompts as usual) iff `..` was used
     // AND `body` ends up empty.
-    let mut has_dotdot = false;
-    let mut date_parts: Vec<String> = Vec::new();
-    let mut in_time = false;
-    let mut name_parts: Vec<String> = Vec::new();
-    let mut body_parts: Vec<String> = Vec::new();
-
-    let mut i = 0; // `args` starts after the "!"
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == ".." {
-            has_dotdot = true;
-            i += 1;
-            continue;
-        }
-        if has_dotdot {
-            body_parts.push(arg.clone());
-            i += 1;
-        } else if in_time {
-            if arg.starts_with('@') {
-                cba::ebog!(
-                    "@time";
-                    "Only one @<time> is allowed per task (found '{}')",
-                    arg
-                );
-                anyhow::bail!("Only one @<time> is allowed per task");
-            }
-            date_parts.push(arg.clone());
-            i += 1;
-        } else if let Some(rest) = arg.strip_prefix('@') {
-            // Inline time: @YYYY-MM-DD [HH:MM:SS …]
-            in_time = true;
-            date_parts.push(rest.to_string());
-            i += 1;
-        } else {
-            name_parts.push(arg.clone());
-            i += 1;
+    // `-<parent_id>` parses in the initial position only: once a parent
+    // has been consumed (or the first word is not a parent flag), later
+    // words starting with '-' are ordinary name/time/body text — e.g.
+    // `! -5 buy -milk` is task "buy -milk" under short id 5.
+    let dotdot = args.iter().position(|a| a == "..");
+    let (head, body_parts) = match dotdot {
+        Some(d) => (&args[..d], &args[d + 1..]),
+        None => (args, &[][..]),
+    };
+    let at = head.iter().position(|a| a.starts_with('@'));
+    let (name_parts, time_parts) = match at {
+        Some(a) => (&head[..a], &head[a..]),
+        None => (head, &[][..]),
+    };
+    for word in time_parts.iter().skip(1) {
+        if word.starts_with('@') {
+            cba::ebog!(
+                "@time";
+                "Only one @<time> is allowed per task (found '{}')",
+                word
+            );
+            anyhow::bail!("Only one @<time> is allowed per task");
         }
     }
 
@@ -502,13 +499,25 @@ fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
             Some(trimmed.to_string())
         }
     };
-    let date = if date_parts.is_empty() {
+    let date = if time_parts.is_empty() {
         None
     } else {
-        Some(date_parts.join(" "))
+        // `time_parts[0]` is the word that opened the time field, so it
+        // always starts with '@' — strip it, append the rest verbatim, and
+        // resolve the whole field to an epoch now (an unparseable date
+        // fails here, before anything is created).
+        let mut parts = time_parts[0][1..].to_string();
+        if time_parts.len() > 1 {
+            parts.push(' ');
+            parts.push_str(&time_parts[1..].join(" "));
+        }
+        Some(
+            crate::date::parse_datetime(&parts, crate::date::DATE_DIALECT)
+                .with_context(|| format!("Invalid task start time: '{}'", parts))?,
+        )
     };
     let body = body_parts.join(" ");
-    let open_editor = has_dotdot && body.is_empty();
+    let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
         task_type: TaskType::OneShot,
@@ -519,34 +528,50 @@ fn parse_task_command(args: &[String]) -> anyhow::Result<Command> {
         open_editor,
         prefill: None,
         available_duration: None,
+        parent,
     }))
 }
 
-/// Parse `! @ [description] [.. body]` — interactive recurring task
-/// creation. `args[0]` is the bare `@`; the description (everything before
+/// Parse a `-<parent_id>` flag (the parent task's short id) from a single
+/// argument. Returns `None` for any argument that is not of that shape
+/// (e.g. a name starting with a dash), so callers fall through to normal
+/// parsing.
+fn parse_parent_flag(arg: &str) -> anyhow::Result<Option<i64>> {
+    let Some(rest) = arg.strip_prefix('-') else {
+        return Ok(None);
+    };
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(None);
+    }
+    let Ok(short_id) = rest.parse::<i64>() else {
+        anyhow::bail!("Invalid -<parent_id> '{}': must be a number", arg);
+    };
+    Ok(Some(short_id))
+}
+
+/// Parse `! @ [name] [.. body]` — interactive recurring task
+/// creation. `args[0]` is the bare `@`; the name (everything before
 /// `..`) pre-fills the name prompt, and text after `..` becomes the body
 /// (empty body → body editor).
 fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
-    // `! @ <description>` — the description is free text that pre-fills the
+    // `! @ <name>` — the name is free text that pre-fills the
     // name prompt. @-words inside it (e.g. `! @ buy milk @x`) stay literal:
-    // they are part of the description, never parsed as a time (unlike the
+    // they are part of the name, never parsed as a time (unlike the
     // oneshot/scheduled @-word handling). To keep a literal `@` at the start
     // of a word, use `..` as the escape.
-    let mut desc_parts: Vec<String> = Vec::new();
-    let mut body_parts: Vec<String> = Vec::new();
-    let mut has_dotdot = false;
-    for arg in &args[1..] {
-        if arg == ".." {
-            has_dotdot = true;
-        } else if has_dotdot {
-            body_parts.push(arg.clone());
-        } else {
-            desc_parts.push(arg.clone());
-        }
-    }
+    //
+    // Same positional `..` split as the oneshot parser: everything before
+    // the first `..` is the name, everything after is body text (a later
+    // `..` inside the body is plain body text; bare `..` → body editor).
+    let rest = &args[1..];
+    let dotdot = rest.iter().position(|a| a == "..");
+    let (head, body_parts) = match dotdot {
+        Some(d) => (&rest[..d], &rest[d + 1..]),
+        None => (rest, &[][..]),
+    };
 
     let prefill = {
-        let joined = desc_parts.join(" ");
+        let joined = head.join(" ");
         let trimmed = joined.trim();
         if trimmed.is_empty() {
             None
@@ -555,7 +580,7 @@ fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
         }
     };
     let body = body_parts.join(" ");
-    let open_editor = has_dotdot && body.is_empty();
+    let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
         task_type: TaskType::Recurring,
@@ -566,118 +591,94 @@ fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
         open_editor,
         prefill,
         available_duration: None,
+        parent: None,
     }))
 }
-
-/// `! @<time> [:description] [%<duration>] [.. [body]]` → scheduled task
-/// creation. Marker state machine over the words: plain words extend the
-/// current field (multi-word times, durations and descriptions survive
-/// shell word-splitting); a word beginning with `:` switches to / continues
-/// the description, a word beginning with `%` switches to the duration
-/// (there is deliberately no escape hatch — a `%`-word is always the
-/// duration marker). The duration is validated here so a bad duration
-/// fails fast; the start time is validated in the handler (it needs the
-/// configured date dialect) before any interactive prompt. `..` switches
-/// to body text (empty body → body editor).
+/// `! @<time> [:name] [%<duration>] [.. [body]]` → scheduled task
+/// creation.
 fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
-    enum Field {
-        Time,
-        Description,
-        Duration,
-    }
+    // Body split first, same positional rule as the oneshot parser:
+    // everything before the first `..` is the command words, everything
+    // after is body text (a later `..` inside the body is plain body text;
+    // bare `..` → body editor).
+    let dotdot = args.iter().position(|a| a == "..");
+    let (head, body_parts) = match dotdot {
+        Some(d) => (&args[..d], &args[d + 1..]),
+        None => (args, &[][..]),
+    };
 
-    let mut field = Field::Time;
-    let mut date_seen = false;
-    let mut date_parts: Vec<String> = Vec::new();
-    let mut name_parts: Vec<String> = Vec::new();
-    let mut duration: Option<String> = None;
-    let mut body_parts: Vec<String> = Vec::new();
-    let mut has_dotdot = false;
+    // The first marker word ends the time field. The dispatcher guarantees
+    // the first word starts with '@', so the time field is never empty.
+    let colon = head.iter().position(|w| w.starts_with(':'));
+    let pct = head.iter().position(|w| w.starts_with('%'));
+    let first = match (colon, pct) {
+        (Some(c), Some(p)) => c.min(p),
+        (Some(c), None) => c,
+        (None, Some(p)) => p,
+        (None, None) => head.len(),
+    };
 
-    for word in args {
-        if has_dotdot {
-            body_parts.push(word.clone());
-            continue;
-        }
-        if word == ".." {
-            has_dotdot = true;
-            continue;
-        }
+    let time_parts = &head[..first];
+    let tail = &head[first..];
 
-        match field {
-            Field::Time => {
-                if !date_seen {
-                    // The first word is always the start time; the
-                    // dispatcher guarantees it starts with '@'.
-                    date_parts.push(word.strip_prefix('@').unwrap_or(word).to_string());
-                    date_seen = true;
-                } else if let Some(rest) = word.strip_prefix(':') {
-                    field = Field::Description;
-                    if !rest.is_empty() {
-                        name_parts.push(rest.to_string());
+    let (mut name_parts, mut duration) = (&[][..], &[][..]);
+
+    match tail.split_first() {
+        None => {}
+        Some((first_word, rest)) => {
+            let first_is_name = first_word.starts_with(':');
+            let other_marker = if first_is_name { '%' } else { ':' };
+
+            match rest.iter().position(|w| w.starts_with(other_marker)) {
+                Some(i) => {
+                    let first_field = &tail[..=i];
+                    let second_field = &tail[i + 1..];
+
+                    if first_is_name {
+                        name_parts = first_field;
+                        duration = second_field;
+                    } else {
+                        duration = first_field;
+                        name_parts = second_field;
                     }
-                } else if word.starts_with('%') {
-                    field = Field::Duration;
-                    duration = Some(word.strip_prefix('%').unwrap_or(word).to_string());
-                } else {
-                    // Plain words extend the start time (e.g. `@2024-03-20
-                    // 14:30`, or `@10pm meeting` — the handler then fails
-                    // the datetime parse rather than treating them as a
-                    // description). @-words are plain here too: only the
-                    // first word carries the scheduled marker.
-                    date_parts.push(word.clone());
                 }
-            }
-            Field::Description => {
-                if word.starts_with('%') {
-                    field = Field::Duration;
-                    duration = Some(word.strip_prefix('%').unwrap_or(word).to_string());
-                } else if let Some(rest) = word.strip_prefix(':') {
-                    if !rest.is_empty() {
-                        name_parts.push(rest.to_string());
+                None => {
+                    if first_is_name {
+                        name_parts = tail;
+                    } else {
+                        duration = tail;
                     }
-                } else {
-                    name_parts.push(word.clone());
-                }
-            }
-            Field::Duration => {
-                if word.starts_with('%') {
-                    anyhow::bail!("Only one %<duration> is allowed per scheduled task");
-                }
-                if let Some(rest) = word.strip_prefix(':') {
-                    // A description may also come after the duration — a
-                    // `:`-word switches back to the description field.
-                    field = Field::Description;
-                    if !rest.is_empty() {
-                        name_parts.push(rest.to_string());
-                    }
-                } else {
-                    // Plain words extend a multi-word duration ("%2 hours").
-                    let parts = duration.get_or_insert_with(String::new);
-                    if !parts.is_empty() {
-                        parts.push(' ');
-                    }
-                    parts.push_str(word);
                 }
             }
         }
     }
 
-    // The duration is validated at parse time so a bad value fails fast.
-    if let Some(d) = &duration {
-        crate::date::parse_duration_secs(d)
-            .with_context(|| format!("Invalid scheduled task duration: '{}'", d))?;
-    }
-
-    let date = if date_parts.is_empty() {
+    let date = if time_parts.is_empty() {
         None
     } else {
-        Some(date_parts.join(" "))
+        let joined = time_parts.join(" ");
+        let s = joined.strip_prefix('@').unwrap_or(&joined);
+        Some(
+            crate::date::parse_datetime(s, crate::date::DATE_DIALECT).with_context(|| {
+                format!(
+                    "Invalid scheduled task start time: '{}' \
+                 (name starts with ':', duration with '%')",
+                    s
+                )
+            })?,
+        )
     };
+
     let name = if name_parts.is_empty() {
         None
     } else {
-        let trimmed = name_parts.join(" ");
+        // Every word in the name segment may carry a `:` marker — strip it
+        // so the segment joins cleanly (plain words are kept verbatim).
+        let trimmed = name_parts
+            .iter()
+            .map(|w| w.strip_prefix(':').unwrap_or(w))
+            .collect::<Vec<_>>()
+            .join(" ");
         let trimmed = trimmed.trim();
         if trimmed.is_empty() {
             None
@@ -685,8 +686,33 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
             Some(trimmed.to_string())
         }
     };
+
+    let available_duration = if duration.is_empty() {
+        None
+    } else {
+        // Only the first word carries the `%` marker — strip it so the
+        // segment joins cleanly. Marker words that land later in the
+        // segment (a stray `:` or a duplicate `%`) are left verbatim and
+        // fail the duration parse, which is the intended error path.
+        let mut words = duration.iter();
+        let mut d = words
+            .next()
+            .map(|w| w.strip_prefix('%').unwrap_or(w).to_string())
+            .unwrap_or_default();
+        for w in words {
+            if !d.is_empty() {
+                d.push(' ');
+            }
+            d.push_str(w);
+        }
+        Some(
+            crate::date::parse_duration_secs(&d)
+                .with_context(|| format!("Invalid scheduled task duration: '{}'", d))?,
+        )
+    };
+
     let body = body_parts.join(" ");
-    let open_editor = has_dotdot && body.is_empty();
+    let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
         task_type: TaskType::Scheduled,
@@ -696,7 +722,8 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
         body,
         open_editor,
         prefill: None,
-        available_duration: duration,
+        available_duration,
+        parent: None,
     }))
 }
 
@@ -763,9 +790,9 @@ fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
         }
         // Any other @-word is a today-view date: `feeling @2024-03-20`
         // (plus optional time words, `feeling @2024-03-20 14:30`).
-        // Parsing itself happens in the handler with the configured date
-        // dialect (the CLI parser has no config), so an unparseable date
-        // fails there with a clear error rather than here.
+        // Parsing happens in the handler with `DATE_DIALECT` (the CLI
+        // parser has no config), so an unparseable date fails there with
+        // a clear error rather than here.
         _ => {
             if suffix.is_some() {
                 anyhow::bail!(
@@ -870,12 +897,12 @@ fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
     // the end of the line).
     //
     // `..` may appear anywhere in args (not only at the end). Words before
-    // the first `..` are parsed as feeling / custom-tracker values.
+    // the first `..` are parsed as feeling / tracker values.
     // Words after `..` are joined (space-separated) into `body`. The editor
     // opens iff `..` was used AND `body` is empty.
     let mut has_dotdot = false;
     let mut feeling_parts: Vec<String> = Vec::new();
-    let mut customs: Vec<(String, String)> = Vec::new();
+    let mut trackers: Vec<(String, String)> = Vec::new();
     let mut body_parts: Vec<String> = Vec::new();
     // Set once a `-tracker value` pair is seen after the mood started; from
     // then on a bare word is rejected (only tracker pairs / `..` / EOL).
@@ -902,7 +929,7 @@ fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
                     if !feeling_parts.is_empty() {
                         after_mood_tracker = true;
                     }
-                    customs.push((tracker_type, args[i + 1].clone()));
+                    trackers.push((tracker_type, args[i + 1].clone()));
                     i += 2;
                 } else {
                     anyhow::bail!("Tracker '{}' requires a value", tracker_type);
@@ -945,7 +972,7 @@ fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
 
     Ok(Command::Entry(Entry {
         feeling,
-        customs,
+        trackers,
         body,
         open_editor,
     }))
@@ -959,13 +986,20 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Expected epoch for a date string, parsed with the same fixed
+    /// `DATE_DIALECT` the CLI parser uses — tests never assume a
+    /// specific dialect value.
+    fn ts(s: &str) -> i64 {
+        crate::date::parse_datetime(s, crate::date::DATE_DIALECT).unwrap()
+    }
+
     #[test]
     fn test_parse_feeling_simple() {
         let cmd = parse_from(args(&["ok"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "ok");
-                assert!(entry.customs.is_empty());
+                assert!(entry.trackers.is_empty());
                 assert!(!entry.open_editor);
             }
             _ => panic!("Expected Entry command"),
@@ -985,14 +1019,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_feeling_with_customs() {
+    fn test_parse_feeling_with_trackers() {
         let cmd = parse_from(args(&["-sleep", "8", "-water", "5", "good"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "good");
-                assert_eq!(entry.customs.len(), 2);
-                assert_eq!(entry.customs[0], ("sleep".to_string(), "8".to_string()));
-                assert_eq!(entry.customs[1], ("water".to_string(), "5".to_string()));
+                assert_eq!(entry.trackers.len(), 2);
+                assert_eq!(entry.trackers[0], ("sleep".to_string(), "8".to_string()));
+                assert_eq!(entry.trackers[1], ("water".to_string(), "5".to_string()));
             }
             _ => panic!("Expected Entry command"),
         }
@@ -1010,15 +1044,31 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_custom_only() {
+    fn test_parse_tracker_only() {
         let cmd = parse_from(args(&["-sleep", "10"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "");
-                assert_eq!(entry.customs.len(), 1);
-                assert_eq!(entry.customs[0], ("sleep".to_string(), "10".to_string()));
+                assert_eq!(entry.trackers.len(), 1);
+                assert_eq!(entry.trackers[0], ("sleep".to_string(), "10".to_string()));
             }
             _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_bare_is_interactive() {
+        // `!` alone → interactive oneshot creation, no parent. (Regression
+        // guard: parent parsing used to index into an empty args slice.)
+        let cmd = parse_from(args(&["!"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.name, None);
+                assert_eq!(task.parent, None);
+                assert!(task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
         }
     }
 
@@ -1030,6 +1080,61 @@ mod tests {
                 assert_eq!(task.task_type, TaskType::OneShot);
                 assert_eq!(task.name, Some("do something".to_string()));
                 assert_eq!(task.priority, None);
+                assert_eq!(task.parent, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_with_parent() {
+        let cmd = parse_from(args(&["!", "-7", "do", "something"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.name, Some("do something".to_string()));
+                assert_eq!(task.parent, Some(7));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_parent_only_is_interactive() {
+        let cmd = parse_from(args(&["!", "-7"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.name, None);
+                assert_eq!(task.parent, Some(7));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_parent_initial_position_only() {
+        // Once a parent is parsed, later '-' words are ordinary text.
+        let cmd = parse_from(args(&["!", "-7", "buy", "-milk"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.name, Some("buy -milk".to_string()));
+                assert_eq!(task.parent, Some(7));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_dash_name_is_not_parent() {
+        // A non-numeric '-word' is a name, not a parent flag.
+        let cmd = parse_from(args(&["!", "-groceries"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.name, Some("-groceries".to_string()));
+                assert_eq!(task.parent, None);
             }
             _ => panic!("Expected Task command"),
         }
@@ -1042,7 +1147,7 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::OneShot);
                 assert_eq!(task.name, Some("task".to_string()));
-                assert_eq!(task.date, Some("2024-03-20".to_string()));
+                assert_eq!(task.date, Some(ts("2024-03-20")));
             }
             _ => panic!("Expected Task command"),
         }
@@ -1057,7 +1162,7 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::OneShot);
                 assert_eq!(task.name, Some("task".to_string()));
-                assert_eq!(task.date, Some("2024-03-20 14:30:00".to_string()));
+                assert_eq!(task.date, Some(ts("2024-03-20 14:30:00")));
             }
             _ => panic!("Expected Task command"),
         }
@@ -1077,8 +1182,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_task_oneshot_empty_description_after_trim_is_none() {
-        // A whitespace-only description trims to empty → name None (the
+    fn test_parse_task_oneshot_empty_name_after_trim_is_none() {
+        // A whitespace-only name trims to empty → name None (the
         // handler rejects it with "Task name is required").
         let cmd = parse_from(args(&["!", "   "])).unwrap();
         match cmd {
@@ -1114,8 +1219,24 @@ mod tests {
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::OneShot);
-                assert_eq!(task.date, Some("2024-03-20".to_string()));
+                assert_eq!(task.date, Some(ts("2024-03-20")));
                 assert_eq!(task.body, "@b");
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_dotdot_inside_body_is_literal() {
+        // Everything after the first `..` is body text, including a later
+        // `..` token (the split is positional, not stateful scanning).
+        let cmd = parse_from(args(&["!", "task", "..", "see", "..", "note"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::OneShot);
+                assert_eq!(task.name, Some("task".to_string()));
+                assert_eq!(task.body, "see .. note");
+                assert!(!task.open_editor);
             }
             _ => panic!("Expected Task command"),
         }
@@ -1136,8 +1257,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_task_recurring_create_with_description() {
-        // ! @ <description> → recurring creation with the description
+    fn test_parse_task_recurring_create_with_name() {
+        // ! @ <name> → recurring creation with the name
         // pre-filling the name prompt (like oneshot creation).
         let cmd = parse_from(args(&["!", "@", "exercise", "more"])).unwrap();
         match cmd {
@@ -1149,7 +1270,7 @@ mod tests {
             _ => panic!("Expected Task command"),
         }
 
-        // Whitespace-only description trims to absent.
+        // Whitespace-only name trims to absent.
         let cmd = parse_from(args(&["!", "@", "  "])).unwrap();
         match cmd {
             Command::Task(task) => {
@@ -1167,7 +1288,7 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
                 assert_eq!(task.name, None);
-                assert_eq!(task.date, Some("10pm".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, None);
             }
             _ => panic!("Expected Task command"),
@@ -1177,28 +1298,28 @@ mod tests {
     #[test]
     fn test_parse_task_scheduled_date_with_extra_words_is_all_date() {
         // `! @10pm meeting` (no markers) keeps the whole first field as the
-        // date — it is validated (and fails) in the handler, never
-        // becoming a description.
+        // date — resolved to an epoch at parse time (chrono-english
+        // ignores trailing non-date words), never becoming a name.
         let cmd = parse_from(args(&["!", "@10pm", "meeting"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
                 assert_eq!(task.name, None);
-                assert_eq!(task.date, Some("10pm meeting".to_string()));
+                assert_eq!(task.date, Some(ts("10pm meeting")));
             }
             _ => panic!("Expected Task command"),
         }
     }
 
     #[test]
-    fn test_parse_task_scheduled_description() {
-        // `! @10pm :meeting` → start time + description.
+    fn test_parse_task_scheduled_name() {
+        // `! @10pm :meeting` → start time + name.
         let cmd = parse_from(args(&["!", "@10pm", ":meeting"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
-                assert_eq!(task.date, Some("10pm".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
                 assert_eq!(task.available_duration, None);
             }
             _ => panic!("Expected Task command"),
@@ -1206,15 +1327,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_task_scheduled_multiword_description() {
-        // `! @10pm :a :b` → description words join; a `:`-word mid-
-        // description just continues it.
+    fn test_parse_task_scheduled_multiword_name() {
+        // `! @10pm :a :b` → name words join; a `:`-word mid-
+        // name just continues it.
         let cmd = parse_from(args(&["!", "@10pm", ":a", ":b"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
                 assert_eq!(task.name, Some("a b".to_string()));
-                assert_eq!(task.date, Some("10pm".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
             }
             _ => panic!("Expected Task command"),
         }
@@ -1222,44 +1343,44 @@ mod tests {
 
     #[test]
     fn test_parse_task_scheduled_duration() {
-        // `! @10pm @2 hours` → start time + duration, no description.
+        // `! @10pm %2 hours` → start time + duration, no name.
         let cmd = parse_from(args(&["!", "@10pm", "%2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
                 assert_eq!(task.name, None);
-                assert_eq!(task.date, Some("10pm".to_string()));
-                assert_eq!(task.available_duration, Some("2 hours".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
             }
             _ => panic!("Expected Task command"),
         }
     }
 
     #[test]
-    fn test_parse_task_scheduled_description_and_duration() {
-        // `! @10pm :meeting @2 hours` → all three fields.
+    fn test_parse_task_scheduled_name_and_duration() {
+        // `! @10pm :meeting %2 hours` → all three fields.
         let cmd = parse_from(args(&["!", "@10pm", ":meeting", "%2", "hours"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
-                assert_eq!(task.date, Some("10pm".to_string()));
-                assert_eq!(task.available_duration, Some("2 hours".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
             }
             _ => panic!("Expected Task command"),
         }
     }
 
     #[test]
-    fn test_parse_task_scheduled_description_after_duration_allowed() {
-        // Description may come after the duration too: `! @10pm %2 hours :meeting`.
+    fn test_parse_task_scheduled_name_after_duration_allowed() {
+        // Name may come after the duration too: `! @10pm %2 hours :meeting`.
         let cmd = parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskType::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
-                assert_eq!(task.date, Some("10pm".to_string()));
-                assert_eq!(task.available_duration, Some("2 hours".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
             }
             _ => panic!("Expected Task command"),
         }
@@ -1268,6 +1389,27 @@ mod tests {
     #[test]
     fn test_parse_task_scheduled_duplicate_duration_rejected() {
         assert!(parse_from(args(&["!", "@10pm", "%2", "hours", "%30", "minutes"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_interleave_deferred() {
+        // Interleaving is tolerated, not rejected: the simple splitter
+        // hands each segment to parse_duration/parse_datetime, and the
+        // parse rejects the garbage. A `:`-word that lands inside the
+        // duration segment makes the duration unparseable...
+        assert!(parse_from(args(&["!", "@10pm", ":meeting", "%2", "hours", ":again"])).is_err());
+        // ...while a trailing `%`-word after the name resumed stays in the
+        // name verbatim (names are free-form).
+        let cmd = parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting", "%30"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskType::Scheduled);
+                assert_eq!(task.name, Some("meeting %30".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
+            }
+            _ => panic!("Expected Task command"),
+        }
     }
 
     #[test]
@@ -1306,8 +1448,8 @@ mod tests {
 
     #[test]
     fn test_parse_task_recurring_body() {
-        // `! @ exercise .. notes` → recurring creation with the description
-        // pre-filling the name and `.. notes` as the body.
+        // `! @ exercise .. notes` → recurring creation with the name
+        // pre-filling the name prompt and `.. notes` as the body.
         let cmd = parse_from(args(&["!", "@", "exercise", "..", "notes"])).unwrap();
         match cmd {
             Command::Task(task) => {
@@ -1335,19 +1477,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_task_at_name_with_extra_args_is_scheduled() {
-        // `! @exercise now` → scheduled creation: the leading @ starts the
-        // time field, which swallows the rest into the date (validated by
-        // the handler, which fails on a bad date before any prompt).
-        let cmd = parse_from(args(&["!", "@exercise", "now"])).unwrap();
-        match cmd {
-            Command::Task(task) => {
-                assert_eq!(task.task_type, TaskType::Scheduled);
-                assert_eq!(task.name, None);
-                assert_eq!(task.date, Some("exercise now".to_string()));
-            }
-            _ => panic!("Expected Task command"),
-        }
+    fn test_parse_task_at_name_with_extra_args_fails_at_parse_time() {
+        // `! @exercise now` → the leading @ starts the time field, which
+        // swallows the rest into the date; "exercise now" is not a
+        // parseable datetime, and since the date is resolved at parse time
+        // now, the command fails here rather than in the handler.
+        assert!(parse_from(args(&["!", "@exercise", "now"])).is_err());
     }
 
     #[test]
@@ -1787,7 +1922,7 @@ mod tests {
         match cmd {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "good");
-                assert_eq!(entry.customs, vec![("sleep".to_string(), "8".to_string())]);
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
                 assert!(!entry.open_editor);
             }
             _ => panic!("Expected Entry command"),
@@ -1799,7 +1934,7 @@ mod tests {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "good");
                 assert_eq!(
-                    entry.customs,
+                    entry.trackers,
                     vec![
                         ("sleep".to_string(), "8".to_string()),
                         ("water".to_string(), "5".to_string())
@@ -1822,7 +1957,7 @@ mod tests {
         match cmd {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "good");
-                assert_eq!(entry.customs, vec![("sleep".to_string(), "8".to_string())]);
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
             }
             _ => panic!("Expected Entry command"),
         }
@@ -1833,7 +1968,7 @@ mod tests {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "good");
                 assert_eq!(
-                    entry.customs,
+                    entry.trackers,
                     vec![
                         ("sleep".to_string(), "8".to_string()),
                         ("water".to_string(), "5".to_string())
@@ -1848,7 +1983,7 @@ mod tests {
         match cmd {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "but not great");
-                assert_eq!(entry.customs, vec![("sleep".to_string(), "8".to_string())]);
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
             }
             _ => panic!("Expected Entry command"),
         }
@@ -1875,7 +2010,7 @@ mod tests {
         match cmd {
             Command::Entry(entry) => {
                 assert_eq!(entry.feeling, "good");
-                assert_eq!(entry.customs, vec![("sleep".to_string(), "8".to_string())]);
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
             }
             _ => panic!("Expected Entry command"),
         }
@@ -1890,7 +2025,7 @@ mod tests {
             cli.cmd,
             Command::Entry(Entry {
                 feeling: "ok".to_string(),
-                customs: vec![],
+                trackers: vec![],
                 body: String::new(),
                 open_editor: false,
             })
@@ -2036,7 +2171,7 @@ mod tests {
         assert!(matches!(cmd, Command::Today { date: Some(_), .. }));
 
         // Unparseable dates still parse at the CLI level (the handler is
-        // the authority, using the config dialect) — assert the date is
+        // the authority, parsing with `DATE_DIALECT`) — assert the date is
         // carried through.
         let cmd = parse_from(args(&["@bogus"])).unwrap();
         assert_eq!(

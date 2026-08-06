@@ -10,8 +10,9 @@ use crate::clap::{CliOpts, ShowVariant, TrackerItem, TrackerPeriod, ViewMode};
 use crate::config::{Config, TrackerKind};
 use crate::date;
 use crate::sql::TaskRow;
+use crate::task::TaskKind;
 
-/// Badge for text-payload custom tracker entries wherever a marker is needed
+/// Badge for text-payload tracker entries wherever a marker is needed
 /// (e.g. the today view). A named constant so the glyph can be adjusted later.
 pub(crate) const TEXT_ENTRY_BADGE: char = '◆';
 
@@ -57,36 +58,27 @@ impl TodayHorizon {
 /// `interval_secs` marker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EntryKind {
-    /// One-shot task without a completion target (`target_count == 0`).
-    Oneshot,
-    /// One-shot task with a completion target (`target_count > 0`).
-    Threshold,
-    /// Recurring task (has an interval).
-    Recurring,
-    /// Scheduled task (no interval; has an availability window).
-    Scheduled,
+    /// A task, carrying its [`TaskKind`].
+    Task(TaskKind),
     /// Feeling entry carrying a mood label.
     Mood,
     /// Journal-only feeling entry (empty mood label; the body holds the text).
     Journal,
-    /// Custom tracker entry.
-    Custom,
+    /// Tracker entry, carrying the tracker's configured payload kind.
+    Tracker(TrackerKind),
 }
 
 impl EntryKind {
     pub fn is_task(self) -> bool {
-        matches!(
-            self,
-            Self::Oneshot | Self::Threshold | Self::Recurring | Self::Scheduled
-        )
+        matches!(self, Self::Task(_))
     }
 
     pub fn is_mood(self) -> bool {
         matches!(self, Self::Mood | Self::Journal)
     }
 
-    pub fn is_custom(self) -> bool {
-        matches!(self, Self::Custom)
+    pub fn is_tracker(self) -> bool {
+        matches!(self, Self::Tracker(_))
     }
 }
 
@@ -110,7 +102,7 @@ pub struct TodayEntry {
     /// journal entries without a configured `journal_badge`).
     pub badge: Option<char>,
     /// Dynamic dot color: Oklab mood projection for feeling entries,
-    /// bin_score_color for numeric custom entries, completion_badge
+    /// bin_score_color for numeric tracker entries, completion_badge
     /// colors for tasks, or a neutral dark gray for journal-only and
     /// text-tracker entries.
     pub color: RatColor,
@@ -122,9 +114,9 @@ pub struct TodayEntry {
     pub recurring_window: Option<crate::sql::RecurringWindow>,
 }
 
-/// Read a custom-tracker score as f64. The `score` column is stored as
+/// Read a tracker score as f64. The `score` column is stored as
 /// BLOB but SQLite's dynamic typing means values can be INTEGER, REAL, or
-/// TEXT. `sql::fetch_customs_for_tracker` selects `CAST(score AS TEXT)` so
+/// TEXT. `sql::fetch_tracker_entries` selects `CAST(score AS TEXT)` so
 /// every storage type decodes as a String; parse that.
 fn score_f64(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
@@ -239,11 +231,11 @@ pub async fn handle_tracker<W: Write>(
                     )
                     .await?;
                 } else {
-                    // Custom tracker: display score dots
+                    // Tracker: display score dots
                     if opts.verbose() {
                         writeln!(out, "{}", grid_title(id_str, period, opts.verbose_level()))?;
                     }
-                    display_custom_tracker(
+                    display_tracker(
                         pool,
                         config,
                         id_str,
@@ -444,7 +436,7 @@ fn render_year_heatmap<W: Write>(
     Ok(())
 }
 
-async fn display_custom_tracker<W: Write>(
+async fn display_tracker<W: Write>(
     pool: &SqlitePool,
     config: &Config,
     tracker_type: &str,
@@ -455,16 +447,14 @@ async fn display_custom_tracker<W: Write>(
     out: &mut W,
     wrap: Option<usize>,
 ) -> Result<()> {
-    let tracker = config.tracker.get(tracker_type).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Unknown custom tracker '{}' not found in config",
-            tracker_type
-        )
-    })?;
+    let tracker = config
+        .tracker
+        .get(tracker_type)
+        .ok_or_else(|| anyhow::anyhow!("Unknown tracker '{}' not found in config", tracker_type))?;
 
     // Fetch all entries in the period
     let entries =
-        crate::sql::fetch_customs_for_tracker(pool, tracker_type, start_epoch, end_epoch).await?;
+        crate::sql::fetch_tracker_entries(pool, tracker_type, start_epoch, end_epoch).await?;
 
     if entries.is_empty() {
         writeln!(
@@ -606,7 +596,7 @@ async fn display_custom_tracker<W: Write>(
     Ok(())
 }
 
-/// Map a custom-tracker score to a color by binning it across the tracker's
+/// Map a tracker score to a color by binning it across the tracker's
 /// color override (if set) or the global task colors. Handles inverted ranges
 /// (max < min → smaller values get the success color).
 fn bin_score_color(
@@ -867,7 +857,7 @@ pub(crate) fn today_sort(a: &TodayEntry, b: &TodayEntry) -> std::cmp::Ordering {
 /// recurring). `show` selects what rides on top: `All` also merges tasks
 /// with a completion today (time = last completion); `A` filters completed
 /// tasks out and shows no completions; `B` is the same as `All` but
-/// tasks-only (no feelings/customs) and carries `coalesce_completions`
+/// tasks-only (no feelings/trackers) and carries `coalesce_completions`
 /// (D11 — no behavior yet). See docs/VIEWS.md.
 pub async fn fetch_today_entries(
     pool: &SqlitePool,
@@ -885,7 +875,7 @@ pub async fn fetch_today_entries(
 
     let mut entries: Vec<TodayEntry> = Vec::new();
 
-    // B is tasks-only: no feelings, no custom tracker entries.
+    // B is tasks-only: no feelings, no tracker entries.
     if show != ShowVariant::B {
         let embedder = crate::embed::global_embedder();
         let axes = config.moods.color_axes.as_ref().unwrap();
@@ -938,18 +928,16 @@ pub async fn fetch_today_entries(
             });
         }
 
-        // 2. Today's custom tracker entries
-        let customs = crate::sql::fetch_customs_today(pool, day_start_epoch, day_end_epoch).await?;
+        // 2. Today's tracker entries
+        let trackers =
+            crate::sql::fetch_tracker_entries_today(pool, day_start_epoch, day_end_epoch).await?;
 
-        for row in customs {
-            let custom_id = row.id;
+        for row in trackers {
+            let tracker_id = row.id;
             let tracker_type = row.tracker_type;
             let time = row.time;
             let tracker = config.tracker.get(&tracker_type).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Unknown custom tracker '{}' not found in config",
-                    tracker_type
-                )
+                anyhow::anyhow!("Unknown tracker '{}' not found in config", tracker_type)
             })?;
             let (label, badge, score) = match tracker.kind {
                 // Text payloads have no score; they use the shared text badge.
@@ -972,10 +960,10 @@ pub async fn fetch_today_entries(
                 None => RatColor::DarkGray,
             };
             entries.push(TodayEntry {
-                id: Some(custom_id),
+                id: Some(tracker_id),
                 time,
                 time_label: today_time_label(time, day_start_epoch),
-                kind: EntryKind::Custom,
+                kind: EntryKind::Tracker(tracker.kind),
                 label,
                 body: String::new(),
                 task_id: None,
@@ -1014,11 +1002,7 @@ pub async fn fetch_today_entries(
             id: None,
             time,
             time_label,
-            kind: if task.target_count > 0 {
-                EntryKind::Threshold
-            } else {
-                EntryKind::Oneshot
-            },
+            kind: EntryKind::Task(task.kind()),
             label: task.name.clone(),
             body: task.body.clone(),
             task_id: Some(task.id),
@@ -1052,7 +1036,7 @@ pub async fn fetch_today_entries(
             id: None,
             time,
             time_label,
-            kind: EntryKind::Scheduled,
+            kind: EntryKind::Task(task.kind()),
             label: task.name.clone(),
             body: task.body.clone(),
             task_id: Some(task.id),
@@ -1093,7 +1077,7 @@ pub async fn fetch_today_entries(
             id: None,
             time,
             time_label,
-            kind: EntryKind::Recurring,
+            kind: EntryKind::Task(w.task.kind()),
             label: w.task.name.clone(),
             body: w.task.body.clone(),
             task_id: Some(w.task.id),
@@ -1105,7 +1089,7 @@ pub async fn fetch_today_entries(
     }
 
     // 5. Tasks with a completion entry today (All and B — B is the same as
-    // All minus the feelings/customs sections): merged over the regular
+    // All minus the feelings/trackers sections): merged over the regular
     // rows (dedup by task_id — the completed-today row wins, time = last
     // completion timestamp) so a task completed today shows its completion
     // time even when it is no longer active (or not in the regular lists
@@ -1131,15 +1115,7 @@ pub async fn fetch_today_entries(
                 id: None,
                 time: last_time,
                 time_label: today_time_label(last_time, day_start_epoch),
-                kind: if task.is_recurring() {
-                    EntryKind::Recurring
-                } else if task.is_scheduled() {
-                    EntryKind::Scheduled
-                } else if task.target_count > 0 {
-                    EntryKind::Threshold
-                } else {
-                    EntryKind::Oneshot
-                },
+                kind: EntryKind::Task(task.kind()),
                 label: task.name.clone(),
                 body: task.body.clone(),
                 task_id: Some(task.id),
@@ -1162,7 +1138,7 @@ pub async fn fetch_today_entries(
     Ok(entries)
 }
 
-/// Handle today view (non-terminal output): displays today's feelings, custom
+/// Handle today view (non-terminal output): displays today's feelings, tracker
 /// entries, and task activity as tab-separated rows. TUI dispatch is handled by
 /// [`crate::handlers::handle_command`].
 pub async fn handle_today<W: Write>(
@@ -1251,28 +1227,28 @@ mod tests {
     fn test_today_time_label() {
         // 2024-03-15 is a Friday; 2024-03-16 a Saturday.
         let day =
-            crate::date::parse_datetime("2024-03-15 00:00", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-15 00:00", crate::date::DATE_DIALECT).unwrap();
         let same =
-            crate::date::parse_datetime("2024-03-15 09:30", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-15 09:30", crate::date::DATE_DIALECT).unwrap();
         let next =
-            crate::date::parse_datetime("2024-03-16 09:30", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-16 09:30", crate::date::DATE_DIALECT).unwrap();
         assert_eq!(today_time_label(same, day), "09:30");
         assert_eq!(today_time_label(next, day), "Sa 09:30");
         // Outside the week window → compact day-time form ("DD HH:MM").
         let far =
-            crate::date::parse_datetime("2024-03-25 09:30", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-25 09:30", crate::date::DATE_DIALECT).unwrap();
         let early =
-            crate::date::parse_datetime("2024-03-01 09:30", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-01 09:30", crate::date::DATE_DIALECT).unwrap();
         assert_eq!(today_time_label(far, day), "25 09:30");
         assert_eq!(today_time_label(early, day), "01 09:30");
-        crate::date::parse_datetime("2024-03-25 09:30", crate::date::DateDialect::Uk).unwrap();
+        crate::date::parse_datetime("2024-03-25 09:30", crate::date::DATE_DIALECT).unwrap();
         // The weekday form covers days 1-6 after the anchor; the 7th day
         // (>= day_start + week) is already the short form.
         let within =
-            crate::date::parse_datetime("2024-03-21 09:30", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-21 09:30", crate::date::DATE_DIALECT).unwrap();
         assert_eq!(today_time_label(within, day), "Th 09:30");
         let boundary =
-            crate::date::parse_datetime("2024-03-22 00:00", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-22 00:00", crate::date::DATE_DIALECT).unwrap();
         assert_eq!(today_time_label(boundary, day), "Fr 00:00");
     }
 
@@ -1296,6 +1272,7 @@ mod tests {
             target_count: 0,
             optional: 0,
             end_time,
+            parent: None,
             completions,
             last_time,
         }
@@ -1304,12 +1281,12 @@ mod tests {
     #[test]
     fn test_task_entry_time() {
         let day =
-            crate::date::parse_datetime("2024-03-16 00:00", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-16 00:00", crate::date::DATE_DIALECT).unwrap();
         let anchor =
-            crate::date::parse_datetime("2024-03-15 08:00", crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-15 08:00", crate::date::DATE_DIALECT).unwrap();
         let now =
-            crate::date::parse_datetime("2024-03-16 14:00", crate::date::DateDialect::Uk).unwrap();
-        let at = |s: &str| crate::date::parse_datetime(s, crate::date::DateDialect::Uk).unwrap();
+            crate::date::parse_datetime("2024-03-16 14:00", crate::date::DATE_DIALECT).unwrap();
+        let at = |s: &str| crate::date::parse_datetime(s, crate::date::DATE_DIALECT).unwrap();
         let day_secs = 86400;
         let hour_secs = 3600;
 
@@ -1477,7 +1454,7 @@ mod tests {
 
     #[test]
     fn test_task_done_time() {
-        let at = |s: &str| crate::date::parse_datetime(s, crate::date::DateDialect::Uk).unwrap();
+        let at = |s: &str| crate::date::parse_datetime(s, crate::date::DATE_DIALECT).unwrap();
         let day_secs = 86400;
         let hour_secs = 3600;
 
@@ -1544,7 +1521,7 @@ mod tests {
             id: None,
             time,
             time_label: time_label.to_string(),
-            kind: EntryKind::Oneshot,
+            kind: EntryKind::Task(TaskKind::Oneshot),
             label: String::new(),
             body: String::new(),
             task_id: None,

@@ -1,6 +1,6 @@
 #![allow(clippy::derivable_impls)]
 
-use cba::wbog;
+use cba::{ebog, wbog};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,9 +28,9 @@ pub use types::*;
 ///
 /// Sections: `[moods]` (color settings; the anchor pairs live in the file
 /// named by `[moods] source`), `[tasks]` (defaults for new tasks, badge
-/// colors), `[tracker.<name>]` (custom trackers), `[grid]` (tracker grid
-/// ranges), `[tasks_view]` and `[today_view]` (view options), `[date]` (date
-/// parsing dialect), `[editor]` (body editor).
+/// colors), `[tracker.<name>]` (trackers), `[grid]` (tracker grid
+/// ranges), `[tasks_view]` and `[today_view]` (view options), `[editor]`
+/// (body editor).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -56,9 +56,6 @@ pub struct Config {
     pub today_view: TodayViewConfig,
 
     #[serde(default)]
-    pub date: DateConfig,
-
-    #[serde(default)]
     pub editor: EditorConfig,
 }
 
@@ -69,23 +66,26 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Normalize a loaded config before use: drop custom trackers whose
-    /// names cannot be addressed from the CLI, and fall back to the default
-    /// badge palette when fewer than three colors are configured. Run
-    /// automatically at startup, before any command is handled.
+    /// Normalize a loaded config before use: drop trackers whose
+    /// names cannot be addressed from the CLI, clear non-positive tracker
+    /// intervals (they would divide by zero when computing replacement
+    /// slots), and fall back to the default badge palette when fewer than
+    /// three colors are configured. Run automatically at startup, before
+    /// any command is handled.
     ///
     /// The bundled default config never needs this; a user-edited config
     /// may. See [`is_valid_tracker_name`] for the exact tracker-name rules.
     pub fn init(&mut self) {
         // Drop trackers whose names are unusable: a `:` prefix collides with
         // the grid-view `:` command, `-`/whitespace can't be addressed as
-        // `-name value`, and names made purely of the flag characters
-        // (`q`/`v`) would be swallowed by the leading `-q`/`-v` flags.
+        // `-name value`, names made purely of the flag characters
+        // (`q`/`v`) would be swallowed by the leading `-q`/`-v` flags, and
+        // purely numeric names collide with the `! -<parent_id>` flag.
         self.tracker.retain(|name, _| {
             if !is_valid_tracker_name(name) {
                 cba::ebog!(
                     "config";
-                    "Dropping unusable tracker '{}': names cannot begin with ':', contain '-' or whitespace, or consist solely of flag characters '{}'",
+                    "Dropping unusable tracker '{}': names cannot begin with ':', contain '-' or whitespace, be purely numeric, or consist solely of flag characters '{}'",
                     name, FLAG_CHARACTERS
                 );
                 false
@@ -100,12 +100,21 @@ impl Config {
                 if colors.len() <= 2 {
                     wbog!(
                         "config";
-                        "Tracker '{}' has colors with {} entries (<= 2), clearing the override",
+                        "Ignoring colors override on Tracker '{}' with {} entries (<= 2)",
                         name,
                         colors.len()
                     );
                     setting.colors = None;
                 }
+            }
+            // A non-positive interval would divide by zero when computing
+            // the tracker's replacement slot, so clear it and warn.
+            if setting.interval.is_some_and(|i| i <= 0) {
+                ebog!(
+                    "config";
+                    "Ignoring zero interval setting on Tracker '{name}'"
+                );
+                setting.interval = None;
             }
         }
         if self.tasks.colors.len() < 3 {
@@ -119,8 +128,9 @@ impl Config {
 
 // Tracker-name validity for `Config::init`. A name is usable only when it
 // is non-empty, does not begin with `:` (grid-view command syntax), contains
-// no `-` or whitespace, and is not made purely of the leading flag
-// characters (`q` / `v`).
+// no `-` or whitespace, is not made purely of the leading flag
+// characters (`q` / `v`), and is not purely numeric — `-123` would
+// collide with the `! -<parent_id>` task flag.
 fn is_valid_tracker_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -129,6 +139,9 @@ fn is_valid_tracker_name(name: &str) -> bool {
         return false;
     }
     if name.contains('-') || name.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if name.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
     !name.chars().all(|c| FLAG_CHARACTERS.contains(c))
@@ -171,26 +184,6 @@ impl Default for GridViewConfig {
             year_rolling: true,
             month_rolling: true,
             week_start: chrono::Weekday::Mon,
-        }
-    }
-}
-
-/// `[date]` section — date/time parsing options.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DateConfig {
-    /// chrono-english dialect for natural-language date parsing: `"uk"`
-    /// (day-first) or `"us"` (month-first). Affects ambiguous
-    /// slash forms like `3/5/2024` only; ISO dates and relative phrases
-    /// ("yesterday", "3 days ago") are unaffected.
-    #[serde(default)]
-    pub dialect: crate::date::DateDialect,
-}
-
-impl Default for DateConfig {
-    fn default() -> Self {
-        Self {
-            dialect: crate::date::DateDialect::Uk,
         }
     }
 }
@@ -403,7 +396,7 @@ impl Default for TasksConfig {
     }
 }
 
-/// `[tracker.<name>]` section — a custom tracker. The table key is the
+/// `[tracker.<name>]` section — a user-defined tracker. The table key is the
 /// tracker's name, used as `-<name> <value>` when logging an entry (e.g.
 /// `-sleep 8` for a tracker named `sleep`).
 #[derive(Debug, Clone, Deserialize, Default, Serialize)]
@@ -412,7 +405,8 @@ pub struct TrackerSetting {
     /// How often the tracker is expected to be logged, e.g. `"1 day"` or
     /// `"1 week"`. With an interval, re-logging the same tracker within the
     /// same period replaces the previous entry; without one, every log adds
-    /// a new entry.
+    /// a new entry. Must be positive; a non-positive value is cleared to
+    /// `None` at `Config::init`.
     #[serde(
         default,
         deserialize_with = "crate::date::deserialize::deserialize_duration"
@@ -494,20 +488,61 @@ mod tests {
         assert!(!is_valid_tracker_name("v"));
         assert!(!is_valid_tracker_name("qv"));
         assert!(!is_valid_tracker_name("vvq"));
+        // Purely numeric names collide with the `! -<parent_id>` flag
+        assert!(!is_valid_tracker_name("123"));
+        assert!(!is_valid_tracker_name("0"));
         assert!(!is_valid_tracker_name(""));
+    }
+
+    #[test]
+    fn test_init_clears_non_positive_intervals() {
+        let mut config = Config::default();
+        for (name, interval) in [("zero", 0), ("negative", -3600)] {
+            config.tracker.insert(
+                name.to_string(),
+                TrackerSetting::new(TrackerKind::Float).with_interval(interval),
+            );
+        }
+        config.tracker.insert(
+            "good".to_string(),
+            TrackerSetting::new(TrackerKind::Float).with_interval(86_400),
+        );
+        config.init();
+
+        assert_eq!(config.tracker["zero"].interval, None);
+        assert_eq!(config.tracker["negative"].interval, None);
+        assert_eq!(config.tracker["good"].interval, Some(86_400));
     }
 
     #[test]
     fn test_init_drops_invalid_trackers() {
         let mut config = Config::default(); // debug: assets/dev.toml trackers
-        for bad in [":collide", "sleep-time", "two words", "q", "v", "qv", ""] {
+        for bad in [
+            ":collide",
+            "sleep-time",
+            "two words",
+            "q",
+            "v",
+            "qv",
+            "123",
+            "",
+        ] {
             config
                 .tracker
                 .insert(bad.to_string(), TrackerSetting::default());
         }
         config.init();
 
-        for bad in [":collide", "sleep-time", "two words", "q", "v", "qv", ""] {
+        for bad in [
+            ":collide",
+            "sleep-time",
+            "two words",
+            "q",
+            "v",
+            "qv",
+            "123",
+            "",
+        ] {
             assert!(
                 !config.tracker.contains_key(bad),
                 "tracker {:?} should have been dropped",

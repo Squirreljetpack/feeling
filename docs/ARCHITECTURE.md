@@ -1,7 +1,7 @@
 # feeling — Architecture
 
 A CLI + TUI journaling and task-tracking tool. Mood entries (optionally journal
-bodies), custom numeric trackers, oneshot/recurring/scheduled tasks, all stored
+bodies), numeric trackers, oneshot/recurring/scheduled tasks, all stored
 in a single SQLite database. Terminal output is tab-separated and parseable; the
 same views run as a fullscreen ratatui TUI when stdout is a TTY.
 
@@ -15,6 +15,8 @@ in this document, no changelog rows
 
 when running tests, use --test-threads=4
 
+Don't update help.txt
+
 ## 1. Crate layout
 
 The crate is a **library + thin binary** so that integration tests can import it
@@ -25,7 +27,7 @@ src/
   lib.rs        re-exports every module
   main.rs       thin binary: init flow + dispatch (the only TTY/TUI decision point)
   paths.rs      XDG-style paths (config dir, state dir, db, log)
-  config.rs     serde Config (config.toml) incl. mood source, task colors, custom trackers
+  config.rs     serde Config (config.toml) incl. mood source, task colors, trackers
   config/       config-side types (types.rs: MoodEndpoint, TrackerType, ColorBins)
   logger.rs     cba `bog`/env_logger setup (env_logger piped to the log file only)
   db.rs         SQLite pool, CREATE TABLE schema, indexes, PRAGMA foreign_keys
@@ -44,6 +46,8 @@ src/
                 format_today_simple, format_tasks_simple)
   task.rs       shared task logic (completion deltas, interval floors, done-ness,
                 the unified Enter-action used by both TUIs)
+  task_tree.rs  parent/child task tree: recursive-CTE load + assembly + render
+                (read-only; nothing writes `parent` yet)
   views.rs      non-TTY view output (tasks, today, trackers) + fetch queries
   action.rs     unified Action enum emitted by event loop and consumed by TUI apps
   binds.rs      crokey key combinations -> Action bindings (default_binds)
@@ -142,7 +146,7 @@ database's prior state.
 feeling:  id, mood TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', time INTEGER (unixepoch),
           embedding BLOB, score REAL          -- cached saliency for the mood text; computed at
                                               -- entry creation, backfilled for legacy rows
-custom:   id, type TEXT, score BLOB NOT NULL CHECK (typeof(score) IN ('integer','text','real')),
+tracker:  id, type TEXT, score BLOB NOT NULL CHECK (typeof(score) IN ('integer','text','real')),
           time, feeling INTEGER → feeling(id)   -- nullable: tracker entries without a linked feeling are allowed
           -- score holds a text | integer | real payload per the tracker's declared kind;
           -- BLOB decltype (no affinity) preserves the storage class exactly
@@ -151,7 +155,9 @@ todos:    id (AUTOINCREMENT), name TEXT NOT NULL, body, priority INTEGER DEFAULT
                                      -- task is completed (see "Short-id allocation" below)
           name_embedding BLOB,       -- reserved for a name-derived embedding; never populated
           start_time, available_duration_secs, interval_secs, target_count INTEGER DEFAULT 0,
-          optional INTEGER DEFAULT 0, end_time
+          optional INTEGER DEFAULT 0, end_time, parent → todos(id) ON DELETE SET NULL
+          -- parent = task-tree link (NULL = root-level task); deleting a parent
+          -- re-parents its children to root instead of cascading
 todo_completions: id, todo_id → todos(id) ON DELETE CASCADE,
           -- row ids are stable (never reassigned), so no ON UPDATE CASCADE.
           time INTEGER, count INTEGER NOT NULL DEFAULT 1
@@ -214,7 +220,7 @@ reassigned**. The user-facing id is the separate `short_id` column:
 
 All date and duration string parsing is encapsulated in the `date/` sub-module so callers work exclusively with `Epoch` (i64 Unix epoch seconds) or duration seconds (`i64`) without touching `chrono` or `humantime` types directly.
 
-- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: DateDialect) -> Result<Epoch>` uses `chrono-english` (`chrono_english::parse_date_string`) with `chrono::Local::now()` as the anchor. The dialect (`DateDialect::Uk` day-first, default, or `DateDialect::Us` month-first) comes from the `[date] dialect` config setting; it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
+- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: chrono_english::Dialect) -> Result<Epoch>` uses `chrono-english` (`chrono_english::parse_date_string`) with `chrono::Local::now()` as the anchor. Callers pass the compile-time-fixed `crate::date::DATE_DIALECT` constant (no config knob); it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
 - **Duration parsing (`date/parse_duration.rs`)**: `parse_duration_secs(s: &str) -> Result<i64>` uses `humantime` (`humantime::parse_duration`) to parse human-readable durations (e.g. `"1 day"`, `"2 hours"`, `"1d"`, `"2h"`), returning total seconds as an `i64`.
 - **Formatting (`date/format.rs`)**: `format_time` (HH:MM), `format_date` (ISO), `format_datetime` (ISO + HH:MM), `format_datetime_short` (= datetime), `format_date_dmy` (DD-MM-YY, the today TUI's anchored-day label), `format_duration` (humantime).
 - **Boundary helpers (`date/mod.rs`)**: `now`, `today_start`/`today_end`, `day_start`/`day_end` (arbitrary day), `week_start(weekday)` (grids), `month_start`/`month_end`, `year_start`/`year_end`, rolling variants (`rolling_month_start`, `aligned_year_start`).
@@ -234,13 +240,14 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | Input | Command |
 | --- | --- |
 | (no args) | `Today { date: None }` — today view (`feeling` with no subcommand) |
-| `@<date>` | `Today { date: Some(date) }` — today view anchored to that day; the **handler** parses it with `config.date.dialect` (the parser has no config, so nothing is validated here) |
+| `@<date>` | `Today { date: Some(date) }` — today view anchored to that day; the **handler** parses it with `DATE_DIALECT` (the parser has no config, so nothing is validated here) |
 | `--help` / `-h` | `Help` — bundled `assets/help.txt` printed via `include_str!` |
-| plain words (`happy`, `good ...`) | `Entry { feeling, customs, .. }` — mood entry; custom trackers as `-type score` |
+| plain words (`happy`, `good ...`) | `Entry { feeling, trackers, .. }` — mood entry; trackers as `-type score` |
 | `..` (bare, at the end) | opens the body editor (Entry/Task with `open_editor`) |
 | `!` (bare) | `Task { OneShot, name: None, open_editor: true }` — interactive oneshot creation (name prompted via `prompt_name`) |
-| `! description [@date] [..]` | `Task { OneShot, .. }` — `@YYYY-MM-DD` is the **due** time (stored in `end_time`; `start_time` records creation); a second `@`-word is rejected |
-| `! @` / `! @ description` | `Task { Recurring, prefill }` — interactive recurring creation; the description pre-fills the name prompt (`@`-words inside it stay free text) |
+| `! <name> [@date] [..]` | `Task { OneShot, .. }` — `@YYYY-MM-DD` is the **due** time (stored in `end_time`; `start_time` records creation); a second `@`-word is rejected |
+| `! -<parent_id> [name] [@time]` | `Task { OneShot, parent }` — oneshot creation attached to the task whose **short id** is `<parent_id>` (flag parses in the initial position only; resolved to a row id in the handler, so an unknown id errors before anything is inserted) |
+| `! @` / `! @ <name>` | `Task { Recurring, prefill }` — interactive recurring creation; the `<name>` pre-fills the name prompt (`@`-words inside it stay free text) |
 | `! @<time> [:name] [%<duration>] [..]` | `Task { Scheduled, .. }` — scheduled creation; immediate when all three fields came from the CLI, else interactive with pre-fills. The space discriminator is load-bearing: `! @ 10pm` (bare `@`) is recurring, `! @10pm` is scheduled |
 | `@[:o\|:O]` | `View { PendingTasks, show }` — pending tasks (all / oneshots only / recurring+scheduled, not availability-filtered); recently-completed tasks stay within `persist_pending_seconds` (D9) |
 | `@done[:o\|:O]` | `View { DoneTasks, show }` — completed tasks (all / oneshots only / recurring history + scheduled incl. auto-completed) |
@@ -257,7 +264,7 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `:color <mood>` | `Color` — full mood-color pipeline diagnostic |
 | `:clear [@date]` | `Clear` — deletes that day's mood entries (interactive confirm) |
 
-Custom tracker names cannot begin with `@` (reserved for recurring ids).
+Tracker names cannot begin with `@` (reserved for recurring ids).
 Tabs in mood/name fields are an error (output is tab-separated); whitespace in
 recurring task names is allowed (the `@` prefix disambiguates).
 
@@ -269,7 +276,7 @@ recurring task names is allowed (the `@` prefix disambiguates).
 the `Command` enum. `opts` gates confirmations and verbose output throughout.
 
 - **Entry** → `handle_entry`: runs in a transaction; inserts `feeling` (+ optional
-  `custom` rows with `feeling_id`). Each `-type value` is parsed against the
+  `tracker` rows with `feeling_id`). Each `-type value` is parsed against the
   tracker's declared kind (text/number/float) with a clear error on mismatch;
   min/max apply to number/float, unknown tracker types are rejected. Insertion
   strategy is kind × interval: `text`/`float` trackers **with an interval** keep
@@ -284,17 +291,19 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
 - **Task** → `handle_task`:
   - oneshot: `! <name> [@<time>] [.. [body]]` creates directly — the name
     is validated (non-empty, no tabs, unique among oneshot tasks) and
-    `@<time>` is parsed with the config dialect (an unparseable date fails
-    creation); bare `!` runs the interactive flow (cliclack intro, then
+    `@<time>` was already resolved to an epoch at CLI parse time with
+    `DATE_DIALECT` (an unparseable date fails the command line, before
+    anything is created); bare `!` runs the interactive flow (cliclack intro, then
     name, priority, target count and the body editor). `open_editor` alone
     never triggers the flow — only a missing name does.
-  - recurring: interactive flow (`feeling ! @ <description>`) — cliclack
+  - recurring: interactive flow (`feeling ! @ <name>`) — cliclack
     prompts for name (unique, pre-filled), priority, interval, available
     duration, target count, end time, optional, and the body editor. The flow
     bails when stdin is not interactive. Pre-filled values are logged at info
     level (`prefill` tag) and skip their prompts.
-  - scheduled: `! @<time> [:name] [%<duration>]` — the start time is parsed
-    with the config dialect before any prompt; creation is immediate when the
+  - scheduled: `! @<time> [:name] [%<duration>]` — the start time and
+    duration are resolved to epochs at CLI parse time (`DATE_DIALECT`,
+    `parse_duration_secs`) before any prompt; creation is immediate when the
     name, start and duration all came from the CLI (priority = the scheduled
     default), otherwise the interactive flow pre-fills what was given
     (available duration blanks to 1 hour). Scheduled tasks always have
@@ -307,7 +316,7 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   `- <id>` form looks up the task by user-facing short id (see §3); completed
   tasks have no short id and are not addressable here (use the word query form
   instead).
-- **Today** → resolves `@<date>` via `parse_date` with `config.date.dialect`
+- **Today** → resolves `@<date>` via `parse_date` with `DATE_DIALECT`
   (day-aligned), then TUI (`TodayApp::new(pool, config, day_epoch, show,
   horizon).run()`) when `tui`, else `views::handle_today(...)`.
 - **View** → TUI (`TasksApp::new(pool, mode, config, show,
@@ -317,7 +326,7 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
 - **Prune** → prunes expired/completed tasks and clears the **entire**
   `embedding_cache` (it is a cache — rows are lazily re-embedded).
 - **Clear** → `:clear [@date]` deletes that day's mood entries (and linked
-  customs), with an interactive confirm showing the computed date.
+  tracker entries), with an interactive confirm showing the computed date.
 - **Color** → `:color <mood>` runs the whole pipeline once and prints every
   intermediate value; `-v` additionally dumps `config.moods.axes` up front.
 - **Embed** → `handle_embed`: stdin lines → one embedding vector per line.
@@ -379,13 +388,13 @@ order only survives where the Rust keys tie (the sorts are stable).
 
 ### Today view — `fetch_today_entries` / `format_today_simple`
 
-`ts \t marker \t label \t detail` rows aggregated from feelings, custom
+`ts \t marker \t label \t detail` rows aggregated from feelings, tracker
 entries, due oneshot tasks, scheduled tasks whose window overlaps the horizon,
 and active recurring tasks (recurring availability filter:
 `(now - start_time) mod interval < available_duration`). **Rows are tasks
 only — completion events are not rendered**; a done task carries `✓` on its
 own row instead. Badges: `●` feeling + Oklab mood projection; `◆` numeric
-custom + `bin_score_color`; `·` text custom; oneshot tasks use `○`
+tracker + `bin_score_color`; `·` text tracker; oneshot tasks use `○`
 (in-progress) / `✓` (done); recurring tasks use `↻` (in-progress) / `✓`
 (done); scheduled tasks render `✓` for done/auto-completed states and `◷`
 for ongoing and failed states; journal
@@ -397,7 +406,7 @@ the same `TodayEntry`s, so both renderers share the exact badge/color logic.
 
 Horizons: Today / Tomorrow / Week — **Week is always the next 7 days** from
 the anchored day. `feeling @<date>` anchors the view to any parseable day
-(day-aligned, config dialect; the TUI title shows Today / Yesterday /
+(day-aligned, `DATE_DIALECT`; the TUI title shows Today / Yesterday /
 DD-MM-YY). The oneshot query has two orthogonal bounds on the due time
 (`COALESCE(end_time, start_time)`, where `end_time` is the `@<time>`
 deadline and the fallback keeps legacy rows and undated tasks working): an
@@ -424,7 +433,7 @@ the weekday-rows heatmap. `handle_tracker` prints one section per item:
   mood projection (§11), preferring stored `feeling.embedding` blobs over
   on-the-fly embedding. Days without an entry render `◯`; days with an entry
   render `●`. Queries filter `mood != ''` so journal-only entries are excluded.
-- **Custom tracker** (`display_custom_tracker`): per-interval dots binned with
+- **Tracker** (`display_tracker`): per-interval dots binned with
   `bin_score_color` (score vs `min`/`max`, inverted ranges handled; no
   blending) for `number`/`float` kinds; `text` trackers list each entry as a
   dark-gray `> text` line — at `-v` each line appends the entry's own
@@ -518,8 +527,8 @@ Both TUIs route Enter through the same pure decision fn
 
 `Ctrl+e` / `e` on the selected item: tasks and feeling entries open the
 external editor pre-filled with the body (event loop suspended via
-`ControlEvent::Pause`); text custom trackers open the editor on their payload;
-`number`/`float` customs use the in-TUI `EditTrackerModal` (validated against
+`ControlEvent::Pause`); text trackers open the editor on their payload;
+`number`/`float` trackers use the in-TUI `EditTrackerModal` (validated against
 the tracker kind on Enter).
 
 ### TUI Applications
@@ -543,8 +552,8 @@ the tracker kind on Enter).
   `config`, `entries`, `selected`, `horizon`, `day_epoch`, `day_label`,
   `sort_by_priority`, `modal`, `selected_task`, `color_cache`. Cycles horizons
   (Today → Tomorrow → Week) via `Tab`; the title shows the anchored day
-  (`Today` / `Yesterday` / `DD-MM-YY`); handles mood/task body edits, custom
-  tracker edits, and deletion — `Delete` works on feeling / custom / task
+  (`Today` / `Yesterday` / `DD-MM-YY`); handles mood/task body edits, tracker
+  edits, and deletion — `Delete` works on feeling / tracker / task
   entries with a confirm modal ("Delete journal entry?" for nameless rows).
 
 ---
@@ -663,7 +672,7 @@ real editor.
   CLI parse → handler → DB path**: they call `parse_from` + `handle_command`
   with a `Vec<u8>` writer and `&CliOpts::default()` (≈90 call sites) and assert
   on captured stdout content (tabular rows, markers, badges), not just exit
-  success. Configs register custom trackers (`sleep`, `water`) so `handle_entry`
+  success. Configs register trackers (`sleep`, `water`) so `handle_entry`
   accepts `-sleep 8`-style args.
 - Recurring tasks are seeded via raw SQL INSERTs because the `! @` cliclack
   prompts bail on non-interactive stdin; completion updates still go through

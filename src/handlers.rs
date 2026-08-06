@@ -10,7 +10,7 @@ use crate::date::{self, format_duration};
 use crate::editor::{open_editor_at, open_editor_for_body};
 use crate::paths::default_config_path;
 use crate::render::Render;
-use crate::sql::{CustomObject, CustomValue, EntryObject, TaskObject, TaskUpdateInfo};
+use crate::sql::{EntryObject, TaskObject, TaskUpdateInfo, TrackerObject, TrackerValue};
 use crate::types::{Entry, Task};
 
 pub async fn handle_command<W: Write>(
@@ -75,11 +75,10 @@ pub async fn handle_command<W: Write>(
                 .moods
                 .init_with(pool, crate::embed::global_embedder())
                 .await?;
-            // `feeling @<date>` anchors the view to that day; re-parse with
-            // the configured dialect (the parse-time gate in clap.rs only
-            // checks the default Uk dialect).
+            // `feeling @<date>` anchors the view to that day; parse with
+            // the fixed `DATE_DIALECT`.
             let day_epoch = match &date {
-                Some(d) => Some(crate::date::parse_date(d, config.date.dialect)?),
+                Some(d) => Some(crate::date::parse_date(d, crate::date::DATE_DIALECT)?),
                 None => None,
             };
             if tui {
@@ -126,12 +125,12 @@ pub async fn handle_command<W: Write>(
 /// If interactive, confirm first, showing the computed date.
 async fn handle_clear(
     pool: &SqlitePool,
-    config: &Config,
+    _config: &Config,
     date_param: Option<String>,
     tui: bool,
 ) -> Result<()> {
     let target_ts = match date_param {
-        Some(ref d_str) => crate::date::parse_datetime(d_str, config.date.dialect)?,
+        Some(ref d_str) => crate::date::parse_datetime(d_str, crate::date::DATE_DIALECT)?,
         None => crate::date::now(),
     };
 
@@ -285,7 +284,7 @@ async fn handle_entry(
     entry: Entry,
 ) -> Result<()> {
     let feeling = entry.feeling;
-    let customs = entry.customs;
+    let trackers = entry.trackers;
     let body = entry.body;
     let open_editor = entry.open_editor;
 
@@ -299,30 +298,30 @@ async fn handle_entry(
         body
     };
 
-    if feeling.is_empty() && customs.is_empty() && body.is_empty() {
+    if feeling.is_empty() && trackers.is_empty() && body.is_empty() {
         anyhow::bail!("Nothing to log");
     }
 
     // Determine the timestamp (Unix epoch in seconds).
     let time_epoch = date::now();
 
-    // Parse and validate custom tracker values against their declared kind.
+    // Parse and validate tracker values against their declared kind.
     // Raw strings are interpreted here (not in the parser) so the config's
     // kind (text/number/float) determines how each value is stored. Text and
     // float trackers with an interval keep one entry per interval slot (see
     // `interval_slot`): re-logging the same tracker in the same slot replaces
     // the previous entry (handled inside `sql::create_entry`). Number
     // trackers always accumulate.
-    let mut custom_objects: Vec<CustomObject> = Vec::with_capacity(customs.len());
-    for (tracker_type, raw) in &customs {
-        let value = parse_custom_value(config, tracker_type, raw)?;
+    let mut tracker_objects: Vec<TrackerObject> = Vec::with_capacity(trackers.len());
+    for (tracker_type, raw) in &trackers {
+        let value = parse_tracker_value(config, tracker_type, raw)?;
         let replace_slot = config
             .tracker
             .get(tracker_type)
             .filter(|tracker| matches!(tracker.kind, TrackerKind::Text | TrackerKind::Float))
             .and_then(|tracker| tracker.interval)
             .map(|interval_secs| interval_slot(time_epoch, interval_secs));
-        custom_objects.push(CustomObject {
+        tracker_objects.push(TrackerObject {
             tracker_type: tracker_type.clone(),
             value,
             replace_slot,
@@ -354,7 +353,7 @@ async fn handle_entry(
         time: time_epoch,
         embedding: embedding_blob,
         score,
-        customs: custom_objects,
+        trackers: tracker_objects,
     };
 
     let feeling_id = crate::sql::create_entry(pool, &entry_obj).await?;
@@ -369,16 +368,16 @@ async fn handle_entry(
 /// Denies unknown tracker types; parses Number/Float values (with a clear
 /// error when the argument cannot be parsed) and enforces min/max for both;
 /// Text accepts the value as-is (min/max ignored).
-fn parse_custom_value(config: &Config, tracker_type: &str, raw: &str) -> Result<CustomValue> {
+fn parse_tracker_value(config: &Config, tracker_type: &str, raw: &str) -> Result<TrackerValue> {
     let tracker = config.tracker.get(tracker_type).ok_or_else(|| {
         anyhow::anyhow!(
-            "Unknown custom tracker type '{}' not found in config",
+            "Unknown tracker type '{}' not found in config",
             tracker_type
         )
     })?;
 
     match tracker.kind {
-        TrackerKind::Text => Ok(CustomValue::Text(raw.to_string())),
+        TrackerKind::Text => Ok(TrackerValue::Text(raw.to_string())),
         TrackerKind::Number => {
             let n: i64 = raw.parse().map_err(|_| {
                 anyhow::anyhow!(
@@ -387,7 +386,7 @@ fn parse_custom_value(config: &Config, tracker_type: &str, raw: &str) -> Result<
                     tracker_type
                 )
             })?;
-            Ok(CustomValue::Number(n))
+            Ok(TrackerValue::Number(n))
         }
         TrackerKind::Float => {
             let f: f64 = raw.parse().map_err(|_| {
@@ -397,7 +396,7 @@ fn parse_custom_value(config: &Config, tracker_type: &str, raw: &str) -> Result<
                     tracker_type
                 )
             })?;
-            Ok(CustomValue::Float(f))
+            Ok(TrackerValue::Float(f))
         }
     }
 }
@@ -419,6 +418,18 @@ fn interval_slot(time_epoch: i64, interval_secs: i64) -> (i64, i64) {
     (slot_start, slot_start + interval_secs)
 }
 
+/// Resolve a `-<parent_id>` short id to a stable row id; errors when no
+/// task holds that short id (a completed oneshot holds `NULL` and is
+/// never resolvable).
+async fn resolve_parent(pool: &SqlitePool, short_id: i64) -> Result<Option<i64>> {
+    match crate::sql::fetch_task_id_by_short_id(pool, short_id).await? {
+        Some(id) => Ok(Some(id)),
+        None => {
+            anyhow::bail!("No task with short id {short_id} exists (cannot attach it as parent)")
+        }
+    }
+}
+
 async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: Task) -> Result<()> {
     let task_type = task.task_type;
     let name = task.name;
@@ -426,6 +437,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
     let date = task.date;
     let open_editor = task.open_editor;
     let prefill = task.prefill;
+    let parent = task.parent;
 
     match task_type {
         TaskType::OneShot => {
@@ -436,12 +448,25 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
             // line it only opens the body editor at the end.
             let interactive = name.is_none();
 
-            let (name_str, priority_val, target_count) = if interactive {
+            let (name_str, priority_val, target_count, parent_id) = if interactive {
                 if !atty::is(atty::Stream::Stdin) {
                     anyhow::bail!("Oneshot task creation requires an interactive terminal");
                 }
 
                 crate::display::task_intro("Create oneshot task")?;
+
+                // (Optional) Parent id: prompted only when no `-<parent_id>`
+                // flag was given; blank input means no parent. The short id
+                // is resolved to a row id here, so an unknown id fails
+                // before anything is created.
+                let parent_id = if let Some(short_id) = parent {
+                    resolve_parent(pool, short_id).await?
+                } else {
+                    match crate::prompts::prompt_parent_id()? {
+                        Some(short_id) => resolve_parent(pool, short_id).await?,
+                        None => None,
+                    }
+                };
 
                 // Name (required, unique among oneshot tasks, no tabs):
                 // re-prompt on duplicates instead of aborting the flow.
@@ -450,12 +475,16 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                 let priority_val = crate::prompts::prompt_priority(config.tasks.default_priority)?;
                 let target_count = crate::prompts::prompt_target_count()?;
 
-                (name_str, priority_val, target_count)
+                (name_str, priority_val, target_count, parent_id)
             } else {
                 // Command-line name: no prompts, default priority, single
                 // completion (target_count = 0).
                 let name_str = name.expect("a non-interactive oneshot task has a name");
-                (name_str, config.tasks.default_priority, 0)
+                let parent_id = match parent {
+                    Some(short_id) => resolve_parent(pool, short_id).await?,
+                    None => None,
+                };
+                (name_str, config.tasks.default_priority, 0, parent_id)
             };
 
             // Name validity (non-empty, no tabs) before the task is
@@ -480,13 +509,11 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
             };
 
             // `@<time>` is the due time and lands in `end_time`; `start_time`
-            // records the creation moment. Shared chrono-english parsing:
-            // accepts dates, datetimes, and relative forms like "yesterday".
+            // records the creation moment. The CLI parser already resolved
+            // the due time to an epoch (`DATE_DIALECT`), so a bad time
+            // fails before anything is created.
             let start_epoch = Some(crate::date::now());
-            let end_epoch = match date {
-                Some(d) => Some(crate::date::parse_datetime(&d, config.date.dialect)?),
-                None => None,
-            };
+            let end_epoch = date;
 
             // Both the stable row id and the user-facing short id are
             // assigned by the database layer (see sql.rs).
@@ -502,6 +529,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                 target_count,
                 optional: false,
                 end_time: end_epoch,
+                parent: parent_id,
             };
             let (new_id, new_short_id) = crate::sql::create_task(pool, &task_obj).await?;
             task_obj.id = Some(new_id);
@@ -520,34 +548,20 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
         }
         TaskType::Recurring => {
             // Create new recurring task via interactive flow, with an
-            // optional pre-filled name from `feeling ! @ <description>` and
+            // optional pre-filled name from `feeling ! @ <name>` and
             // an optional body from `.. body` (editor when `..` is bare).
             handle_recurring_task_creation(pool, config, opts, prefill, body, open_editor).await?;
         }
         TaskType::Scheduled => {
-            // Scheduled task creation: `! @<time> [:description] [%<duration>]`.
-            // The start time parsed from the command line must succeed before
-            // any interactive prompt. Creation happens immediately only when
-            // the start time, name and duration all came from the command
-            // line; otherwise the flow goes interactive with whatever was
-            // given pre-filled (a pre-filled value skips its prompt).
-            let start_epoch = match &date {
-                Some(d) => Some(
-                    crate::date::parse_datetime(d, config.date.dialect).with_context(|| {
-                        format!(
-                            "Invalid scheduled task start time: '{}' \
-                             (description starts with ':', duration with '%')",
-                            d
-                        )
-                    })?,
-                ),
-                None => None,
-            };
-            let duration_secs = task
-                .available_duration
-                .as_deref()
-                .map(crate::date::parse_duration_secs)
-                .transpose()?;
+            // Scheduled task creation: `! @<time> [:name] [%<duration>]`.
+            // The start time and duration were resolved to epochs at CLI
+            // parse time, so bad values fail before any interactive prompt.
+            // Creation happens immediately only when the start time, name
+            // and duration all came from the command line; otherwise the
+            // flow goes interactive with whatever was given pre-filled (a
+            // pre-filled value skips its prompt).
+            let start_epoch = date;
+            let duration_secs = task.available_duration;
 
             if let (Some(name_str), Some(start), Some(dur)) =
                 (name.as_deref(), start_epoch, duration_secs)
@@ -572,6 +586,7 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                     target_count: 0,
                     optional: false,
                     end_time: None,
+                    parent: None,
                 };
                 let (new_id, new_short_id) = crate::sql::create_task(pool, &task_obj).await?;
                 task_obj.id = Some(new_id);
@@ -630,7 +645,7 @@ async fn handle_recurring_task_creation(
 
     // 1. Task name (required, unique, no tabs) — re-prompt on duplicates
     // instead of aborting the whole flow. A pre-fill from `feeling ! @
-    // <description>` skips the prompt entirely; on a duplicate the prompt
+    // <name>` skips the prompt entirely; on a duplicate the prompt
     // re-opens with the pre-fill as the default input so the user can
     // change it. The name is trimmed before use. The pre-filled value is
     // logged so the log file records what skipped the prompt.
@@ -646,11 +661,14 @@ async fn handle_recurring_task_creation(
     // recurrence anchor: interval boundaries are computed from it
     // (`task::current_interval_start`), and the placeholder shows the
     // formatted default so the current anchor is visible before editing.
-    let start_time = crate::prompts::prompt_start_time(None, config.date.dialect)?;
+    let start_time = crate::prompts::prompt_start_time(None)?;
 
     // 4. Interval (required, valid duration)
     let interval_str = crate::prompts::prompt_interval(None)?;
     let interval_secs = parse_duration_secs(&interval_str)?;
+    if interval_secs <= 0 {
+        anyhow::bail!("Interval must be positive (got '{}')", interval_str);
+    }
 
     // 5. Available duration (blank = always available; capped at the
     // interval — availability beyond it means always available).
@@ -673,7 +691,7 @@ async fn handle_recurring_task_creation(
 
     // 7. End time (blank = never ends). `prompt_end` accepts a duration
     // (relative to now) or an absolute date/time and returns the epoch.
-    let end_time = crate::prompts::prompt_end(None, config.date.dialect)?;
+    let end_time = crate::prompts::prompt_end(None)?;
 
     // 8. Optional
     let is_optional = crate::prompts::prompt_optional(false)?;
@@ -702,6 +720,7 @@ async fn handle_recurring_task_creation(
         target_count,
         optional: is_optional,
         end_time,
+        parent: None,
     };
     let (new_id, new_short_id) = crate::sql::create_task(pool, &task_obj).await?;
     task_obj.id = Some(new_id);
@@ -721,7 +740,7 @@ async fn handle_recurring_task_creation(
     Ok(())
 }
 
-/// Interactive scheduled creation flow (`! @<time> [:description] [%<duration>]`
+/// Interactive scheduled creation flow (`! @<time> [:name] [%<duration>]`
 /// with anything missing from the command line). Mirrors the recurring flow:
 /// required name (unique, re-prompt on duplicates) and start time, then the
 /// available duration (blank → 1 hour), then priority. Scheduled tasks always
@@ -760,7 +779,7 @@ async fn handle_scheduled_task_creation(
             cliclack::log::info(format!("Start: {}", crate::date::format_datetime(s)))?;
             s
         }
-        None => crate::prompts::prompt_start_time(None, config.date.dialect)?,
+        None => crate::prompts::prompt_start_time(None)?,
     };
 
     // 3. Available duration (required for scheduled tasks). A duration from
@@ -804,6 +823,7 @@ async fn handle_scheduled_task_creation(
         target_count: 0,
         optional: false,
         end_time: None,
+        parent: None,
     };
     let (new_id, new_short_id) = crate::sql::create_task(pool, &task_obj).await?;
     task_obj.id = Some(new_id);

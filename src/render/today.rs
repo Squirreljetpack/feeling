@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::action::Action;
 use crate::clap::ShowVariant;
 use crate::message::{ControlEvent, RenderEvent};
+use crate::task::TaskKind;
 use crate::tui::Tui;
 use crate::views::EntryKind;
 
@@ -47,7 +48,7 @@ pub struct TodayApp {
 pub(crate) enum Modal {
     /// Numeric completion-count prompt for tasks with a target_count.
     Complete(CompleteModal),
-    /// Confirm before deleting the selected entry (feeling / custom / task).
+    /// Confirm before deleting the selected entry (feeling / tracker / task).
     /// `cursor` selects the navigable button (0 = Yes, 1 = No).
     DeleteConfirm {
         name: String,
@@ -84,8 +85,8 @@ pub(crate) struct CompleteModal {
 
 /// Modal state for editing a Number/Float tracker payload in place.
 pub(crate) struct EditTrackerModal {
-    /// custom row id.
-    pub(crate) custom_id: i64,
+    /// tracker row id.
+    pub(crate) tracker_id: i64,
     /// Tracker type name from config (e.g. "sleep").
     pub(crate) tracker_type: String,
     /// Payload kind: Number (i64) or Float (f64). Text trackers don't use
@@ -481,7 +482,7 @@ impl TodayApp {
         let Some(Modal::EditTracker(m)) = self.modal.as_ref() else {
             return;
         };
-        let custom_id = m.custom_id;
+        let tracker_id = m.tracker_id;
         let kind = m.kind;
         let input = m.input.trim().to_string();
         let valid = match kind {
@@ -505,7 +506,7 @@ impl TodayApp {
             return;
         }
         self.modal = None;
-        self.update_custom_score(custom_id, kind, &input).await;
+        self.update_tracker_score(tracker_id, kind, &input).await;
         self.refresh().await;
     }
 
@@ -550,10 +551,7 @@ impl TodayApp {
         };
         match entry.kind {
             // Task body edit (oneshot, threshold, recurring, scheduled).
-            EntryKind::Oneshot
-            | EntryKind::Threshold
-            | EntryKind::Recurring
-            | EntryKind::Scheduled => {
+            EntryKind::Task(_) => {
                 let Some(task) = self.selected_task.as_ref() else {
                     return;
                 };
@@ -565,31 +563,26 @@ impl TodayApp {
             }
             // Tracker payload: text opens the editor; number/float open a
             // validation modal.
-            EntryKind::Custom => {
-                let Some(custom_id) = entry.id else { return };
+            EntryKind::Tracker(kind) => {
+                let Some(tracker_id) = entry.id else { return };
                 let Some((tracker_type, current)) = entry.label.split_once(':') else {
                     return;
                 };
                 let tracker_type = tracker_type.trim();
                 let current = current.trim();
-                let kind = self
-                    .config
-                    .tracker
-                    .get(tracker_type)
-                    .map(|t| t.kind)
-                    .unwrap_or(crate::config::TrackerKind::Float);
                 match kind {
                     crate::config::TrackerKind::Text => {
                         if let Some(new_value) =
                             edit_with_editor(tui, controller, rx, current).await
                         {
-                            self.update_custom_score(custom_id, kind, &new_value).await;
+                            self.update_tracker_score(tracker_id, kind, &new_value)
+                                .await;
                             self.refresh().await;
                         }
                     }
                     crate::config::TrackerKind::Number | crate::config::TrackerKind::Float => {
                         self.modal = Some(Modal::EditTracker(EditTrackerModal {
-                            custom_id,
+                            tracker_id,
                             tracker_type: tracker_type.to_string(),
                             kind,
                             input: current.to_string(),
@@ -618,15 +611,15 @@ impl TodayApp {
         let _ = crate::sql::update_feeling_body(&self.pool, id, body).await;
     }
 
-    async fn update_custom_score(&self, id: i64, kind: crate::config::TrackerKind, value: &str) {
-        let _ = crate::sql::update_custom_score(&self.pool, id, kind, value).await;
+    async fn update_tracker_score(&self, id: i64, kind: crate::config::TrackerKind, value: &str) {
+        let _ = crate::sql::update_tracker_score(&self.pool, id, kind, value).await;
     }
 }
 
 impl TodayApp {
-    /// Delete a feeling row and any linked custom tracker rows in a
-    /// transaction. `custom.feeling` has a FK to `feeling(id)` with no
-    /// ON DELETE CASCADE, so linked custom rows must be deleted first
+    /// Delete a feeling row and any linked tracker rows in a
+    /// transaction. `tracker.feeling` has a FK to `feeling(id)` with no
+    /// ON DELETE CASCADE, so linked tracker rows must be deleted first
     /// (handled inside `sql::delete_feeling`).
     async fn delete_feeling(&self, id: i64) {
         if let Err(e) = crate::sql::delete_feeling(&self.pool, id).await {
@@ -696,7 +689,7 @@ impl Render for TodayApp {
                 if let Some(entry) = self.entries.get(self.selected) {
                     self.modal = Some(Modal::DeleteConfirm {
                         name: entry.label.clone(),
-                        is_recurring: entry.kind == EntryKind::Recurring,
+                        is_recurring: entry.kind == EntryKind::Task(TaskKind::Recurring),
                         // Default to the safe option (No).
                         cursor: 1,
                     });
@@ -713,18 +706,17 @@ impl Render for TodayApp {
                                 self.refresh().await;
                             }
                         }
-                        EntryKind::Custom => {
+                        EntryKind::Tracker(_) => {
                             if let Some(id) = entry.id {
-                                if let Err(e) = crate::sql::delete_custom(&self.pool, id).await {
-                                    log::error!("Failed to delete custom entry {id}: {e}");
+                                if let Err(e) =
+                                    crate::sql::delete_tracker_entry(&self.pool, id).await
+                                {
+                                    log::error!("Failed to delete tracker entry {id}: {e}");
                                 }
                                 self.refresh().await;
                             }
                         }
-                        EntryKind::Oneshot
-                        | EntryKind::Threshold
-                        | EntryKind::Recurring
-                        | EntryKind::Scheduled => {
+                        EntryKind::Task(_) => {
                             if let Some(task_id) = entry.task_id {
                                 if let Err(e) = crate::sql::delete_task(&self.pool, task_id).await {
                                     log::error!("Failed to delete task {task_id}: {e}");
@@ -1069,8 +1061,7 @@ mod tests {
         // Yesterday.
         assert_eq!(day_label_for(Some(today - 86400)), "Yesterday");
         // Any other day → DD-MM-YY.
-        let other =
-            crate::date::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
+        let other = crate::date::parse_datetime("2024-03-15", crate::date::DATE_DIALECT).unwrap();
         assert_eq!(
             day_label_for(Some(crate::date::day_start(other))),
             "15-03-24"

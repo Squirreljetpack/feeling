@@ -176,7 +176,7 @@ pub fn build_preview(
         // instead of the expiry — no `ends` field there.
         if !today {
             if let Some(ref s) = task.end_datetime() {
-            lines.push(field_line("ends", s.clone()));
+                lines.push(field_line("ends", s.clone()));
             }
         }
         // The optional flag is only shown when the task is skippable.
@@ -226,7 +226,7 @@ pub fn build_preview(
 /// Build the preview pane for a today-view entry. Same heading shape as
 /// [`build_preview`], titled after the entry type in full caps and bold:
 /// "FEELING" (cyan, italic) when the entry carries a mood, "JOURNAL"
-/// (gray) for moodless journal-only entries, "CUSTOM" (dark gray) for
+/// (gray) for moodless journal-only entries, "TRACKER" (dark gray) for
 /// tracker entries. Journal-only entries skip the mood segment, showing
 /// the body directly after the date.
 pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
@@ -248,8 +248,8 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
                 .fg(Color::Gray)
                 .add_modifier(Modifier::BOLD),
         ),
-        EntryKind::Custom => (
-            "CUSTOM".to_string(),
+        EntryKind::Tracker(_) => (
+            "TRACKER".to_string(),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
@@ -257,14 +257,12 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
         // Task entries normally render via build_preview (they carry a
         // selected TaskRow); this is the fallback for entries reaching here
         // without one.
-        EntryKind::Oneshot | EntryKind::Threshold | EntryKind::Recurring | EntryKind::Scheduled => {
-            (
-                "TASK".to_string(),
-                Style::default()
-                    .fg(Color::LightCyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-        }
+        EntryKind::Task(_) => (
+            "TASK".to_string(),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ),
     };
     lines.push(Line::from(Span::styled(format!(" {}", title), title_style)));
     lines.push(Line::from(Span::styled(
@@ -282,7 +280,7 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
         return lines;
     }
 
-    // Mood string (or custom label), indented, white, italic.
+    // Mood string (or tracker label), indented, white, italic.
     if !entry.label.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("  {}", entry.label),
@@ -323,13 +321,16 @@ mod tests {
             target_count: 0,
             optional: 0,
             end_time: Some(1_700_500_000),
+            parent: None,
             completions: Some(0),
             last_time: Some(1_700_400_000),
         }
     }
 
     fn preview_config(show_last_when_done: bool) -> crate::config::PreviewConfig {
-        crate::config::PreviewConfig { show_last_when_done }
+        crate::config::PreviewConfig {
+            show_last_when_done,
+        }
     }
 
     /// The values of the `field: value` lines, e.g. `["id: 7", "last: ..."]`.
@@ -352,7 +353,9 @@ mod tests {
         // `last` reads the unscoped completion carried in `end_time`, and
         // the `ends` field is skipped (end_time is not the expiry here).
         assert!(
-            fields.iter().any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
+            fields
+                .iter()
+                .any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
             "expected last: from end_time, got {fields:?}"
         );
         assert!(!fields.iter().any(|f| f.starts_with("ends:")), "{fields:?}");
@@ -364,10 +367,14 @@ mod tests {
         let lines = build_preview(&task, false, &preview_config(true));
         let fields = fields(&lines);
         assert!(
-            fields.iter().any(|f| f == &format!("last: {}", date::format_datetime(1_700_400_000))),
+            fields
+                .iter()
+                .any(|f| f == &format!("last: {}", date::format_datetime(1_700_400_000))),
             "expected last: from last_time, got {fields:?}"
         );
-        assert!(fields.iter().any(|f| f == &format!("ends: {}", date::format_datetime(1_700_500_000))));
+        assert!(fields
+            .iter()
+            .any(|f| f == &format!("ends: {}", date::format_datetime(1_700_500_000))));
     }
 
     #[test]
@@ -376,9 +383,10 @@ mod tests {
         task.completions = Some(1); // target 0 -> done
         let fields = fields(&build_preview(&task, true, &preview_config(true)));
         assert!(
-            fields.iter().any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
+            fields
+                .iter()
+                .any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
             "expected last: on a done row, got {fields:?}"
         );
     }
-
 }

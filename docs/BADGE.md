@@ -86,7 +86,7 @@ Unchanged; computed inline in `fetch_today_entries`.
 
 Unchanged; computed inline in `fetch_today_entries`.
 
-## Custom
+## Tracker
 
 | Tracker kind | Glyph | Color |
 | --- | --- | --- |
