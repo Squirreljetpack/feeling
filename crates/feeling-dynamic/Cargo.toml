@@ -1,6 +1,6 @@
 [package]
 name = "feeling-dynamic"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 repository = "https://github.com/Squirreljetpack/feeling"
 homepage = "https://github.com/Squirreljetpack/feeling"

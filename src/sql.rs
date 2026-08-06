@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use sqlx::{FromRow, Row, SqlitePool};
 
-use crate::clap::{ShowVariant, ViewMode};
+use crate::clap::{ShowVariant, TaskType, ViewMode};
 use crate::config::TrackerKind;
 
 // ---------------------------------------------------------------------------
@@ -570,15 +570,33 @@ pub async fn fetch_task_short_id(pool: &SqlitePool, id: i64) -> Result<Option<i6
     Ok(short_id)
 }
 
-/// Whether a recurring task with the given name already exists.
-pub async fn recurring_task_name_exists(pool: &SqlitePool, name: &str) -> Result<bool> {
-    let count: i64 = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM todos WHERE name = ? AND interval_secs IS NOT NULL",
-    )
-    .bind(name)
-    .fetch_one(pool)
-    .await
-    .context("Failed to check task name uniqueness")?;
+/// Whether a task with the given name already exists. `task_type` scopes
+/// the check to a task kind, using the same column discriminators as the
+/// views: recurring tasks have `interval_secs` set, scheduled tasks have
+/// `available_duration_secs` set (oneshots have neither). `None` checks
+/// every task regardless of kind (global uniqueness).
+pub async fn task_name_exists(
+    pool: &SqlitePool,
+    name: &str,
+    task_type: Option<TaskType>,
+) -> Result<bool> {
+    let query = match task_type {
+        None => "SELECT COUNT(*) FROM todos WHERE name = ?",
+        Some(TaskType::Recurring) => {
+            "SELECT COUNT(*) FROM todos WHERE name = ? AND interval_secs IS NOT NULL"
+        }
+        Some(TaskType::OneShot) => {
+            "SELECT COUNT(*) FROM todos WHERE name = ? AND interval_secs IS NULL AND available_duration_secs IS NULL"
+        }
+        Some(TaskType::Scheduled) => {
+            "SELECT COUNT(*) FROM todos WHERE name = ? AND interval_secs IS NULL AND available_duration_secs IS NOT NULL"
+        }
+    };
+    let count: i64 = sqlx::query_scalar::<_, i64>(query)
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .context("Failed to check task name uniqueness")?;
     Ok(count > 0)
 }
 

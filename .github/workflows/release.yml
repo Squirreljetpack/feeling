@@ -146,6 +146,11 @@ jobs:
             exit 1
           fi
         shell: "bash"
+      - name: "Set Windows MSVC linker flags"
+        if: "runner.os == 'Windows'"
+        run: |
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=-crt-static" >> $GITHUB_ENV
+        shell: "bash"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

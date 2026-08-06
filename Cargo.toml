@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/feeling-dynamic"]
+
 [package]
 name = "feeling"
 version = "0.2.1"
@@ -65,7 +68,7 @@ mimalloc = "0.1"
 
 [features]
 default = ["download-binaries"]
-download-binaries = ["ort/download-binaries", "ort/copy-dylibs", "ort/tls-native", "ort/api-27"]
+download-binaries = ["ort/download-binaries", "ort/tls-native", "ort/api-27"]
 load-dynamic = ["ort/load-dynamic"]
 
 # Target override: Only build targets supported by static ort-sys prebuilt binaries

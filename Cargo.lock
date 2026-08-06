@@ -997,6 +997,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "feeling-dynamic"
+version = "0.2.1"
+dependencies = [
+ "feeling",
+ "mimalloc",
+ "tokio",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

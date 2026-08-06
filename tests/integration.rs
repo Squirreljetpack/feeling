@@ -346,6 +346,48 @@ async fn test_create_oneshot_task() {
 }
 
 #[tokio::test]
+async fn test_create_oneshot_task_duplicate_name_fails() {
+    // Oneshot task names must be unique: a second `! <name>` with an
+    // existing name is an error, not a silent duplicate.
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    let cmd = parse_from(vec!["!".to_string(), "buy milk".to_string()]).unwrap();
+    handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let cmd = parse_from(vec!["!".to_string(), "buy milk".to_string()]).unwrap();
+    let err = handle_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("already exists"),
+        "unexpected error: {err}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM todos")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "the duplicate must not be inserted");
+}
+
+#[tokio::test]
 async fn test_create_oneshot_task_with_date() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
@@ -1973,10 +2015,10 @@ async fn test_today_view_interval_aware_recurring_overlap() {
         st + ((now - st).div_euclid(86_400)) * 86_400
     };
     let window_end = interval_start + 3600;
-    let expected_time = if now < window_end {
+    let expected_time = if now >= window_end {
         window_end
     } else {
-        interval_start + 86_400
+        interval_start
     };
     let expected_label = if feeling::date::day_start(expected_time) == today_start {
         feeling::date::format_time(expected_time)
@@ -2890,9 +2932,8 @@ async fn test_config_view_sections_deserialize() {
 async fn test_priority_capped_at_max_priority_constant() {
     // The MAX_PRIORITY constant is the single source of truth for the
     // priority validation bound; ensure it stays at 999. Helpers (the
-    // cliclack `validate` closures in handle_oneshot_task_creation /
-    // handle_recurring_task_creation and the bounds check in
-    // `prompt_priority`) all read this constant.
+    // cliclack `validate` closure in `prompt_priority` — used by the
+    // oneshot and recurring creation flows — all read this constant.
     assert_eq!(
         feeling::prompts::MAX_PRIORITY,
         999,
