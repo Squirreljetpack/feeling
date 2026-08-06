@@ -50,7 +50,7 @@ pub async fn handle_command<W: Write>(
             crate::views::handle_tracker(pool, &config, opts, period, items, out).await
         }
 
-        Command::Task(task) => handle_task(pool, config, opts, _dbg!(task)).await,
+        Command::Task(task) => handle_task(pool, config, opts, task).await,
 
         Command::Update { target, count } => handle_update(pool, opts, target, count).await,
 
@@ -396,17 +396,55 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
 
     match task_type {
         TaskType::OneShot => {
-            // Bare `!` prompts for the name (interactive creation); the
-            // `open_editor` flag then runs the priority/target/body flow.
-            let name_str = match &name {
-                Some(n) => n.clone(),
-                None => crate::prompts::prompt_name(None)?,
+            // Only a missing name triggers the interactive creation flow:
+            // cliclack intro, then the name (required, unique, no tabs),
+            // priority and target count. `open_editor` (a bare `..`) never
+            // triggers the flow on its own — with a name on the command
+            // line it only opens the body editor at the end.
+            let interactive = name.is_none();
+
+            let (name_str, priority_val, target_count) = if interactive {
+                if !atty::is(atty::Stream::Stdin) {
+                    anyhow::bail!("Oneshot task creation requires an interactive terminal");
+                }
+
+                crate::display::task_intro("Create oneshot task")?;
+
+                // Name (required, unique among oneshot tasks, no tabs):
+                // re-prompt on duplicates instead of aborting the flow.
+                let name_str = prompt_unique_name(pool, None, Some(TaskType::OneShot)).await?;
+
+                let priority_val = crate::prompts::prompt_priority(config.tasks.default_priority)?;
+                let target_count = crate::prompts::prompt_target_count()?;
+
+                (name_str, priority_val, target_count)
+            } else {
+                // Command-line name: no prompts, default priority, single
+                // completion (target_count = 0).
+                let name_str = name.expect("a non-interactive oneshot task has a name");
+                (name_str, config.tasks.default_priority, 0)
             };
 
-            // Validate name doesn't contain tabs
-            if name_str.contains('\t') {
-                anyhow::bail!("Task name cannot contain tab characters");
+            // Name validity (non-empty, no tabs) before the task is
+            // created. The interactive prompt enforces the same rules; the
+            // command-line path needs them checked here.
+            validate_name(&name_str)?;
+
+            // Uniqueness for command-line names: the interactive flow
+            // re-prompts on duplicates, so only this path bails.
+            if !interactive
+                && crate::sql::task_name_exists(pool, &name_str, Some(TaskType::OneShot)).await?
+            {
+                anyhow::bail!("A task with name '{name_str}' already exists");
             }
+
+            // Body: command-line body (`.. text`) or the editor when `..`
+            // was bare.
+            let body = if open_editor {
+                open_editor_for_body(config.editor.hint)?
+            } else {
+                body
+            };
 
             // `@<time>` is the due time and lands in `end_time`; `start_time`
             // records the creation moment. Shared chrono-english parsing:
@@ -417,22 +455,12 @@ async fn handle_task(pool: &SqlitePool, config: &Config, opts: &CliOpts, task: T
                 None => None,
             };
 
-            // Determine priority, target_count and body. All three gate on
-            // `open_editor` (the interactive flow). Pre-supplied body text
-            // (`.. text`) bypasses both prompts and uses default priority /
-            // target_count=0.
-            let (priority_val, target_count, body) = if open_editor {
-                handle_oneshot_task_creation(config)?
-            } else {
-                (config.tasks.default_priority, 0, body)
-            };
-
             // Both the stable row id and the user-facing short id are
             // assigned by the database layer (see sql.rs).
             let mut task_obj = TaskObject {
                 id: None,
                 short_id: None,
-                name: name_str.to_string(),
+                name: name_str,
                 body,
                 priority: priority_val,
                 start_time: start_epoch,
@@ -551,23 +579,6 @@ async fn handle_tasks_edit() -> Result<()> {
     anyhow::bail!("Task editing is not yet implemented");
 }
 
-/// Interactive oneshot creation flow (`feeling ! name ..`): cliclack
-/// priority and target count prompts, then the body editor. Returns the
-/// resolved `(priority, target_count, body)` for `handle_task` to insert.
-fn handle_oneshot_task_creation(config: &Config) -> Result<(i32, i32, String)> {
-    if !atty::is(atty::Stream::Stdin) {
-        anyhow::bail!("Oneshot task creation requires an interactive terminal");
-    }
-
-    crate::display::task_intro("Create oneshot task")?;
-
-    let priority = crate::prompts::prompt_priority(config.tasks.default_priority)?;
-    let target_count = crate::prompts::prompt_target_count()?;
-    let body = open_editor_for_body(config.editor.hint)?;
-
-    Ok((priority, target_count, body))
-}
-
 async fn handle_recurring_task_creation(
     pool: &SqlitePool,
     config: &Config,
@@ -593,7 +604,7 @@ async fn handle_recurring_task_creation(
     if let Some(p) = &prefill {
         cliclack::log::info(format!("Name: {p}"))?;
     }
-    let name = prompt_unique_name(pool, prefill.as_deref()).await?;
+    let name = prompt_unique_name(pool, prefill.as_deref(), Some(TaskType::Recurring)).await?;
 
     // 2. Priority (1..=999 per validation; blank falls back to default).
     let priority = crate::prompts::prompt_priority(config.tasks.default_recurring_priority)?;
@@ -707,7 +718,7 @@ async fn handle_scheduled_task_creation(
     if let Some(n) = &name {
         cliclack::log::info(format!("Name: {n}"))?;
     }
-    let name = prompt_unique_name(pool, name.as_deref()).await?;
+    let name = prompt_unique_name(pool, name.as_deref(), Some(TaskType::Scheduled)).await?;
 
     // 2. Start time (required). A start time from the command line skips
     // the prompt; blank in the prompt means "now".
@@ -1013,20 +1024,39 @@ pub fn handle_color<W: Write>(
 
 // -------------------------- HELPERS -------------------------
 
+/// Validate a task name: non-empty after trimming and free of tab
+/// characters (view output uses tab separators). Called on the resolved
+/// name before any task is created; the interactive prompt enforces the
+/// same rules via its cliclack `validate` closure.
+fn validate_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        anyhow::bail!("Task name is required");
+    }
+    if name.contains('\t') {
+        anyhow::bail!("Task name cannot contain tab characters");
+    }
+    Ok(())
+}
+
 /// Resolve a unique, non-empty task name for creation. A name from the
 /// command line skips the prompt entirely; on a duplicate the prompt
 /// re-opens with the given name as the default input so the user can
-/// change it.
-async fn prompt_unique_name(pool: &sqlx::SqlitePool, given: Option<&str>) -> Result<String> {
+/// change it. `task_type` scopes the uniqueness check to that kind (see
+/// [`crate::sql::task_name_exists`]).
+async fn prompt_unique_name(
+    pool: &sqlx::SqlitePool,
+    given: Option<&str>,
+    task_type: Option<TaskType>,
+) -> Result<String> {
     let given = given.map(str::trim).filter(|s| !s.is_empty());
     if let Some(name) = given {
-        if !crate::sql::recurring_task_name_exists(pool, name).await? {
+        if !crate::sql::task_name_exists(pool, name, task_type).await? {
             return Ok(name.to_string());
         }
     }
     loop {
         let candidate = crate::prompts::prompt_name(given)?;
-        if crate::sql::recurring_task_name_exists(pool, &candidate).await? {
+        if crate::sql::task_name_exists(pool, &candidate, task_type).await? {
             cliclack::log::error(format!("A task with name '{candidate}' already exists"))?;
             continue;
         }
@@ -1036,7 +1066,7 @@ async fn prompt_unique_name(pool: &sqlx::SqlitePool, given: Option<&str>) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::interval_slot;
+    use super::{interval_slot, validate_name};
     use crate::date;
 
     /// The slot always contains the entry and has the requested length.
@@ -1070,5 +1100,34 @@ mod tests {
         let bucket = interval_slot(t, 1800);
         assert_eq!(interval_slot(t + 600, 1800), bucket); // 10:10 — same bucket
         assert_ne!(interval_slot(t + 1801, 1800), bucket); // 10:30:01 — next bucket
+    }
+
+    /// `validate_name` accepts a normal name and rejects empty and
+    /// tab-containing ones (the rules enforced before task creation).
+    #[test]
+    fn validate_name_rules() {
+        assert!(validate_name("exercise").is_ok());
+        assert!(
+            validate_name("  padded  ").is_ok(),
+            "surrounding space is trimmed"
+        );
+
+        assert!(validate_name("").is_err(), "empty name must be rejected");
+        assert!(
+            validate_name("   ").is_err(),
+            "whitespace-only name must be rejected"
+        );
+        assert!(
+            validate_name("a\tb").is_err(),
+            "embedded tab must be rejected"
+        );
+        assert!(
+            validate_name("\ttab").is_err(),
+            "leading tab must be rejected"
+        );
+        assert!(
+            validate_name("tab\t").is_err(),
+            "trailing tab must be rejected"
+        );
     }
 }

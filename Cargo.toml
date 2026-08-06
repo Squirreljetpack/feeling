@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/feeling-dynamic"]
+
 [package]
 name = "feeling"
 version = "0.2.1"

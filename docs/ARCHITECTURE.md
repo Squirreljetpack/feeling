@@ -277,9 +277,12 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   empty entry is aborted ("Nothing to log"). Confirmation output
   (`display::display_entry`) is quiet-gated.
 - **Task** → `handle_task`:
-  - oneshot: name required (no tabs); `@<time>` parsed with the config dialect
-    (an unparseable date fails creation); interactive priority/target prompts
-    only when the body editor was requested.
+  - oneshot: `! <name> [@<time>] [.. [body]]` creates directly — the name
+    is validated (non-empty, no tabs, unique among oneshot tasks) and
+    `@<time>` is parsed with the config dialect (an unparseable date fails
+    creation); bare `!` runs the interactive flow (cliclack intro, then
+    name, priority, target count and the body editor). `open_editor` alone
+    never triggers the flow — only a missing name does.
   - recurring: interactive flow (`feeling ! @ <description>`) — cliclack
     prompts for name (unique, pre-filled), priority, interval, available
     duration, target count, end time, optional, and the body editor. The flow

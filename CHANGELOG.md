@@ -1,3 +1,8 @@
+## [0.2.1] - 2026-08-06
+
+- Release pipeline updates
+- misc
+
 ## [0.2.0] - 2026-08-06
 
 ### 🚀 Features

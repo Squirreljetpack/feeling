@@ -42,7 +42,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "load-dynamic"))]
     {
         println!("cargo:rustc-link-lib=ucrt");
         println!("cargo:rustc-link-lib=oldnames");

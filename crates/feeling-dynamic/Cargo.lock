@@ -941,7 +941,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "feeling"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "atty",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "feeling-dynamic"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "feeling",
  "mimalloc",
