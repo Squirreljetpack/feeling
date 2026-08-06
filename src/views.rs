@@ -289,14 +289,10 @@ async fn display_mood_tracker<W: Write>(
 
     let embedder = crate::embed::global_embedder();
     let axes = config.moods.color_axes.as_ref().unwrap();
-    let mut color_cache: std::collections::HashMap<String, oklab::Oklab> =
-        std::collections::HashMap::new();
 
-    // Group colors by day. Prefer the stored embedding BLOB; fall back to
-    // embedding the mood text when the model is available.
     let day_secs: i64 = 86400;
     let num_days = ((end_epoch - start_epoch) / day_secs + 1) as usize;
-    let mut day_colors: Vec<Vec<oklab::Oklab>> = vec![Vec::new(); num_days];
+    let mut day_feelings: Vec<Vec<&crate::sql::FeelingRow>> = vec![Vec::new(); num_days];
     let mut day_has_entry: Vec<bool> = vec![false; num_days];
 
     for f in &feelings {
@@ -306,13 +302,56 @@ async fn display_mood_tracker<W: Write>(
             continue;
         }
         day_has_entry[day_idx] = true;
+        day_feelings[day_idx].push(f);
+    }
 
-        let oklab = axes
-            .mood_color_cached(pool, embedder, f, &mut color_cache)
-            .await;
+    let mut day_colors: Vec<Option<oklab::Oklab>> = vec![None; num_days];
 
-        if let Some(oklab) = oklab {
-            day_colors[day_idx].push(oklab);
+    for (i, feelings_in_day) in day_feelings.iter().enumerate() {
+        if feelings_in_day.is_empty() {
+            continue;
+        }
+        let mut emb_sum: Vec<f32> = Vec::new();
+        let mut score_sum: f32 = 0.0;
+        let mut count: usize = 0;
+
+        for f in feelings_in_day {
+            let emb = match f
+                .embedding
+                .as_deref()
+                .and_then(crate::embed::blob_to_embedding)
+            {
+                Some(e) => Some(e),
+                None => embedder.embed(&f.mood, &axes.prefix_string).ok(),
+            };
+            let Some(emb) = emb else { continue };
+
+            let score = match f.score {
+                Some(s) => s,
+                None => crate::color::predict_saliency(embedder, &f.mood),
+            };
+
+            if emb_sum.is_empty() {
+                emb_sum = emb;
+            } else {
+                for (s_elem, e_elem) in emb_sum.iter_mut().zip(&emb) {
+                    *s_elem += e_elem;
+                }
+            }
+            score_sum += score;
+            count += 1;
+        }
+
+        if count > 0 {
+            let inv_n = 1.0 / count as f32;
+            for e_elem in &mut emb_sum {
+                *e_elem *= inv_n;
+            }
+            let avg_score = score_sum * inv_n;
+
+            let reg = axes.regression_weights(&emb_sum, embedder, Ok(avg_score));
+            let oklab = axes.weights_to_color(reg.as_ref());
+            day_colors[i] = Some(oklab);
         }
     }
 
@@ -331,10 +370,10 @@ async fn display_mood_tracker<W: Write>(
     // available, otherwise a plain filled dot for days with an entry and ◯
     // for empty days. Dots are separated by two spaces and wrap at 7 per
     // row (the last row may be short, e.g. a month that ends mid-week).
-    for (i, colors) in day_colors.iter().enumerate() {
+    for (i, &oklab_opt) in day_colors.iter().enumerate() {
         let d = if !day_has_entry[i] {
             "◯".to_string()
-        } else if let Some(oklab) = crate::color::average_oklab(colors) {
+        } else if let Some(oklab) = oklab_opt {
             "●"
                 .with(crate::color_conversion::oklab_to_crossterm(oklab))
                 .to_string()
@@ -363,7 +402,7 @@ async fn display_mood_tracker<W: Write>(
 /// between columns.
 fn render_year_heatmap<W: Write>(
     out: &mut W,
-    day_colors: &[Vec<oklab::Oklab>],
+    day_colors: &[Option<oklab::Oklab>],
     day_has_entry: &[bool],
     start_epoch: i64,
     config: &Config,
@@ -417,7 +456,7 @@ fn render_year_heatmap<W: Write>(
                         write!(out, " ")?;
                     } else if !day_has_entry[day] {
                         write!(out, "·")?;
-                    } else if let Some(oklab) = crate::color::average_oklab(&day_colors[day]) {
+                    } else if let Some(oklab) = day_colors[day] {
                         write!(
                             out,
                             "{}",

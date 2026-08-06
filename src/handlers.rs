@@ -975,7 +975,7 @@ pub fn handle_color<W: Write>(
         .context("Failed to embed mood")?;
 
     // The diagnostic always runs the full pipeline (no cached score).
-    let weights = axes.regression_weights(&embedding, embedder, mood, None);
+    let weights = axes.regression_weights(&embedding, embedder, Err(mood));
     let final_oklab = axes.weights_to_color(weights.as_ref());
     let rgb = final_oklab.to_srgb();
 

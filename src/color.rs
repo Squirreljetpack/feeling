@@ -147,7 +147,7 @@ impl ColorAxes {
     /// Run the NNLS regression, weight-rescaling, and saliency calculation
     /// stages of the pipeline for `embedding`, returning the contributing
     /// basis moods with their raw NNLS weights, rescaled weights, and the
-    /// predicted emotional saliency of `mood_text`.
+    /// predicted emotional saliency.
     ///
     /// Returns `None` when the pipeline falls through to the neutral color:
     /// no basis moods, a zero-length target vector, a zero total NNLS weight,
@@ -156,8 +156,7 @@ impl ColorAxes {
         &self,
         embedding: &[f32],
         embedder: &Embedder,
-        mood_text: &str,
-        saliency: Option<f32>,
+        saliency: Result<f32, &str>,
     ) -> Option<MoodWeights> {
         let n = self.basis_moods.len();
         if n == 0 || embedding.len() != self.base_vector.len() {
@@ -242,12 +241,12 @@ impl ColorAxes {
             }
         };
 
-        // 6. Emotional saliency: a caller-supplied override (the row's
-        // cached feeling.score) skips the prediction; otherwise predict
-        // from the un-prefixed raw text (see [`predict_saliency`]).
+        // 6. Emotional saliency: a caller-supplied override (`Ok(score)`) skips
+        // the prediction; otherwise predict from the un-prefixed raw text
+        // (`Err(mood_text)`, see [`predict_saliency`]).
         let saliency = match saliency {
-            Some(s) => s,
-            None => predict_saliency(embedder, mood_text),
+            Ok(s) => s,
+            Err(mood_text) => predict_saliency(embedder, mood_text),
         };
 
         Some(MoodWeights {
@@ -359,7 +358,7 @@ impl ColorAxes {
         // The cached score (when present) skips the saliency ONNX pass;
         // when absent, backfill what the regression just computed
         // (log-and-continue, mirroring the embedding backfill above).
-        let reg = self.regression_weights(&embedding, embedder, mood, feeling.score);
+        let reg = self.regression_weights(&embedding, embedder, feeling.score.ok_or(mood.as_str()));
         if let Some(reg) = &reg {
             if feeling.score.is_none() {
                 let _ = crate::sql::update_feeling_score(pool, feeling.id, reg.saliency).await;

@@ -611,8 +611,8 @@ target, and precomputes the **Gram matrix** (AᵀA) of basis-ray dot products.
 The result is cached on `MoodConfig.color_axes` by the idempotent
 `MoodConfig::init_with` (the only caller).
 
-**Regression (`regression_weights(embedding, embedder, mood_text, saliency:
-Option<f32>) -> Option<MoodWeights>`)** —
+**Regression (`regression_weights(embedding, embedder, saliency:
+Result<f32, &str>) -> Option<MoodWeights>`)** —
 
 1. shift vector = embedding − base (L2 length ≥ ε, else `None`);
 2. `at_b = Aᵀ · shift` (normalized), solved with a Lawson-Hanson NNLS
@@ -620,9 +620,9 @@ Option<f32>) -> Option<MoodWeights>`)** —
 3. weights filtered by `min_contribution` (share of the total), sorted
    descending, truncated to `top_k` — empty → `None` (neutral fallback);
 4. power-rescaled weights (`w^steepness`, normalized) for the blend;
-5. saliency: the caller-supplied override (the row's cached `feeling.score`)
-   skips the ONNX saliency pass; otherwise `color::predict_saliency` runs the
-   adaptor on the un-prefixed raw text (fallback 1.0).
+5. saliency: the caller-supplied override (`Ok(score)`) skips the ONNX
+   saliency pass; otherwise (`Err(mood_text)`) `color::predict_saliency` runs
+   the adaptor on the un-prefixed raw text (fallback 1.0).
 
 **Blend (`weights_to_color(Option<&MoodWeights>) -> Oklab`)** — pure given a
 regression result: weighted blend of the contributing basis Oklab colors,
