@@ -11,16 +11,17 @@ Usage:
   feeling ! @<time> [:name]                           create a scheduled task
     [%duration] [.. [body]]                             (interactive unless all 3 fields are specified)
 
-  feeling [@date]                                    today view
-  feeling @[:o|:O]                                   view pending tasks
-                                                        (all / oneshots / recurring+scheduled)
-  feeling @done[:o|:O]                               view completed tasks
-  feeling @due[:t|:w]                                due (today / tomorrow / this week) view
-
-  feeling - query_words [count]                       update completion of a task
-                                                        the task must be the unique one whose name
-                                                        contains the words in their order
+  feeling - <query words> [count]                     update completion of the unique task
+                                                        whose name contains <query words> in their order
   feeling - id [count]                                update task completion by id
+
+Views:
+  feeling [@date]                                     today view
+  feeling @due[:t|:w]                                 due view
+                                                         (today / tomorrow / this week)
+  feeling @[:o|:O]                                    pending tasks
+                                                        (all / oneshot / recurring+scheduled)
+  feeling @done[:o|:O]                                completed tasks
 
 Trackers and grids:
   feeling :[week|month|year] [ids]                    dot-sequence tracker grid

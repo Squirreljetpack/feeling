@@ -49,7 +49,7 @@ pub fn format_date(ts: Epoch) -> String {
 }
 
 /// Format an epoch timestamp as `YYYY-MM-DD HH:MM`.
-pub fn format_date_time(ts: Epoch) -> String {
+pub fn format_datetime(ts: Epoch) -> String {
     use chrono::TimeZone;
     chrono::Local
         .timestamp_opt(ts, 0)
@@ -59,9 +59,26 @@ pub fn format_date_time(ts: Epoch) -> String {
 }
 
 /// Short datetime form for per-entry annotations (e.g. the text-tracker
-/// `> value [timestamp]` lines); currently identical to [`format_date_time`].
+/// `> value [timestamp]` lines); M-D H:M
 pub fn format_datetime_short(ts: Epoch) -> String {
-    format_date_time(ts)
+    use chrono::{Datelike, TimeZone, Timelike};
+
+    chrono::Local
+        .timestamp_opt(ts, 0)
+        .earliest()
+        .map(|dt| format!("{}-{} {}:{}", dt.month(), dt.day(), dt.hour(), dt.minute()))
+        .unwrap_or_else(|| "--".to_string())
+}
+
+/// DD HH:MM
+pub fn format_day_time(ts: Epoch) -> String {
+    use chrono::TimeZone;
+
+    chrono::Local
+        .timestamp_opt(ts, 0)
+        .earliest()
+        .map(|dt| dt.format("%d %H:%M").to_string())
+        .unwrap_or_else(|| "--".to_string())
 }
 
 #[cfg(test)]
@@ -77,16 +94,16 @@ mod tests {
     }
 
     #[test]
-    fn test_format_date_time() {
+    fn test_format_datetime() {
         let ts = parse::parse_datetime("2024-03-15", crate::date::DateDialect::Uk).unwrap();
-        let s = format_date_time(ts);
+        let s = format_datetime(ts);
         assert!(s.starts_with("2024-03-15 00:00"), "got {}", s);
     }
 
     #[test]
-    fn test_format_datetime_short_defers_to_date_time() {
+    fn test_format_datetime_short() {
         let ts = parse::parse_datetime("2024-03-15 14:30", crate::date::DateDialect::Uk).unwrap();
-        assert_eq!(format_datetime_short(ts), format_date_time(ts));
+        assert_eq!(format_datetime_short(ts), "3-15 14:30");
     }
 
     #[test]

@@ -184,8 +184,6 @@ impl TodayApp {
         self.refresh().await;
     }
 
-    /// Fetch the full TaskRow for the currently selected entry (if it is a
-    /// task row).
     async fn fetch_selected_task(&mut self) {
         self.selected_task = None;
         let entry = match self.entries.get(self.selected) {
@@ -193,30 +191,47 @@ impl TodayApp {
             _ => return,
         };
         let Some(task_id) = entry.task_id else { return };
-        self.selected_task = crate::sql::fetch_task_by_id(&self.pool, task_id, crate::date::now())
-            .await
-            .ok()
-            .flatten();
+        // Recurring entries carry their window-scoped task row (completions
+        // and last completion limited to the window's interval) — the
+        // authoritative state for the D10 confirm and the preview. Other
+        // task kinds fetch the live row.
+        self.selected_task = match &entry.recurring_window {
+            Some(w) if w.task.id == task_id => Some(w.task.clone()),
+            _ => crate::sql::fetch_task_by_id(&self.pool, task_id, crate::date::now())
+                .await
+                .ok()
+                .flatten(),
+        };
     }
 
     async fn mark_selected_complete(&mut self) {
+        // Resolve the row from the selected entry first: recurring entries
+        // carry their window-scoped row (authoritative for the D10 check and
+        // the enter-action state machine — `refresh()` does not refetch
+        // `selected_task`).
+        if let Some(entry) = self.entries.get(self.selected) {
+            if let Some(w) = entry.recurring_window.as_ref() {
+                // D10: Enter on a recurring task whose availability window
+                // has passed asks first (default Yes) before the count
+                // modal / direct toggle. The check is per window (`now >=
+                // window_end` on a not-done window); the reset path is
+                // unchanged.
+                if !w.task.is_done() && crate::date::now() >= w.window_end {
+                    self.modal = Some(Modal::AvailabilityConfirm {
+                        id: w.task.id,
+                        name: w.task.name.clone(),
+                        cursor: 0,
+                    });
+                    return;
+                }
+                let task = w.task.clone();
+                self.run_enter_action(task).await;
+                return;
+            }
+        }
         let Some(task) = self.selected_task.as_ref() else {
             return;
         };
-        // D10: Enter on a recurring task whose availability window has
-        // passed asks first (default Yes) before the count modal / direct
-        // toggle. The reset path is unchanged.
-        if task.is_recurring()
-            && !task.is_done()
-            && crate::task::availability_passed(task, crate::date::now())
-        {
-            self.modal = Some(Modal::AvailabilityConfirm {
-                id: task.id,
-                name: task.name.clone(),
-                cursor: 0,
-            });
-            return;
-        }
         let task = task.clone();
         self.run_enter_action(task).await;
     }
@@ -816,7 +831,7 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
 
 fn render_today_preview(f: &mut Frame, app: &TodayApp, area: Rect) {
     let paragraph = if let Some(task) = &app.selected_task {
-        let lines = build_preview(task);
+        let lines = build_preview(task, true, &app.config.preview);
         Paragraph::new(Text::from(lines))
             .block(Block::bordered().title("Preview"))
             .style(Style::default())

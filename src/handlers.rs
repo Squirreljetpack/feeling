@@ -713,7 +713,7 @@ async fn handle_scheduled_task_creation(
     // the prompt; blank in the prompt means "now".
     let start = match start {
         Some(s) => {
-            cliclack::log::info(format!("Start: {}", crate::date::format_date_time(s)))?;
+            cliclack::log::info(format!("Start: {}", crate::date::format_datetime(s)))?;
             s
         }
         None => crate::prompts::prompt_start_time(None, config.date.dialect)?,

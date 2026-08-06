@@ -56,7 +56,7 @@ pub fn prompt_start_time(default: Option<&str>, dialect: DateDialect) -> Result<
         ),
         None => {
             let now = crate::date::now();
-            (now, crate::date::format_date_time(now))
+            (now, crate::date::format_datetime(now))
         }
     };
 
