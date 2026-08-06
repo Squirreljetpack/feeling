@@ -17,6 +17,8 @@ when running tests, use --test-threads=4
 
 Don't update help.txt
 
+use macros from cba crate (_ebog, ebog!) for logging **when outside the TUI loop**, for calls made while the tui is running, use log (i.e. log::error) for logging.
+
 ## 1. Crate layout
 
 The crate is a **library + thin binary** so that integration tests can import it

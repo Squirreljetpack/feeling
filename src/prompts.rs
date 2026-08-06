@@ -5,6 +5,7 @@
 //! `crate::display`; database access lives in `crate::sql`.
 
 use anyhow::Result;
+use std::path::Path;
 
 /// Maximum allowed task priority. Anything higher is rejected at ingestion
 /// time (cliclack validation in `prompt_priority`). Lower bound is 1 — zero
@@ -285,6 +286,22 @@ pub fn prompt_clear_confirm(count: i64, date: &str) -> Result<bool> {
     use cliclack::confirm;
 
     confirm(format!("Clear {} mood entry/entries for {}?", count, date))
+        .initial_value(false)
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))
+}
+
+/// Confirm deleting an invalid database file so it can be recreated fresh.
+/// Interactive callers only — non-interactive runs never reach this. The
+/// default is `false`: deleting the db destroys all stored data.
+pub fn prompt_delete_invalid_db(_path: &Path) -> Result<bool> {
+    use cliclack::{confirm, intro};
+
+    intro("Invalid database")?;
+
+    cliclack::log::warning("This will permanently remove ALL stored data.")?;
+
+    confirm("Database is invalid. Delete it and start fresh?".to_string())
         .initial_value(false)
         .interact()
         .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))
