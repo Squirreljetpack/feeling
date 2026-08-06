@@ -1,0 +1,1521 @@
+use std::env::args;
+
+use super::parse::{
+    parse_dash_command, parse_entry_command, parse_special_command, parse_task_command,
+    parse_view_command,
+};
+use super::{Cli, CliOpts, Command, FLAG_CHARACTERS};
+use crate::types::{TodayHorizon, ViewVariant};
+
+/// Parse the full command line from `env::args` (skipping argv[0]) into a
+/// [`Cli`]: leading `-q` / `-v` flags are stripped into `opts`, the rest is
+/// parsed as a [`Command`].
+pub fn parse_args() -> anyhow::Result<Cli> {
+    let raw: Vec<String> = args().skip(1).collect();
+    parse_cli(raw)
+}
+
+/// Parse flags + command from a pre-collected argument list. Used by tests.
+pub fn parse_cli(args: Vec<String>) -> anyhow::Result<Cli> {
+    // Flags are only recognized in the initial position: once a non-flag
+    // token shows up, everything after it is the command's own arguments
+    // (so `feeling ok -q` treats `-q` as entry text, not a flag). A flag
+    // token is `-` followed by flag characters only (`-q`, `-v`, `-qv`, …);
+    // each character increments the matching count in `opts.qv`.
+    let mut opts = CliOpts::default();
+    let mut rest: Vec<String> = Vec::new();
+
+    let mut in_flags = true;
+    for arg in args {
+        if in_flags {
+            // `-h` / `--help` are only recognized in the initial position
+            // and short-circuit to Help before any dispatching prefix (so a
+            // help token is never re-read as a tracker name or command).
+            // After a non-flag token, `-h` is entry text like any other
+            // `-word`.
+            if arg == "-h" || arg == "--help" {
+                return Ok(Cli {
+                    opts,
+                    cmd: Command::Help,
+                });
+            }
+            match arg.strip_prefix('-') {
+                Some(s) if !s.is_empty() && s.chars().all(|c| FLAG_CHARACTERS.contains(c)) => {
+                    for c in s.chars() {
+                        match c {
+                            'q' => opts.qv[0] += 1,
+                            'v' => opts.qv[1] += 1,
+                            _ => unreachable!(), // all() guard above
+                        }
+                    }
+                    continue; // stays in_flags
+                }
+                _ => in_flags = false,
+            }
+        }
+        rest.push(arg);
+    }
+
+    Ok(Cli {
+        opts,
+        cmd: parse_from(rest)?,
+    })
+}
+
+/// Parse a command from a pre-collected argument list (flags already
+/// stripped). Used by tests and internally by [`parse_cli`].
+pub fn parse_from(args: Vec<String>) -> anyhow::Result<Command> {
+    // No args → Today view (bare `feeling`). Help is handled one level up in
+    // parse_cli (`-h` / `--help`, initial position only) — parse_from treats
+    // a `-h`-style token as entry text.
+    if args.is_empty() {
+        return Ok(Command::Today {
+            date: None,
+            show: ViewVariant::All,
+            horizon: TodayHorizon::Today,
+        });
+    }
+
+    let first = &args[0];
+
+    // Special commands starting with ':'
+    if first.starts_with(':') {
+        return parse_special_command(&args);
+    }
+
+    // Task commands starting with '!'
+    if first.starts_with('!') {
+        return parse_task_command(&args[1..]);
+    }
+
+    // View commands starting with '@'
+    if first.starts_with('@') {
+        return parse_view_command(&args);
+    }
+
+    // Tasks edit ('-') or update ('- <id> / - <words…>')
+    if first == "-" {
+        return parse_dash_command(&args[1..]);
+    }
+
+    // Otherwise, it's an entry command
+    parse_entry_command(&args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{TrackerItem, TrackerPeriod, UpdateTarget};
+    use super::*;
+    use crate::types::{Entry, Task, TaskKind, ViewMode};
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Expected epoch for a date string, parsed with the same fixed
+    /// `DATE_DIALECT` the CLI parser uses — tests never assume a
+    /// specific dialect value.
+    fn ts(s: &str) -> i64 {
+        crate::date::parse_datetime(s, crate::date::DATE_DIALECT).unwrap()
+    }
+
+    #[test]
+    fn test_parse_feeling_simple() {
+        let cmd = parse_from(args(&["ok"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "ok");
+                assert!(entry.trackers.is_empty());
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_feeling_with_editor() {
+        let cmd = parse_from(args(&["ok", ".."])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "ok");
+                assert!(entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_feeling_with_trackers() {
+        let cmd = parse_from(args(&["-sleep", "8", "-water", "5", "good"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.trackers.len(), 2);
+                assert_eq!(entry.trackers[0], ("sleep".to_string(), "8".to_string()));
+                assert_eq!(entry.trackers[1], ("water".to_string(), "5".to_string()));
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_feeling_multiline() {
+        let cmd = parse_from(args(&["comfortably", "numb"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "comfortably numb");
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_only() {
+        let cmd = parse_from(args(&["-sleep", "10"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "");
+                assert_eq!(entry.trackers.len(), 1);
+                assert_eq!(entry.trackers[0], ("sleep".to_string(), "10".to_string()));
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_bare_is_interactive() {
+        // `!` alone → interactive oneshot creation, no parent. (Regression
+        // guard: parent parsing used to index into an empty args slice.)
+        let cmd = parse_from(args(&["!"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, None);
+                assert_eq!(task.parent, None);
+                assert!(task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot() {
+        let cmd = parse_from(args(&["!", "do", "something"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("do something".to_string()));
+                assert_eq!(task.priority, None);
+                assert_eq!(task.parent, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_with_parent() {
+        let cmd = parse_from(args(&["!", "-7", "do", "something"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("do something".to_string()));
+                assert_eq!(task.parent, Some(7));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_parent_only_is_interactive() {
+        let cmd = parse_from(args(&["!", "-7"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, None);
+                assert_eq!(task.parent, Some(7));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_parent_initial_position_only() {
+        // Once a parent is parsed, later '-' words are ordinary text.
+        let cmd = parse_from(args(&["!", "-7", "buy", "-milk"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("buy -milk".to_string()));
+                assert_eq!(task.parent, Some(7));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_dash_name_is_not_parent() {
+        // A non-numeric '-word' is a name, not a parent flag.
+        let cmd = parse_from(args(&["!", "-groceries"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("-groceries".to_string()));
+                assert_eq!(task.parent, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_with_date() {
+        let cmd = parse_from(args(&["!", "task", "@2024-03-20"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("task".to_string()));
+                assert_eq!(task.date, Some(ts("2024-03-20")));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_datetime_multiple_words() {
+        // Everything after the @ word joins the time field, so shell-split
+        // datetimes survive: @2024-03-20 14:30:00 → "2024-03-20 14:30:00".
+        let cmd = parse_from(args(&["!", "task", "@2024-03-20", "14:30:00"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("task".to_string()));
+                assert_eq!(task.date, Some(ts("2024-03-20 14:30:00")));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_name_is_trimmed() {
+        let cmd = parse_from(args(&["!", "  buy milk  "])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("buy milk".to_string()));
+                assert_eq!(task.date, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_empty_name_after_trim_is_none() {
+        // A whitespace-only name trims to empty → name None (the
+        // handler rejects it with "Task name is required").
+        let cmd = parse_from(args(&["!", "   "])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_at_in_body_is_literal() {
+        // After `..` (body state) @ words are never treated as times.
+        let cmd = parse_from(args(&["!", "task", "..", "@notdate"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("task".to_string()));
+                assert_eq!(task.date, None);
+                assert_eq!(task.body, "@notdate");
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_two_at_times_rejected() {
+        // Only one @-word is allowed before `..`; a second is an error.
+        assert!(parse_from(args(&["!", "task", "@a", "@b"])).is_err());
+        // .. but inside the body state a second @ is fine (literal).
+        let cmd = parse_from(args(&["!", "task", "@2024-03-20", "..", "@b"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.date, Some(ts("2024-03-20")));
+                assert_eq!(task.body, "@b");
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_oneshot_dotdot_inside_body_is_literal() {
+        // Everything after the first `..` is body text, including a later
+        // `..` token (the split is positional, not stateful scanning).
+        let cmd = parse_from(args(&["!", "task", "..", "see", "..", "note"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("task".to_string()));
+                assert_eq!(task.body, "see .. note");
+                assert!(!task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_recurring_create_bare() {
+        // ! @ → interactive recurring creation, no pre-filled name.
+        let cmd = parse_from(args(&["!", "@"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Recurring);
+                assert_eq!(task.name, None);
+                assert_eq!(task.prefill, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_recurring_create_with_name() {
+        // ! @ <name> → recurring creation with the name
+        // pre-filling the name prompt (like oneshot creation).
+        let cmd = parse_from(args(&["!", "@", "exercise", "more"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Recurring);
+                assert_eq!(task.name, None);
+                assert_eq!(task.prefill, Some("exercise more".to_string()));
+            }
+            _ => panic!("Expected Task command"),
+        }
+
+        // Whitespace-only name trims to absent.
+        let cmd = parse_from(args(&["!", "@", "  "])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.prefill, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_date_only() {
+        // `! @10pm` → scheduled creation with only the start time.
+        let cmd = parse_from(args(&["!", "@10pm"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, None);
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_date_with_extra_words_is_all_date() {
+        // `! @10pm meeting` (no markers) keeps the whole first field as the
+        // date — resolved to an epoch at parse time (chrono-english
+        // ignores trailing non-date words), never becoming a name.
+        let cmd = parse_from(args(&["!", "@10pm", "meeting"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, None);
+                assert_eq!(task.date, Some(ts("10pm meeting")));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_name() {
+        // `! @10pm :meeting` → start time + name.
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, Some("meeting".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_multiword_name() {
+        // `! @10pm :a :b` → name words join; a `:`-word mid-
+        // name just continues it.
+        let cmd = parse_from(args(&["!", "@10pm", ":a", ":b"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, Some("a b".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_duration() {
+        // `! @10pm %2 hours` → start time + duration, no name.
+        let cmd = parse_from(args(&["!", "@10pm", "%2", "hours"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, None);
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_name_and_duration() {
+        // `! @10pm :meeting %2 hours` → all three fields.
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting", "%2", "hours"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, Some("meeting".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_name_after_duration_allowed() {
+        // Name may come after the duration too: `! @10pm %2 hours :meeting`.
+        let cmd = parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, Some("meeting".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_duplicate_duration_rejected() {
+        assert!(parse_from(args(&["!", "@10pm", "%2", "hours", "%30", "minutes"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_interleave_deferred() {
+        // Interleaving is tolerated, not rejected: the simple splitter
+        // hands each segment to parse_duration/parse_datetime, and the
+        // parse rejects the garbage. A `:`-word that lands inside the
+        // duration segment makes the duration unparseable...
+        assert!(parse_from(args(&["!", "@10pm", ":meeting", "%2", "hours", ":again"])).is_err());
+        // ...while a trailing `%`-word after the name resumed stays in the
+        // name verbatim (names are free-form).
+        let cmd = parse_from(args(&["!", "@10pm", "%2", "hours", ":meeting", "%30"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, Some("meeting %30".to_string()));
+                assert_eq!(task.date, Some(ts("10pm")));
+                assert_eq!(task.available_duration, Some(2 * 3600));
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_bad_duration_rejected() {
+        // A malformed duration fails fast at parse time.
+        assert!(parse_from(args(&["!", "@10pm", "%2", "elephants"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_body() {
+        // `! @10pm :meeting .. take notes` → body after `..`.
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting", "..", "take", "notes"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.name, Some("meeting".to_string()));
+                assert_eq!(task.body, "take notes");
+                assert!(!task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_scheduled_bare_dotdot_opens_editor() {
+        let cmd = parse_from(args(&["!", "@10pm", ":meeting", ".."])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Scheduled);
+                assert_eq!(task.body, "");
+                assert!(task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_recurring_body() {
+        // `! @ exercise .. notes` → recurring creation with the name
+        // pre-filling the name prompt and `.. notes` as the body.
+        let cmd = parse_from(args(&["!", "@", "exercise", "..", "notes"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Recurring);
+                assert_eq!(task.prefill, Some("exercise".to_string()));
+                assert_eq!(task.body, "notes");
+                assert!(!task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_recurring_bare_dotdot_opens_editor() {
+        let cmd = parse_from(args(&["!", "@", "exercise", ".."])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Recurring);
+                assert_eq!(task.prefill, Some("exercise".to_string()));
+                assert_eq!(task.body, "");
+                assert!(task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_at_name_with_extra_args_fails_at_parse_time() {
+        // `! @exercise now` → the leading @ starts the time field, which
+        // swallows the rest into the date; "exercise now" is not a
+        // parseable datetime, and since the date is resolved at parse time
+        // now, the command fails here rather than in the handler.
+        assert!(parse_from(args(&["!", "@exercise", "now"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_task_recurring_create() {
+        // Recurring task creation via ! @
+        let cmd = parse_from(args(&["!", "@"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Recurring);
+                assert_eq!(task.name, None);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_oneshot_list() {
+        // Bare `!` is interactive oneshot creation now — name prompted,
+        // editor flow on. The pending-oneshots list lives at `@:o`.
+        let cmd = parse_from(args(&["!"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, None);
+                assert!(task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_recurring() {
+        let cmd = parse_from(args(&["@"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::PendingTasks);
+                assert_eq!(show, ViewVariant::All);
+            }
+            _ => panic!("Expected View command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_variant_suffixes() {
+        // @:o / @:O → pending view at A / B.
+        let cmd = parse_from(args(&["@:o"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::PendingTasks);
+                assert_eq!(show, ViewVariant::A);
+            }
+            _ => panic!("Expected View command"),
+        }
+        let cmd = parse_from(args(&["@:O"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::PendingTasks);
+                assert_eq!(show, ViewVariant::B);
+            }
+            _ => panic!("Expected View command"),
+        }
+        // @done:o / @done:O / @done → done view at A / B / All.
+        let cmd = parse_from(args(&["@done:o"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ViewVariant::A);
+            }
+            _ => panic!("Expected View command"),
+        }
+        let cmd = parse_from(args(&["@done:O"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ViewVariant::B);
+            }
+            _ => panic!("Expected View command"),
+        }
+        let cmd = parse_from(args(&["@done"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ViewVariant::All);
+            }
+            _ => panic!("Expected View command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_rejects_extra_args() {
+        // Extra words join into the command text: `@due extra` and
+        // `@done extra` fail their suffix checks, while `@ <date> extra`
+        // becomes a multi-word date that the handler rejects at parse time
+        // (it can no longer be silently ignored).
+        assert!(parse_from(args(&["@due", "extra"])).is_err());
+        assert!(parse_from(args(&["@due:t", "extra"])).is_err());
+        assert!(parse_from(args(&["@done", "extra"])).is_err());
+        assert!(parse_from(args(&["@done:O", "extra"])).is_err());
+        assert!(parse_from(args(&["@:o", "extra"])).is_err());
+        let cmd = parse_from(args(&["@", "extra"])).unwrap();
+        assert!(matches!(cmd, Command::Today { date: Some(d), .. } if d == "extra"));
+        let cmd = parse_from(args(&["@2024-03-15", "extra"])).unwrap();
+        assert!(matches!(cmd, Command::Today { date: Some(d), .. } if d == "2024-03-15 extra"));
+    }
+
+    #[test]
+    fn test_parse_view_invalid_suffixes() {
+        // There is no `a` suffix; unknown suffixes are rejected.
+        assert!(parse_from(args(&["@:a"])).is_err());
+        assert!(parse_from(args(&["@done:a"])).is_err());
+        assert!(parse_from(args(&["@:x"])).is_err());
+        assert!(parse_from(args(&["@due:x"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_view_done() {
+        let cmd = parse_from(args(&["@done"])).unwrap();
+        match cmd {
+            Command::View { mode, show } => {
+                assert_eq!(mode, ViewMode::DoneTasks);
+                assert_eq!(show, ViewVariant::All);
+            }
+            _ => panic!("Expected View command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_due() {
+        // @due → TodayView at ShowVariant::B with the Today horizon.
+        let cmd = parse_from(args(&["@due"])).unwrap();
+        match cmd {
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
+                assert_eq!(date, None);
+                assert_eq!(show, ViewVariant::B);
+                assert_eq!(horizon, TodayHorizon::Today);
+            }
+            _ => panic!("Expected Today command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_view_due_horizons() {
+        // @due:t / @due:w → TodayView at B with the Tomorrow / Week horizon.
+        let cmd = parse_from(args(&["@due:t"])).unwrap();
+        match cmd {
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
+                assert_eq!(date, None);
+                assert_eq!(show, ViewVariant::B);
+                assert_eq!(horizon, TodayHorizon::Tomorrow);
+            }
+            _ => panic!("Expected Today command"),
+        }
+        let cmd = parse_from(args(&["@due:w"])).unwrap();
+        match cmd {
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
+                assert_eq!(date, None);
+                assert_eq!(show, ViewVariant::B);
+                assert_eq!(horizon, TodayHorizon::Week);
+            }
+            _ => panic!("Expected Today command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_week() {
+        let cmd = parse_from(args(&[":"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Week);
+                // Bare `:` renders just the mood grid.
+                assert_eq!(items, vec![TrackerItem::Mood]);
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_month() {
+        let cmd = parse_from(args(&[":month"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Month);
+                // No display list: mood grid only.
+                assert_eq!(items, vec![TrackerItem::Mood]);
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_year() {
+        let cmd = parse_from(args(&[":year"])).unwrap();
+        match cmd {
+            Command::Tracker { period, .. } => {
+                assert_eq!(period, TrackerPeriod::Year);
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_colon_second_arg_is_tracker() {
+        // `: month` is a tracker named "month", not a period: only the
+        // first-token suffix sets the period.
+        let cmd = parse_from(args(&[":", "month"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Week);
+                assert_eq!(items, vec![TrackerItem::Tracker("month".to_string())]);
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_with_ids() {
+        let cmd = parse_from(args(&[":", "@1", "@2", "sleep"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Week);
+                assert_eq!(
+                    items,
+                    vec![
+                        TrackerItem::Tracker("@1".to_string()),
+                        TrackerItem::Tracker("@2".to_string()),
+                        TrackerItem::Tracker("sleep".to_string())
+                    ]
+                );
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_period_with_ids() {
+        let cmd = parse_from(args(&[":month", "@1", "sleep"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Month);
+                assert_eq!(
+                    items,
+                    vec![
+                        TrackerItem::Tracker("@1".to_string()),
+                        TrackerItem::Tracker("sleep".to_string())
+                    ]
+                );
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_first_arg_rejected() {
+        // `:foo` with no space is rejected in the dispatcher; the safe
+        // entry is `feeling : foo` with a space.
+        let cmd = parse_from(args(&[":", "foo"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Week);
+                assert_eq!(items, vec![TrackerItem::Tracker("foo".to_string())]);
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_mood_marker_positional() {
+        // `: @1 : sleep` renders @1 grid, mood grid, sleep grid, in order.
+        let cmd = parse_from(args(&[":", "@1", ":", "sleep"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Week);
+                assert_eq!(
+                    items,
+                    vec![
+                        TrackerItem::Tracker("@1".to_string()),
+                        TrackerItem::Mood,
+                        TrackerItem::Tracker("sleep".to_string())
+                    ]
+                );
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_colon_colon_is_mood_only() {
+        // `: :` is the same as bare `:`: mood grid only.
+        let cmd = parse_from(args(&[":", ":"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Week);
+                assert_eq!(items, vec![TrackerItem::Mood]);
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_suffix_period_with_mood_marker() {
+        // `:week : sleep` → Week period, mood grid then sleep grid.
+        let cmd = parse_from(args(&[":week", ":", "sleep"])).unwrap();
+        match cmd {
+            Command::Tracker { period, items } => {
+                assert_eq!(period, TrackerPeriod::Week);
+                assert_eq!(
+                    items,
+                    vec![TrackerItem::Mood, TrackerItem::Tracker("sleep".to_string())]
+                );
+            }
+            _ => panic!("Expected Tracker command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_dash_alone_is_tasks_edit() {
+        // `feeling -` (bare) → TasksEdit (stub); `- <id> [count]` and
+        // `- <words…> [count]` remain the update forms (tested below).
+        let cmd = parse_from(args(&["-"])).unwrap();
+        assert_eq!(cmd, Command::TasksEdit);
+    }
+
+    #[test]
+    fn test_parse_update() {
+        let cmd = parse_from(args(&["-", "5"])).unwrap();
+        match cmd {
+            Command::Update { target, count } => {
+                assert_eq!(target, UpdateTarget::OneShot(5));
+                assert_eq!(count, None);
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_update_with_count() {
+        let cmd = parse_from(args(&["-", "5", "3"])).unwrap();
+        match cmd {
+            Command::Update { target, count } => {
+                assert_eq!(target, UpdateTarget::OneShot(5));
+                assert_eq!(count, Some(3));
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_update_at_name_is_query_not_recurring() {
+        // The `- @name` recurring form was removed: `- @exercise` is now a
+        // word query (which matches nothing, since task names don't carry
+        // the '@' prefix).
+        let cmd = parse_from(args(&["-", "@exercise"])).unwrap();
+        match cmd {
+            Command::Update { target, count } => {
+                assert_eq!(
+                    target,
+                    UpdateTarget::Query {
+                        words: vec!["@exercise".to_string()]
+                    }
+                );
+                assert_eq!(count, None);
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_update_query_words() {
+        // feeling - buy milk
+        let cmd = parse_from(args(&["-", "buy", "milk"])).unwrap();
+        match cmd {
+            Command::Update { target, count } => {
+                assert_eq!(
+                    target,
+                    UpdateTarget::Query {
+                        words: vec!["buy".to_string(), "milk".to_string()]
+                    }
+                );
+                assert_eq!(count, None);
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_update_query_words_with_count() {
+        // feeling - buy milk 2 — trailing numeric word is the count
+        let cmd = parse_from(args(&["-", "buy", "milk", "2"])).unwrap();
+        match cmd {
+            Command::Update { target, count } => {
+                assert_eq!(
+                    target,
+                    UpdateTarget::Query {
+                        words: vec!["buy".to_string(), "milk".to_string()]
+                    }
+                );
+                assert_eq!(count, Some(2));
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_update_query_words_single_word() {
+        // A lone non-numeric word is a name query, not an id.
+        let cmd = parse_from(args(&["-", "buy"])).unwrap();
+        match cmd {
+            Command::Update { target, count } => {
+                assert_eq!(
+                    target,
+                    UpdateTarget::Query {
+                        words: vec!["buy".to_string()]
+                    }
+                );
+                assert_eq!(count, None);
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_in_final_position() {
+        // feeling <mood> [-tracker value] — trackers after the mood
+        let cmd = parse_from(args(&["good", "-sleep", "8"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // … with a trailing `..` body after the tracker pair.
+        let cmd = parse_from(args(&["good", "-sleep", "8", "-water", "5", "..", "later"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(
+                    entry.trackers,
+                    vec![
+                        ("sleep".to_string(), "8".to_string()),
+                        ("water".to_string(), "5".to_string())
+                    ]
+                );
+                assert_eq!(entry.body, "later");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_beginning_and_end_only() {
+        // Trackers are parsed only at the beginning (before any mood word)
+        // and at the end (after the mood); mood words must be contiguous.
+
+        // Beginning trackers then mood: feeling -sleep 8 good.
+        let cmd = parse_from(args(&["-sleep", "8", "good"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // Beginning + end trackers around the mood: -sleep 8 good -water 5.
+        let cmd = parse_from(args(&["-sleep", "8", "good", "-water", "5"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(
+                    entry.trackers,
+                    vec![
+                        ("sleep".to_string(), "8".to_string()),
+                        ("water".to_string(), "5".to_string())
+                    ]
+                );
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // Multiple beginning trackers then a multi-word mood.
+        let cmd = parse_from(args(&["-sleep", "8", "but", "not", "great"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "but not great");
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tracker_embedded_in_mood_rejected() {
+        // feeling pretty ok -sleep 8 but not great: after the tracker pair
+        // the word "but" is not another valid tracker pattern, `..`, or the
+        // end of the line → the line is rejected.
+        assert!(parse_from(args(&[
+            "pretty", "ok", "-sleep", "8", "but", "not", "great"
+        ]))
+        .is_err());
+
+        // Same rejection after a single mood word.
+        assert!(parse_from(args(&["good", "-sleep", "8", "later"])).is_err());
+
+        // … even after a beginning tracker + mood + end tracker pair.
+        assert!(parse_from(args(&["-sleep", "8", "good", "-water", "5", "later"])).is_err());
+
+        // But a tracker pair at the very end is fine.
+        let cmd = parse_from(args(&["good", "-sleep", "8"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_cli_strips_initial_flags() {
+        // -q before the command
+        let cli = parse_cli(args(&["-q", "ok"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 0]);
+        assert_eq!(
+            cli.cmd,
+            Command::Entry(Entry {
+                feeling: "ok".to_string(),
+                trackers: vec![],
+                body: String::new(),
+                open_editor: false,
+            })
+        );
+
+        // -v before a task view (bare `!` is interactive creation now)
+        let cli = parse_cli(args(&["-v", "!"])).unwrap();
+        assert_eq!(cli.opts.qv, [0, 1]);
+        assert!(matches!(
+            cli.cmd,
+            Command::Task(Task {
+                task_type: TaskKind::Oneshot,
+                ..
+            })
+        ));
+
+        // both flags, before a tracker view
+        let cli = parse_cli(args(&["-q", "-v", ":week"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 1]);
+        assert!(matches!(cli.cmd, Command::Tracker { .. }));
+
+        // combined token: -qv sets both
+        let cli = parse_cli(args(&["-qv", "ok"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 1]);
+        assert!(matches!(cli.cmd, Command::Entry(_)));
+
+        // order is not tracked: -vq is the same counts as -qv
+        let cli = parse_cli(args(&["-vq", "-", "ok"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 1]);
+        assert!(matches!(cli.cmd, Command::Update { .. }));
+
+        // repeated flags stack up as counts (-vvq → 1 quiet, 2 verbose)
+        let cli = parse_cli(args(&["-vvq", "ok"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 2]);
+        assert!(matches!(cli.cmd, Command::Entry(_)));
+
+        // flag alone → Today (same as no args)
+        let cli = parse_cli(args(&["-q"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 0]);
+        assert_eq!(
+            cli.cmd,
+            Command::Today {
+                date: None,
+                show: ViewVariant::All,
+                horizon: TodayHorizon::Today,
+            }
+        );
+
+        // no flags
+        let cli = parse_cli(args(&["ok"])).unwrap();
+        assert_eq!(cli.opts.qv, [0, 0]);
+        assert!(matches!(cli.cmd, Command::Entry(_)));
+    }
+
+    #[test]
+    fn test_parse_cli_flags_initial_position_only() {
+        // Once a non-flag token appears, -q is entry text — a tracker named
+        // 'q' that requires a value → parse error.
+        assert!(parse_cli(args(&["ok", "-q"])).is_err());
+
+        // A combined -qv token is a flag now, not entry text.
+        let cli = parse_cli(args(&["-qv", "ok"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 1]);
+        assert!(matches!(cli.cmd, Command::Entry(_)));
+
+        // A bare dash is the update/today command, never a flag.
+        let cli = parse_cli(args(&["-", "-q"])).unwrap();
+        assert_eq!(cli.opts.qv, [0, 0]);
+        assert!(matches!(cli.cmd, Command::Update { .. }));
+
+        // Tokens with non-flag characters stop the flag run (-q5 is entry
+        // text: a tracker named 'q5' needing a value → parse error alone).
+        assert!(parse_cli(args(&["-q5"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_embed() {
+        let cmd = parse_from(args(&[":embed"])).unwrap();
+        assert_eq!(cmd, Command::Embed);
+    }
+
+    #[test]
+    fn test_parse_score() {
+        let cmd = parse_from(args(&[":score", "happy", "sad"])).unwrap();
+        match cmd {
+            Command::Score { start, end } => {
+                assert_eq!(start, "happy");
+                assert_eq!(end, "sad");
+            }
+            _ => panic!("Expected Score command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_returns_today() {
+        // `feeling` with no args → Today view (All, Today horizon).
+        let today = Command::Today {
+            date: None,
+            show: ViewVariant::All,
+            horizon: TodayHorizon::Today,
+        };
+        let cmd = parse_from(vec![]).unwrap();
+        assert_eq!(cmd, today.clone());
+
+        // The same through parse_cli, with or without a leading flag.
+        assert_eq!(parse_cli(vec![]).unwrap().cmd, today.clone());
+        assert_eq!(parse_cli(args(&["-q"])).unwrap().cmd, today);
+    }
+
+    #[test]
+    fn test_parse_today_with_date() {
+        // `feeling @2024-03-20` → today view anchored to that date
+        // (All, Today horizon).
+        let cmd = parse_from(args(&["@2024-03-20"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Today {
+                date: Some("2024-03-20".to_string()),
+                show: ViewVariant::All,
+                horizon: TodayHorizon::Today,
+            }
+        );
+
+        // Multi-word datetimes still work through the @ token.
+        let cmd = parse_from(args(&["@2024-03-20", "14:30"])).unwrap();
+        match cmd {
+            Command::Today {
+                date,
+                show,
+                horizon,
+            } => {
+                // Multi-word datetimes join into the date: the dispatcher
+                // passes the full command text through.
+                assert_eq!(date, Some("2024-03-20 14:30".to_string()));
+                assert_eq!(show, ViewVariant::All);
+                assert_eq!(horizon, TodayHorizon::Today);
+            }
+            _ => panic!("Expected Today command"),
+        }
+
+        // Relative dates parse too.
+        let cmd = parse_from(args(&["@yesterday"])).unwrap();
+        assert!(matches!(cmd, Command::Today { date: Some(_), .. }));
+
+        // Unparseable dates still parse at the CLI level (the handler is
+        // the authority, parsing with `DATE_DIALECT`) — assert the date is
+        // carried through.
+        let cmd = parse_from(args(&["@bogus"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Today {
+                date: Some("bogus".to_string()),
+                show: ViewVariant::All,
+                horizon: TodayHorizon::Today,
+            }
+        );
+
+        // The task views are untouched.
+        assert!(matches!(
+            parse_from(args(&["@done"])).unwrap(),
+            Command::View {
+                mode: ViewMode::DoneTasks,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_help_is_cli_level_only() {
+        // `-h` / `--help` are handled in parse_cli (initial position only).
+        let cli = parse_cli(args(&["-h"])).unwrap();
+        assert_eq!(cli.opts.qv, [0, 0]);
+        assert_eq!(cli.cmd, Command::Help);
+
+        let cli = parse_cli(args(&["--help"])).unwrap();
+        assert_eq!(cli.cmd, Command::Help);
+
+        // Help wins over other initial-position flags.
+        let cli = parse_cli(args(&["-q", "-h"])).unwrap();
+        assert_eq!(cli.opts.qv, [1, 0]);
+        assert_eq!(cli.cmd, Command::Help);
+        // After a non-flag token, -h is entry text (a tracker needing a
+        // value), not help.
+        assert!(parse_cli(args(&["ok", "-h"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_config() {
+        let cmd = parse_from(args(&[":config"])).unwrap();
+        assert_eq!(cmd, Command::Config);
+    }
+
+    #[test]
+    fn test_parse_config_rejects_extra_args() {
+        let result = parse_from(args(&[":config", "extra"]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_moods() {
+        let cmd = parse_from(args(&[":moods"])).unwrap();
+        assert_eq!(cmd, Command::Moods);
+    }
+
+    #[test]
+    fn test_parse_moods_rejects_extra_args() {
+        let result = parse_from(args(&[":moods", "extra"]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_prune() {
+        let cmd = parse_from(args(&[":prune"])).unwrap();
+        assert_eq!(cmd, Command::Prune);
+    }
+
+    #[test]
+    fn test_parse_prune_rejects_extra_args() {
+        let result = parse_from(args(&[":prune", "extra"]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_color() {
+        let cmd = parse_from(args(&[":color", "drained"])).unwrap();
+        match cmd {
+            Command::Color { mood } => assert_eq!(mood, "drained"),
+            _ => panic!("Expected Color command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_color_multword() {
+        let cmd = parse_from(args(&[":color", "feeling", "drained"])).unwrap();
+        match cmd {
+            Command::Color { mood } => assert_eq!(mood, "feeling drained"),
+            _ => panic!("Expected Color command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_color_rejects_empty() {
+        let result = parse_from(args(&[":color"]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_rejects_tabs_in_mood() {
+        // Tabs are rejected at parse time (view output uses tab separators).
+        let result = parse_from(args(&["ok\ttab"]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("tab characters"));
+    }
+
+    #[test]
+    fn test_parse_editor_flag_only_when_dotdot_used_with_empty_body() {
+        // `..` at end, no text after → open_editor=true, body empty.
+        let cmd = parse_from(args(&["ok", ".."])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.body, "");
+                assert!(entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // `..` at end with text after → body is the joined text, no editor
+        // (text wins over the editor prompt).
+        let cmd = parse_from(args(&["ok", "..", "later", "thoughts"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.body, "later thoughts");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // `..` anywhere in the middle splits: pre-.. is mood, post-.. is body.
+        // `["..", "ok"]` puts "ok" into body, leaving mood empty; editor is
+        // gated off because body is non-empty.
+        let cmd = parse_from(args(&["..", "ok"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "");
+                assert_eq!(entry.body, "ok");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // `..` in the middle with text on both sides — editor gated off, body
+        // is the joined post-.. text.
+        let cmd = parse_from(args(&["ok", "more", "..", "journal", "entry"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "ok more");
+                assert_eq!(entry.body, "journal entry");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // No `..` at all: no body, no editor.
+        let cmd = parse_from(args(&["ok"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.body, "");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_task_dotdot_in_middle_splits_name_and_body() {
+        let cmd = parse_from(args(&["!", "do", "thing", "..", "body", "text"])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("do thing".to_string()));
+                assert_eq!(task.body, "body text");
+                assert!(!task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+
+        // `..` at end with empty body → editor opens.
+        let cmd = parse_from(args(&["!", "do", "thing", ".."])).unwrap();
+        match cmd {
+            Command::Task(task) => {
+                assert_eq!(task.task_type, TaskKind::Oneshot);
+                assert_eq!(task.name, Some("do thing".to_string()));
+                assert_eq!(task.body, "");
+                assert!(task.open_editor);
+            }
+            _ => panic!("Expected Task command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_clear() {
+        let cmd = parse_from(args(&[":clear"])).unwrap();
+        assert_eq!(cmd, Command::Clear { date: None });
+
+        let cmd = parse_from(args(&[":clear", "@2024-03-20"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Clear {
+                date: Some("2024-03-20".to_string())
+            }
+        );
+
+        let cmd = parse_from(args(&[":clear", "2024-03-20"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Clear {
+                date: Some("2024-03-20".to_string())
+            }
+        );
+
+        let cmd = parse_from(args(&[":clear", "@"])).unwrap();
+        assert_eq!(cmd, Command::Clear { date: None });
+    }
+}

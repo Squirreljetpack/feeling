@@ -2,7 +2,7 @@
 //!
 //! Every interactive input/confirm in the CLI lives here. Prompts are pure
 //! UI: no SQL, no file I/O. Flow-level banner and feedback output lives in
-//! `crate::display`; database access lives in `crate::sql`.
+//! `crate::output`; database access lives in `crate::db`.
 
 use anyhow::Result;
 use std::path::Path;

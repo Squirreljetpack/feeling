@@ -14,7 +14,7 @@ use ratatui::{
 };
 use sqlx::SqlitePool;
 
-use crate::sql::TaskRow;
+use crate::db::TaskRow;
 
 /// A task and its descendants, rooted at one task.
 #[derive(Debug, Clone)]
@@ -158,7 +158,7 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use crate::db::test_pool;
-    use crate::sql::{create_task, TaskObject};
+    use crate::db::{create_task, TaskObject};
     use crate::types::TaskKind;
 
     use super::*;

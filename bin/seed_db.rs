@@ -24,7 +24,7 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 use feeling::date;
-use feeling::sql::{
+use feeling::db::{
     create_entry, create_task, set_scheduled_completion, update_task, EntryObject, TaskObject,
     TrackerObject, TrackerValue,
 };

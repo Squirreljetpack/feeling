@@ -1,29 +1,24 @@
-pub mod action;
 pub mod badge;
-pub mod binds;
-pub mod clap;
+pub mod cli;
 pub mod color;
-pub mod color_conversion;
+pub mod commands;
 pub mod config;
 pub mod date;
 pub mod db;
-pub mod display;
 pub mod editor;
-pub mod embed;
-pub mod event_loop;
-pub mod handlers;
+pub mod embedding;
 pub mod logger;
-pub mod message;
+pub mod output;
 pub mod paths;
+pub mod percentage;
 pub mod prompts;
-pub mod render;
-pub mod sql;
 pub mod task;
 pub mod task_tree;
-pub mod tui;
+pub mod task_view;
+pub mod today;
+pub mod tracker;
 pub mod types;
-pub mod utils;
-pub mod views;
+pub mod ui;
 
 pub async fn run_app() {
     use cba::{_dbg, bog};
@@ -31,7 +26,7 @@ pub async fn run_app() {
 
     bog::init_bogger(true, false);
 
-    let cli = clap::parse_args().__ebog();
+    let cli = cli::parse_args().__ebog();
 
     let [q, v] = cli.opts.qv;
     logger::init_logger([q, 1 + v], paths::log_path());
@@ -69,7 +64,7 @@ pub async fn run_app() {
     };
 
     _dbg!(
-        handlers::handle_command(
+        commands::execute_command(
             cli.cmd,
             &pool,
             &config,

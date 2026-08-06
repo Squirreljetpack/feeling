@@ -16,7 +16,7 @@
 use crossterm::style::Color as CtColor;
 
 use crate::config::Config;
-use crate::sql::TaskRow;
+use crate::db::TaskRow;
 
 /// Completion badge: (character, color) for a task's completion status.
 ///

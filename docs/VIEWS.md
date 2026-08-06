@@ -1,9 +1,9 @@
-# VIEWS.md — ShowVariant view system
+# VIEWS.md — ViewVariant view system
 
-The `ShowVariant` enum controls which subset of tasks a view displays. `All`
-shows everything relevant to the view; `A` is the oneshot-only subset; `B` is
-the non-oneshot subset (recurring + scheduled), showing more of these where
-applicable.
+The shared `ViewVariant` enum controls the `All → A → B` view cycle used by
+both TUIs and the CLI. Its interpretation is context-specific: task views use
+`A` for oneshots and `B` for recurring/scheduled tasks, while today views use
+`A` to exclude completed items and `B` for tasks-only output.
 
 ## Predicates
 
@@ -30,24 +30,25 @@ the pending D9 sort, the done-view sort, and the preview `last:` field), and
 TodayView window rows carry the unscoped last completion in `end_time` (the
 expiry is not used there). Availability-window checks must first exclude
 `expired(t)` tasks — an expired task has no current interval.
+
 ## CLI syntax
 
 | Command | Effect |
 | --- | --- |
 | `feeling !` | Interactive oneshot creation (name prompted) |
-| `feeling @` | Pending view — `ShowVariant::All` |
-| `feeling @:o` | Pending view — `ShowVariant::A` (oneshots only) |
-| `feeling @:O` | Pending view — `ShowVariant::B` (recurring not availability-filtered + scheduled) |
-| `feeling @done` | Completed tasks — `ShowVariant::All` |
-| `feeling @done:o` | Completed oneshots only — `ShowVariant::A` |
-| `feeling @done:O` | Completed recurring history + completed scheduled — `ShowVariant::B` |
-| `feeling @due` | TodayView, `ShowVariant::B`, `TodayHorizon::Today` |
-| `feeling @due:t` | Tomorrow view, `ShowVariant::B`, `TodayHorizon::Tomorrow` |
-| `feeling @due:w` | Week view, `ShowVariant::B`, `TodayHorizon::Week` |
-| `feeling @<date>` | Anchored TodayView, `ShowVariant::All`, `TodayHorizon::Today` |
+| `feeling @` | Pending view — `ViewVariant::All` |
+| `feeling @:o` | Pending view — `ViewVariant::A` (oneshots only) |
+| `feeling @:O` | Pending view — `ViewVariant::B` (recurring not availability-filtered + scheduled) |
+| `feeling @done` | Completed tasks — `ViewVariant::All` |
+| `feeling @done:o` | Completed oneshots only — `ViewVariant::A` |
+| `feeling @done:O` | Completed recurring history + completed scheduled — `ViewVariant::B` |
+| `feeling @due` | TodayView, `ViewVariant::B`, `TodayHorizon::Today` |
+| `feeling @due:t` | Tomorrow view, `ViewVariant::B`, `TodayHorizon::Tomorrow` |
+| `feeling @due:w` | Week view, `ViewVariant::B`, `TodayHorizon::Week` |
+| `feeling @<date>` | Anchored TodayView, `ViewVariant::All`, `TodayHorizon::Today` |
 
 The variant suffix is `o` (A) or `O` (B) — there is no `a` suffix, so
-`@:a` / `@done:a` are invalid. Starting in `ShowVariant::A` is only possible
+`@:a` / `@done:a` are invalid. Starting in `ViewVariant::A` is only possible
 via the `:o` suffix.
 
 ## View matrix
@@ -84,7 +85,7 @@ not a completion moment).
 ### `@due` / `@<date>` — TodayView
 
 Note: the two spellings use different defaults — `@due` starts at
-`ShowVariant::B` with the day horizon, `@<date>` at `ShowVariant::All`.
+`ViewVariant::B` with the day horizon, `@<date>` at `ViewVariant::All`.
 
 | Variant | Behavior |
 | --- | --- |

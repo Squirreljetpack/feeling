@@ -26,64 +26,97 @@ as `feeling::`.
 
 ```text
 src/
-  lib.rs        re-exports every module
-  main.rs       thin binary: init flow + dispatch (the only TTY/TUI decision point)
+  lib.rs        library façade; main.rs remains the thin binary entry point
+  types.rs      shared cross-layer contracts: input payloads, TaskKind,
+                ViewMode, ViewVariant, TodayHorizon
   paths.rs      XDG-style paths (config dir, state dir, db, log)
-  config.rs     serde Config (config.toml) incl. mood source, task colors, trackers
-  config/       config-side types (types.rs: MoodEndpoint, TrackerType, ColorBins)
-  logger.rs     cba `bog`/env_logger setup (env_logger piped to the log file only)
-  db.rs         SQLite pool, CREATE TABLE schema, indexes, PRAGMA foreign_keys
+  logger.rs     cba `bog`/env_logger setup
+  prompts.rs    interactive cliclack prompts
+
+  cli/          handwritten CLI grammar (no clap crate)
+    mod.rs      CliOpts, Command, CLI-only tracker syntax types
+    parser.rs   parse_args, parse_cli, parse_from and parser tests
+    parse/      entry, task, view, update, tracker, and special grammars
+
+  commands/     command orchestration and write flows
+    mod.rs      execute_command and TTY/non-TTY dispatch
+    entry.rs    mood/tracker entry writes
+    task.rs     oneshot, recurring, and scheduled creation
+    update.rs   task completion updates
+    maintenance.rs  clear, prune, config/moods editing
+    diagnostics.rs  :embed and :color utilities
+
+  config/       serde configuration sections
+    mod.rs      Config and normalization
+    types.rs    mood endpoints, palettes, tracker kinds
+    moods.rs    mood/color settings and model initialization
+    tasks.rs    task defaults and badge colors
+    trackers.rs tracker settings
+    views.rs    grid, preview, today, editor, and task-view options
+
+  db/           SQLite pool, schema, models, and feature queries
+    mod.rs      database bootstrap plus public query façade
+    models.rs   persistence/query result types
+    tasks.rs    task CRUD, identity, completion, and task reads
+    entries.rs  mood/tracker entries and mutations
+    views.rs    today/task-view query composition
+    embeddings.rs embedding cache and feeling backfills
+
   date/         all chrono/humantime usage lives here
-    mod.rs      Epoch type + now/today/week/month/year boundary helpers
-    parse.rs    datetime string parsing via chrono-english → epoch (+ parse_date)
-    parse_duration.rs  duration string parsing via humantime → seconds
-    format.rs   duration/time/date/datetime/DM-Y formatting
-  clap.rs       manual CLI parser → Command enum + CliOpts flag counts (no clap crate)
-  handlers.rs   command dispatch + all write paths (entry, task flows, prune, clear, :color)
-  prompts.rs    all interactive cliclack prompts (priority, target count, interval,
-                end time, optional, name, start time, clear confirm)
-  sql.rs        all SQL queries and data-access types (the only module
-                that contains sqlx query calls)
-  display.rs    shared output helpers (task_rows/print_rows confirmations,
-                format_today_simple, format_tasks_simple)
-  task.rs       shared task logic (completion deltas, interval floors, done-ness,
-                the unified Enter-action used by both TUIs)
-  task_tree.rs  parent/child task tree: recursive-CTE load + assembly + render
-                (read-only; nothing writes `parent` yet)
-  views.rs      non-TTY view output (tasks, today, trackers) + fetch queries
-  action.rs     unified Action enum emitted by event loop and consumed by TUI apps
-  binds.rs      crokey key combinations -> Action bindings (default_binds)
-  message.rs    RenderEvent (Action, Resize) and ControlEvent (Pause, Resume) channels
-  event_loop.rs async crossterm input stream parser & action emitter
-  embed.rs      nomic-embed-text-v1.5 ONNX embeddings + saliency adaptor via ort (ONNX Runtime)
-  color.rs      Oklab mood-color projection from embeddings (NNLS + saliency)
-  color_conversion.rs  rgb ↔ Oklab conversion
-  editor.rs     `..` body editor (VISUAL/EDITOR)
-  tui.rs        thin matchmaker-style fullscreen terminal wrapper
-  render/       ratatui rendering
-    mod.rs      Render trait & shared TUI lifecycle runner
-    system.rs   TUI external editor suspension helper (pause/resume event loop)
-    tasks.rs    task-list TUI (`@[:o|:O]`, `@done[:o|:O]`) via TasksApp
-    today.rs    today TUI (Today/Tomorrow/Week horizons) via TodayApp
-    preview.rs  task & today entry preview rendering helpers
-    utils.rs    priority colors, mode labels, string truncation
-```text
+    mod.rs      Epoch type and time boundaries
+    parse.rs    datetime parsing
+    parse_duration.rs  duration parsing
+    format.rs   date/time/duration formatting
+
+  today.rs      TodayItem model, today query assembly, sorting, plain output
+  tracker.rs    tracker-grid calculations and non-TUI tracker output
+  task_view.rs  non-TUI task-list output and task-view ordering
+  output/       non-TUI formatting for entries, tasks, and today rows
+  task/         shared task behavior
+    mod.rs      façade and colocated behavior tests
+    completion.rs  completion deltas and done state
+    scheduling.rs  interval/window and task sort timestamps
+    actions.rs     Enter-action state machine and persistence wrappers
+  task_tree.rs  parent/child task tree loading and rendering
+
+  embedding.rs  nomic-embed-text-v1.5 ONNX embeddings and saliency helpers
+  percentage.rs bounded Percentage value type
+  color/        Oklab mood-color projection
+    mod.rs      ColorAxes pipeline
+    nnls.rs     non-negative least squares
+    blend.rs    Oklab blending helpers
+    conversion.rs  RGB ↔ Oklab conversion
+
+  ui/           interactive terminal UI (kept separate from feature queries)
+    mod.rs      Render lifecycle and shared TUI façade
+    action.rs   Action enum
+    bindings.rs key bindings
+    events.rs   ui/control channels
+    ui/event_loop.rs crossterm input parser
+    terminal.rs fullscreen terminal wrapper
+    suspend.rs  external-editor suspension
+    common.rs   shared TUI widgets/helpers
+    modal.rs    shared modal payloads
+    preview.rs  task and today previews; task context remains a bool for now
+    tasks.rs    TasksApp state/actions/drawing
+    today.rs    TodayApp state/actions/drawing
+```
 
 ### main.rs flow
 
 ```text
 bog::init_bogger
-cmd     = parse_args()                                          // feeling::clap
+cmd     = parse_args()                                          // feeling::cli
 init_logger([q, 1+v], log_path())                               // q/v from cli.opts
 config  = load_type_or_default(default_config_path(), toml)     // cba
          config.init()                                          // tracker-name validation, palette fallback
 pool    = db::init_database(database_path())
 out     = io::stdout()
 tui     = atty::is(Stdout)                                      // ← the single TUI decision point
-handle_command(cmd, &pool, &config, &cli.opts, &mut out, tui)
+execute_command(cmd, &pool, &config, &cli.opts, &mut out, tui)
 ```text
 
-`handle_command` takes an explicit `tui: bool` — the TUI never auto-launches from
+`execute_command` takes an explicit `tui: bool` — the TUI never auto-launches from
 inside the library, so integration tests always pass `false` and exercise the
 plain view output. The leading `-q`/`-v` flags (counted into `CliOpts { qv:
 [u8; 2] }`, `quiet()`/`verbose()`/`verbose_level()`) drive both the logger and
@@ -229,7 +262,7 @@ All date and duration string parsing is encapsulated in the `date/` sub-module s
 
 ---
 
-## 5. CLI parsing (clap.rs)
+## 5. CLI parsing (cli/)
 
 Manual parser, no clap crate. `parse_args()` (from `env::args`) and
 `parse_from(Vec<String>)` (unit-testable). A leading flag run (`-q`/`-v`,
@@ -257,7 +290,7 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `@<date>` | `Today { date: Some, show: All, horizon: Today }` — anchored today view |
 | `- id [count]` | `Update { OneShot(id), count }` — `id` is the user-facing short id; `count` may be negative |
 | `- words… [count]` | `Update { Query(words), count }` — the unique oneshot task whose name contains the words in order (subsequence match) |
-| `-` alone | `TasksEdit` — stub: `handle_tasks_edit` bails "not yet implemented" |
+| `-` alone | `TasksEdit` — stub: `edit_tasks` bails "not yet implemented" |
 | `:` / `:week\|month\|year` / `:` + ids | `Tracker { period, items }` — dot-sequence tracker views (`:g` bails "not yet implemented") |
 | `:embed` | `Embed` — stdin lines → one 768-dim vector per line |
 | `:score "start" "end"` | `Score` — stub (`todo!()`) |
@@ -272,12 +305,12 @@ recurring task names is allowed (the `@` prefix disambiguates).
 
 ---
 
-## 6. Handlers (handlers.rs)
+## 6. Handlers (commands/)
 
-`handle_command<W: Write>(cmd, pool, config, opts: &CliOpts, out, tui)` matches
+`execute_command<W: Write>(cmd, pool, config, opts: &CliOpts, out, tui)` matches
 the `Command` enum. `opts` gates confirmations and verbose output throughout.
 
-- **Entry** → `handle_entry`: runs in a transaction; inserts `feeling` (+ optional
+- **Entry** → `record_entry`: runs in a transaction; inserts `feeling` (+ optional
   `tracker` rows with `feeling_id`). Each `-type value` is parsed against the
   tracker's declared kind (text/number/float) with a clear error on mismatch;
   min/max apply to number/float, unknown tracker types are rejected. Insertion
@@ -290,7 +323,7 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   — so later color passes skip the saliency ONNX run for fresh rows. A wholly
   empty entry is aborted ("Nothing to log"). Confirmation output
   (`display::display_entry`) is quiet-gated.
-- **Task** → `handle_task`:
+- **Task** → `create_task_command`:
   - oneshot: `! <name> [@<time>] [.. [body]]` creates directly — the name
     is validated (non-empty, no tabs, unique among oneshot tasks) and
     `@<time>` was already resolved to an epoch at CLI parse time with
@@ -313,25 +346,25 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   - The confirmation (`Created task #N: name`) is printed by the call sites:
     header only by default, `-v` adds the field rows (`task_rows`), `-q`
     silences it entirely.
-- **Update** → `handle_update`: applies the delta via `task::apply_completion_delta`
+- **Update** → `update_task_command`: applies the delta via `task::apply_completion_delta`
   (interval-aware for recurring) and prints the new total (quiet-gated). The
   `- <id>` form looks up the task by user-facing short id (see §3); completed
   tasks have no short id and are not addressable here (use the word query form
   instead).
 - **Today** → resolves `@<date>` via `parse_date` with `DATE_DIALECT`
   (day-aligned), then TUI (`TodayApp::new(pool, config, day_epoch, show,
-  horizon).run()`) when `tui`, else `views::handle_today(...)`.
+  horizon).run()`) when `tui`, else `today::write_today_view(...)`.
 - **View** → TUI (`TasksApp::new(pool, mode, config, show,
   persist_pending_seconds).run()`) when `tui`, else
-  `views::handle_view(pool, mode, config, show, out)`.
-- **Tracker** → `views::handle_tracker` (no TUI path yet).
+  `task_view::write_task_view(pool, mode, config, show, out)`.
+- **Tracker** → `tracker::write_tracker_grid` (no TUI path yet).
 - **Prune** → prunes expired/completed tasks and clears the **entire**
   `embedding_cache` (it is a cache — rows are lazily re-embedded).
 - **Clear** → `:clear [@date]` deletes that day's mood entries (and linked
   tracker entries), with an interactive confirm showing the computed date.
 - **Color** → `:color <mood>` runs the whole pipeline once and prints every
   intermediate value; `-v` additionally dumps `config.moods.axes` up front.
-- **Embed** → `handle_embed`: stdin lines → one embedding vector per line.
+- **Embed** → `print_embeddings`: stdin lines → one embedding vector per line.
 - **Score** → stub (`todo!()`).
 
 `main.rs` supplies `out = io::stdout()`; every view/today/tracker function takes
@@ -340,7 +373,7 @@ plain text to `out`.
 
 ---
 
-## 7. Views (views.rs) — non-TTY output
+## 7. Today, task-view, tracker, and output modules
 
 All non-TTY output is newline-separated rows, tab-separated columns.
 
@@ -362,7 +395,7 @@ condition scopes recurring completions to the current interval
 (`tc.time >= start_time + floor((now - start_time)/interval) * interval`),
 oneshot tasks keep all-time sums, and `GROUP BY t.id` is deterministic (all
 columns functionally depend on the PK). The same fragment is inlined in
-views.rs, render/tasks.rs and render/today.rs (no shared const — queries are
+db/views.rs, ui/tasks.rs and ui/today.rs (no shared const — queries are
 intentionally duplicated). Single-row fetches use a correlated `(SELECT
 SUM(count) ...)` subquery with the same boundary condition.
 
@@ -424,7 +457,7 @@ parseable tab-separated rows don't carry no-op escape sequences.
 
 Dot-sequence history grids, colored via config. Grid ranges follow
 `config.grid` (rolling vs calendar week/month/year variants); year grids use
-the weekday-rows heatmap. `handle_tracker` prints one section per item:
+the weekday-rows heatmap. `write_tracker_grid` prints one section per item:
 
 - **Section titles** are verbose-only: bare `Moods` / `idea` / `@name` at
   `-v`, `({period:?})` suffix at `-vv`+, and nothing at default verbosity —
@@ -471,9 +504,9 @@ configured — so all binning/indexing code can assume index 0 and index
 
 ---
 
-## 9. TUI (tui.rs + render/ + event loop)
+## 9. TUI (ui/ + event loop)
 
-**tui.rs** is a thin matchmaker-style wrapper: always fullscreen, `IoStream`
+**ui/terminal.rs** is a thin matchmaker-style wrapper: always fullscreen, `IoStream`
 abstraction, `enter`/`exit`, `resize`, `Drop` cleanup. `enter_execute`/
 `return_execute` suspend and restore terminal state when launching external
 subprocesses (such as `$VISUAL`/`$EDITOR`).
@@ -487,17 +520,17 @@ from frame rendering:
   (`Up`, `Down`, `Left`, `Right`, `Accept`, `Edit`, `Delete(bool)`, `CycleMode`,
   `ToggleSort`, `CycleShow`, `Refresh`, `Quit`, `Ack`, `Input(char)`). Both
   `TasksApp` and `TodayApp` match on every variant and ignore those that don't
-  apply to their context (`CycleShow` cycles the ShowVariant in both apps).
-- **Key bindings (`binds.rs`)**: `default_binds()` uses `crokey::KeyCombination`
+  apply to their context (`CycleShow` cycles the ViewVariant in both apps).
+- **Key bindings (`ui/bindings.rs`)**: `default_binds()` uses `crokey::KeyCombination`
   to map key combinations to `Action`s (`q`/`esc` quit, `j`/`k`/`h`/`l` nav,
   `tab` cycle mode/horizon, `ctrl-s` sort, `ctrl-d` show-variant cycle, `enter`
   accept, `delete`/`backspace` delete, `ctrl-e` edit, `ctrl-r` refresh).
   Unbound keys fall through to `Action::Input(char)` for modal text fields.
-- **Event loop (`event_loop.rs`)**: runs in a dedicated tokio task reading
+- **Event loop (`ui/event_loop.rs`)**: runs in a dedicated tokio task reading
   crossterm's `EventStream`. Key presses map to `Action`s and emit `RenderEvent`s
   (`Action` or `Resize`) over an unbounded `mpsc` channel. Redraws only happen when an
   event arrives (no tick loop).
-- **Process suspension & control events (`message.rs`, `render/system.rs`)**:
+- **Process suspension & control events (`ui/events.rs`, `ui/suspend.rs`)**:
   When an external editor is launched (`Ctrl+e`), `edit_with_editor` sends
   `ControlEvent::Pause` to the event loop and awaits `Action::Ack`. The event
   loop drops its `EventStream` so keystrokes are not stolen from the editor.
@@ -505,7 +538,7 @@ from frame rendering:
   restores terminal state, sends `ControlEvent::Resume`, awaits `Action::Ack`,
   and resumes input reading.
 
-### `Render` trait & app lifecycle (`render/mod.rs`)
+### `Render` trait & app lifecycle (`ui/mod.rs`)
 
 `pub trait Render` provides the shared TUI runner loop for both `TasksApp` and `TodayApp`:
 `render(&self, f: &mut Frame)` draws state; `handle_action(...)` handles state
@@ -522,7 +555,7 @@ Both TUIs route Enter through the same pure decision fn
 | --- | --- | --- |
 | scheduled | no entry / done / failed | toggles directly, never a modal: `none → 1 (done) → 0 (failed) → none (clear, before the window end) / 1 (after)` |
 | once-only / `target_count ≤ 1` | not done / done | toggles: complete (+1) ↔ reset immediately (no modal) — except the tasks TUI's @done view, where the reset asks first |
-| `target_count > 1` | not complete | `CompleteModal` — numeric completion delta prompt |
+| `target_count > 1` | not complete | `CompletePrompt` — numeric completion delta prompt |
 | `target_count > 1` | complete | "Reset progress?" confirm modal, **default Yes** (recurring tasks reset only the current interval — earlier history survives) |
 
 ### Item Editing (`Action::Edit`)
@@ -535,10 +568,10 @@ the tracker kind on Enter).
 
 ### TUI Applications
 
-- **`TasksApp` (`render/tasks.rs`)** — task-list App (`@[:o|:O]`, `@done[:o|:O]`):
-  fields include `pool`, `tasks`, `selected`, `mode`, `show` (`ShowVariant`),
+- **`TasksApp` (`ui/tasks.rs`)** — task-list App (`@[:o|:O]`, `@done[:o|:O]`):
+  fields include `pool`, `tasks`, `selected`, `mode`, `show` (`ViewVariant`),
   `persist_pending_seconds`, `config`, `sort_by_due`, `modal`. Modals:
-  `CompleteModal`, `DeleteConfirm` (default No; recurring tasks add an indented
+  `CompletePrompt`, `DeleteConfirm` (default No; recurring tasks add an indented
   italic "This task will stop recurring!" line), `ResetConfirm` (default Yes),
   `AvailabilityConfirm` (D10 — Enter on a recurring task whose availability
   window has passed; default Yes). `@done` sorts by `views::task_done_time`
@@ -548,9 +581,9 @@ the tracker kind on Enter).
   the same key. Expired `@done:O`
   history rows log `task {id} is expired` and ignore actions.
   Table renders `short_id / pri / name` with badge and `m/n` sub-line;
-  completed tasks show no id. Preview pane (`render/preview.rs`) shows detailed
+  completed tasks show no id. Preview pane (`ui/preview.rs`) shows detailed
   task fields.
-- **`TodayApp` (`render/today.rs`)** — Today App: fields include `pool`,
+- **`TodayApp` (`ui/today.rs`)** — Today App: fields include `pool`,
   `config`, `entries`, `selected`, `horizon`, `day_epoch`, `day_label`,
   `sort_by_priority`, `modal`, `selected_task`, `color_cache`. Cycles horizons
   (Today → Tomorrow → Week) via `Tab`; the title shows the anchored day
@@ -560,7 +593,7 @@ the tracker kind on Enter).
 
 ---
 
-## 10. Embeddings (embed.rs)
+## 10. Embeddings (embedding.rs)
 
 - Model: **nomic-embed-text-v1.5** int8 QDQ ONNX, vendored at
   `assets/model/embed.onnx` (~131 MB, tracked with git-lfs) together with the
@@ -641,10 +674,10 @@ run: per-mood `HashMap<String, Oklab>` cache so repeated moods run the
 pipeline once; prefers the stored embedding BLOB (re-embeds + backfills
 `feeling.embedding` for legacy rows); passes `feeling.score` as the saliency
 override and backfills the score when absent. Journal-only rows (empty mood)
-return `None` and are never scored. `handle_color` (`:color <mood>`) runs the
+return `None` and are never scored. `diagnose_color` (`:color <mood>`) runs the
 pipeline once and prints every intermediate value plus a terminal swatch.
 
-Color↔Oklab boundary conversions live in `color_conversion.rs`:
+Color↔Oklab boundary conversions live in `color/conversion.rs`:
 `oklab_to_crossterm` converts via the oklab crate's `to_srgb() -> Rgb<u8>`
 to a crossterm `Color::Rgb`; `rgb_to_oklab` deserializes any crossterm
 `Color` (named, `Rgb`, or `AnsiValue` mapped to approximate sRGB) into Oklab.
@@ -671,14 +704,14 @@ real editor.
   `grid_title`, `day_label_for`, date parsing/formatting, config serde
   round-trips (including `[moods]` flatten + `deny_unknown_fields`).
 - **Integration tests** (`tests/integration.rs`) exercise the **full
-  CLI parse → handler → DB path**: they call `parse_from` + `handle_command`
+  CLI parse → handler → DB path**: they call `parse_from` + `execute_command`
   with a `Vec<u8>` writer and `&CliOpts::default()` (≈90 call sites) and assert
   on captured stdout content (tabular rows, markers, badges), not just exit
-  success. Configs register trackers (`sleep`, `water`) so `handle_entry`
+  success. Configs register trackers (`sleep`, `water`) so `record_entry`
   accepts `-sleep 8`-style args.
 - Recurring tasks are seeded via raw SQL INSERTs because the `! @` cliclack
   prompts bail on non-interactive stdin; completion updates still go through
-  `handle_command`.
+  `execute_command`.
 - Embedding-dependent paths (today view colors, `feeling.score` backfill) run
   for real: the model is bundled into the test binary, so there is no download
   gate and no CI download.
@@ -697,7 +730,7 @@ real editor.
 - **`:score`** — stub (`todo!()`).
 - **`:g` grid view** — parser bails "Grid view (:g) is not yet implemented".
 - **CLI flags for view variants** — intentionally absent: the `@[:o|:O]` /
-  `@done[:o|:O]` suffixes (`ShowVariant`) and `ctrl+d` in the TUIs cover the
+  `@done[:o|:O]` suffixes (`ViewVariant`) and `ctrl+d` in the TUIs cover the
   former `include_completed` / `include_scheduled` toggles; the
   `INCLUDE_COMPLETED` / `INCLUDE_SCHEDULED` env vars (previously applied in
   main.rs via `apply_envs`) were removed with them. No flags will be added.

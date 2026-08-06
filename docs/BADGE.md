@@ -7,7 +7,7 @@ derives its badge from the same rules below.
 ## Source of truth
 
 - `src/badge.rs` — `task_badge(task, config, done_view)`. `done_view` is true when rendering a done-list (@done tasks view / CLI @done list): the done-state glyph stays `◷` / `↻` for scheduled / recurring rows instead of switching to `✓`. It has no effect on oneshot | threshold rows (always `✓` when done).
-- `src/views.rs` — all badge/badge-label stuff into `badge.rs` i.e. `completion_badge`, `completion_badge_text`.
+- `src/today.rs` — all badge/badge-label stuff into `badge.rs` i.e. `completion_badge`, `completion_badge_text`.
   `completion_badge` and `completion_badge_text` usage is unchanged for tracker grids
   (per-interval dot rows in the `:trackers`/mood grids) and in make_preview.
 
