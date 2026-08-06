@@ -1,3 +1,28 @@
+## [0.2.0] - 2026-08-06
+
+### 🚀 Features
+
+- Nomic embedder, ort runtime
+- Reorganize views
+- Reorganize config
+
+### 💼 Other
+
+- CliOpts flag counts threaded into handlers
+- ColorAxesSettings flattened into MoodConfig; :color verbose axes dump
+- Scheduled task syntax — ':' description, '@' duration markers
+- Lock invalid-timestamp behavior with regression tests
+- Task creation confirmation polish
+- Cliclack intro for task flows; prefill fields logged
+- 'feeling @<date>' — today view anchored to arbitrary days
+- Grid titles + verbose gating; text-tracker entry timestamps
+- Shared Enter-action across both TUIs
+
+### 📚 Documentation
+
+- User-facing config documentation
+- Drop default values from config.rs doc comments
+
 ## [Unreleased]
 
 ## [0.1.0] - 2026-08-02
