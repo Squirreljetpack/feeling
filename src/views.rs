@@ -114,6 +114,12 @@ pub struct TodayEntry {
     /// colors for tasks, or a neutral dark gray for journal-only and
     /// text-tracker entries.
     pub color: RatColor,
+    /// Recurring-task entries only: the availability window this row
+    /// represents, with the window-scoped task row (completions and
+    /// `last_time` limited to the window's interval). `None` for every
+    /// other entry kind. Drives the D10 confirm (`now >= window_end` on a
+    /// not-done window) and the selection preview.
+    pub recurring_window: Option<crate::sql::RecurringWindow>,
 }
 
 /// Read a custom-tracker score as f64. The `score` column is stored as
@@ -584,8 +590,8 @@ async fn display_custom_tracker<W: Write>(
                         // Inverted range (min > max): lower score → success
                         ((min - score) / (min - max)).clamp(0.0, 1.0)
                     };
-                    let idx = ((t * (colors.len() as f64 - 1.0)).round() as usize)
-                        .min(colors.len() - 1);
+                    let idx =
+                        ((t * (colors.len() as f64 - 1.0)).round() as usize).min(colors.len() - 1);
                     colors[idx]
                 }
                 _ => {
@@ -716,11 +722,11 @@ async fn display_recurring_tracker<W: Write>(
 /// Today-view time cell for a timestamp: "HH:MM" when it falls on the
 /// anchored day, "Tu HH:MM" (two-letter weekday prefix) when it falls
 /// within a week of it — entries outside the anchored day stay
-/// distinguishable in the +tomorrow/+week horizons — and the short
-/// datetime form ("YYYY-MM-DD HH:MM") outside that week entirely.
+/// distinguishable in the +tomorrow/+week horizons — and the compact
+/// day-time form ("DD HH:MM") outside that week entirely.
 fn today_time_label(time: i64, day_start_epoch: i64) -> String {
     if time < day_start_epoch || time > day_start_epoch + 7 * 86_400 {
-        crate::date::format_datetime_short(time)
+        crate::date::format_day_time(time)
     } else if crate::date::day_start(time) == day_start_epoch {
         crate::date::format_time(time)
     } else {
@@ -737,13 +743,14 @@ fn today_time_label(time: i64, day_start_epoch: i64) -> String {
 /// completion entry; an entry-less auto-completed scheduled task falls back
 /// to its window end — `start + duration`). Not-done: scheduled →
 /// `start_time`; recurring → the current interval's availability-window end
-/// while it is still open, else the next interval's start (no explicit
-/// duration = the untimed group; a closed window defers to the next
-/// interval); oneshot → the due time (`end_time`, else
+/// while it is still open, else the next interval's start (a closed window
+/// defers to the next opportunity); oneshot → the due time (`end_time`, else
 /// untimed). Untimed rows return `i64::MAX` and sort after all timed
 /// entries (`today_sort` groups by empty time cell). Shared with the tasks
 /// app's pending-view sort (`render/tasks.rs`); the done view sorts by
-/// [`task_done_time`] instead.
+/// [`task_done_time`] instead. The today view's recurring rows are
+/// per-window (see [`recurring_window_time`]) and don't use this recurring
+/// branch.
 pub(crate) fn task_entry_time(task: &TaskRow, now: i64) -> i64 {
     if task.is_done() {
         return task.last_time.unwrap_or_else(|| {
@@ -793,14 +800,10 @@ pub(crate) fn task_done_time(task: &TaskRow) -> i64 {
 /// The today-view time cell for a task row: "HH:MM" (weekday prefix when
 /// outside the anchored day) for timed rows — completion time when done,
 /// otherwise the task's deadline/availability end — and empty for the
-/// untimed group (undated oneshots, recurring tasks without an explicit
-/// duration window).
+/// untimed group (undated oneshots).
 fn task_time_label(task: &TaskRow, time: i64, day_start_epoch: i64) -> String {
     if task.is_done() {
         return today_time_label(time, day_start_epoch);
-    }
-    if task.is_recurring() && task.available_duration_secs.is_none() {
-        return String::new();
     }
     if !task.is_scheduled() && !task.is_recurring() && task.end_time.is_none() {
         // Undated oneshot.
@@ -809,20 +812,32 @@ fn task_time_label(task: &TaskRow, time: i64, day_start_epoch: i64) -> String {
     today_time_label(time, day_start_epoch)
 }
 
+/// Today-view time for a recurring availability window (one row per
+/// window): a completed window — or one that has passed (`now >=
+/// window_end`) — shows the last completion within its interval, else the
+/// window end; an open or future window shows the window start.
+fn recurring_window_time(w: &crate::sql::RecurringWindow, now: i64) -> i64 {
+    if w.task.is_done() || now >= w.window_end {
+        w.task.last_time.unwrap_or(w.window_end)
+    } else {
+        w.window_start
+    }
+}
+
 /// Entry time for a not-done recurring task: while the current interval's
 /// availability window is still open (`now < interval_start + dur`), the
 /// window end — otherwise the start of the *next* interval. The
-/// "otherwise" branch covers no explicit duration (the untimed group), a
-/// window that already closed, and a duration that would swallow the
-/// interval (`dur >= interval` — not enforced at ingestion).
+/// "otherwise" branch covers no explicit duration, a window that already
+/// closed, and a duration that would swallow the interval (`dur >=
+/// interval` — not enforced at ingestion). Used by the tasks app's pending
+/// view and CLI sorting only; the today view's recurring rows are
+/// per-window (see [`recurring_window_time`]).
 fn recurring_window_end(task: &TaskRow, now: i64) -> i64 {
     match (task.start_time, task.interval_secs) {
         (Some(st), Some(interval)) => {
             let interval_start = crate::task::current_interval_start(st, interval, now);
             match task.available_duration_secs {
-                Some(dur) if dur < interval && now < interval_start + dur => {
-                    interval_start + dur
-                }
+                Some(dur) if dur < interval && now < interval_start + dur => interval_start + dur,
                 _ => interval_start + interval,
             }
         }
@@ -833,8 +848,8 @@ fn recurring_window_end(task: &TaskRow, now: i64) -> i64 {
 }
 
 /// Today-view sort: timed entries first (by timestamp ascending); then the
-/// no-time group (all-day recurring tasks, undated oneshots) by priority
-/// descending, then by untruncated availability end ascending.
+/// no-time group (undated oneshots) by priority descending, then by
+/// untruncated availability end ascending.
 pub(crate) fn today_sort(a: &TodayEntry, b: &TodayEntry) -> std::cmp::Ordering {
     let (a_blank, b_blank) = (a.time_label.is_empty(), b.time_label.is_empty());
     match (a_blank, b_blank) {
@@ -919,6 +934,7 @@ pub async fn fetch_today_entries(
                 priority: 0,
                 badge,
                 color,
+                recurring_window: None,
             });
         }
 
@@ -966,6 +982,7 @@ pub async fn fetch_today_entries(
                 priority: 0,
                 badge,
                 color,
+                recurring_window: None,
             });
         }
     } // show != ShowVariant::B
@@ -1010,6 +1027,7 @@ pub async fn fetch_today_entries(
             // in badge::task_badge — see docs/BADGE.md.
             badge: Some(badge),
             color: RatColor::from_crossterm(color),
+            recurring_window: None,
         });
     }
 
@@ -1041,36 +1059,48 @@ pub async fn fetch_today_entries(
             priority: task.priority,
             badge: Some(badge),
             color: RatColor::from_crossterm(color),
+            recurring_window: None,
         });
     }
 
-    // 4. Recurring tasks active at any point during the period (all
-    // variants; interval-aware availability-window overlap — VIEWS.md).
-    let recurring_tasks =
-        crate::sql::fetch_recurring_tasks_for_period(pool, day_start_epoch, horizon_end).await?;
+    // 4. Recurring tasks: one entry per availability window intersecting
+    // the period (all variants; interval-aware availability-window overlap
+    // — VIEWS.md). Each window's completions / last completion are scoped
+    // to its own interval, so time, done state, and badge are per window.
+    // `B` keeps only the next (earliest) window per task.
+    let recurring_windows =
+        crate::sql::fetch_recurring_windows_for_period(pool, day_start_epoch, horizon_end).await?;
 
-    for task in &recurring_tasks {
-        // A filters completed tasks out.
-        if show == ShowVariant::A && task.is_done() {
+    let mut seen_recurring = std::collections::HashSet::new();
+    for w in &recurring_windows {
+        // B: only the next recurring window per task.
+        if show == ShowVariant::B && !seen_recurring.insert(w.task.id) {
             continue;
         }
-        // Time: done → completion time (current-interval scoped); else the
-        // availability-window rule: window end while still open, otherwise
-        // the next interval's start.
-        let time = task_entry_time(task, now_ts);
-        let time_label = task_time_label(task, time, day_start_epoch);
-        let (badge, color) = crate::badge::task_badge(task, config, false);
+        // A filters completed windows out (the window's own completion
+        // state, not the current interval's).
+        if show == ShowVariant::A && w.task.is_done() {
+            continue;
+        }
+        // Time (VIEWS.md): a completed or passed (`now >= window_end`)
+        // window shows the last completion within its interval, else the
+        // window end; an open or future window shows the window start.
+        let time = recurring_window_time(w, now_ts);
+        let time_label = task_time_label(&w.task, time, day_start_epoch);
+        let (badge, color) =
+            crate::badge::recurring_window_badge(&w.task, w.window_end, config, now_ts);
         entries.push(TodayEntry {
             id: None,
             time,
             time_label,
             kind: EntryKind::Recurring,
-            label: task.name.clone(),
-            body: task.body.clone(),
-            task_id: Some(task.id),
-            priority: task.priority,
+            label: w.task.name.clone(),
+            body: w.task.body.clone(),
+            task_id: Some(w.task.id),
+            priority: w.task.priority,
             badge: Some(badge),
             color: RatColor::from_crossterm(color),
+            recurring_window: Some(w.clone()),
         });
     }
 
@@ -1079,12 +1109,22 @@ pub async fn fetch_today_entries(
     // rows (dedup by task_id — the completed-today row wins, time = last
     // completion timestamp) so a task completed today shows its completion
     // time even when it is no longer active (or not in the regular lists
-    // at all). `A` filters completed tasks out, so the fetch is skipped
-    // there.
+    // at all). Recurring tasks with a per-window entry (step 4) are
+    // skipped: the window rows already carry the window-scoped completion
+    // state and rule-based times. `A` filters completed tasks out, so the
+    // fetch is skipped there.
     if show != ShowVariant::A {
         let completed_today =
             crate::sql::fetch_tasks_completed_on(pool, day_start_epoch, day_end_epoch).await?;
         for task in &completed_today {
+            // Recurring windows already have entries (step 4) carrying the
+            // window-scoped completion state — merging here would override
+            // the rule-based window time with a day-scoped one. Tasks with
+            // no window row (expired chain with a late completion) still
+            // merge in below.
+            if task.is_recurring() && entries.iter().any(|e| e.task_id == Some(task.id)) {
+                continue;
+            }
             let last_time = task.last_time.unwrap_or(now_ts);
             let (badge, color) = crate::badge::task_badge(task, config, false);
             let entry = TodayEntry {
@@ -1106,6 +1146,7 @@ pub async fn fetch_today_entries(
                 priority: task.priority,
                 badge: Some(badge),
                 color: RatColor::from_crossterm(color),
+                recurring_window: None,
             };
             match entries.iter_mut().find(|e| e.task_id == Some(task.id)) {
                 Some(existing) => *existing = entry,
@@ -1217,13 +1258,14 @@ mod tests {
             crate::date::parse_datetime("2024-03-16 09:30", crate::date::DateDialect::Uk).unwrap();
         assert_eq!(today_time_label(same, day), "09:30");
         assert_eq!(today_time_label(next, day), "Sa 09:30");
-        // Outside the week window → short datetime form.
+        // Outside the week window → compact day-time form ("DD HH:MM").
         let far =
             crate::date::parse_datetime("2024-03-25 09:30", crate::date::DateDialect::Uk).unwrap();
         let early =
             crate::date::parse_datetime("2024-03-01 09:30", crate::date::DateDialect::Uk).unwrap();
-        assert_eq!(today_time_label(far, day), "2024-03-25 09:30");
-        assert_eq!(today_time_label(early, day), "2024-03-01 09:30");
+        assert_eq!(today_time_label(far, day), "25 09:30");
+        assert_eq!(today_time_label(early, day), "01 09:30");
+        crate::date::parse_datetime("2024-03-25 09:30", crate::date::DateDialect::Uk).unwrap();
         // The weekday form covers days 1-6 after the anchor; the 7th day
         // (>= day_start + week) is already the short form.
         let within =
@@ -1296,24 +1338,39 @@ mod tests {
         // Same recurring window, still open (now 08:30, before the 09:00
         // end): the window end of the current interval.
         let open_now = at("2024-03-16 08:30");
-        let open = task_row(Some(anchor), Some(hour_secs), Some(day_secs), None, None, None);
+        let open = task_row(
+            Some(anchor),
+            Some(hour_secs),
+            Some(day_secs),
+            None,
+            None,
+            None,
+        );
         assert_eq!(
             task_entry_time(&open, open_now),
             at("2024-03-16 09:00"),
             "window still open → window end"
         );
-        // Recurring without one: implicit end = next interval start, empty
-        // time cell (the untimed group).
+        // Recurring without an explicit duration: the whole interval is the
+        // window, so the closed window defers to the next interval's start
+        // (timed — every recurring window has a time cell now).
         check(
             &task_row(Some(anchor), None, Some(day_secs), None, None, None),
             at("2024-03-17 08:00"),
-            "",
+            "Su 08:00",
         );
         // Recurring whose duration would swallow the whole interval
         // (dur == interval — not enforced at ingestion): deferred to the
         // next interval's start, like the untimed group.
         check(
-            &task_row(Some(anchor), Some(day_secs), Some(day_secs), None, None, None),
+            &task_row(
+                Some(anchor),
+                Some(day_secs),
+                Some(day_secs),
+                None,
+                None,
+                None,
+            ),
             at("2024-03-17 08:00"),
             "Su 08:00",
         );
@@ -1494,6 +1551,7 @@ mod tests {
             priority,
             badge: None,
             color: RatColor::DarkGray,
+            recurring_window: None,
         };
         let mut entries = [
             entry(200, "20:00", 1),

@@ -1,6 +1,6 @@
 [package]
 name = "feeling"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 repository = "https://github.com/Squirreljetpack/feeling"
 homepage = "https://github.com/Squirreljetpack/feeling"
@@ -50,7 +50,7 @@ thiserror = "2"
 atty = "0.2"
 
 # Embeddings: nomic-embed-text-v1.5 INT8 QDQ ONNX via ONNX Runtime (ort)
-ort = "2.0.0-rc.13"
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing"] }
 tokenizers = { version = "0.*", default-features = false, features = ["onig"] }
 ureq = { version = "3.*", default-features = false, features = ["rustls"] }
 
@@ -62,6 +62,19 @@ tempfile = "3"
 cliclack = "0.5.5"
 ratatui = "0.30.2"
 mimalloc = "0.1"
+
+[features]
+default = ["download-binaries"]
+download-binaries = ["ort/download-binaries", "ort/copy-dylibs", "ort/tls-native", "ort/api-27"]
+load-dynamic = ["ort/load-dynamic"]
+
+# Target override: Only build targets supported by static ort-sys prebuilt binaries
+[package.metadata.dist]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+]
 
 [build-dependencies]
 toml = "1.1"

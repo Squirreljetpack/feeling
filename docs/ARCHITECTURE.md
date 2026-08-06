@@ -211,7 +211,7 @@ All date and duration string parsing is encapsulated in the `date/` sub-module s
 
 - **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: DateDialect) -> Result<Epoch>` uses `chrono-english` (`chrono_english::parse_date_string`) with `chrono::Local::now()` as the anchor. The dialect (`DateDialect::Uk` day-first, default, or `DateDialect::Us` month-first) comes from the `[date] dialect` config setting; it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
 - **Duration parsing (`date/parse_duration.rs`)**: `parse_duration_secs(s: &str) -> Result<i64>` uses `humantime` (`humantime::parse_duration`) to parse human-readable durations (e.g. `"1 day"`, `"2 hours"`, `"1d"`, `"2h"`), returning total seconds as an `i64`.
-- **Formatting (`date/format.rs`)**: `format_time` (HH:MM), `format_date` (ISO), `format_date_time` (ISO + HH:MM), `format_datetime_short` (= date_time), `format_date_dmy` (DD-MM-YY, the today TUI's anchored-day label), `format_duration` (humantime).
+- **Formatting (`date/format.rs`)**: `format_time` (HH:MM), `format_date` (ISO), `format_datetime` (ISO + HH:MM), `format_datetime_short` (= datetime), `format_date_dmy` (DD-MM-YY, the today TUI's anchored-day label), `format_duration` (humantime).
 - **Boundary helpers (`date/mod.rs`)**: `now`, `today_start`/`today_end`, `day_start`/`day_end` (arbitrary day), `week_start(weekday)` (grids), `month_start`/`month_end`, `year_start`/`year_end`, rolling variants (`rolling_month_start`, `aligned_year_start`).
 
 ---
@@ -333,7 +333,7 @@ oneshot tasks show an empty id column (their short id was cleared on
 completion). `interval` is the recurring task's interval
 (`date::format_duration`); `next_available` is the next time a recurring task
 becomes available — the start of the next interval window
-(`date::format_date_time`). Oneshot tasks render a single space in both
+(`date::format_datetime`). Oneshot tasks render a single space in both
 the interval and next_available columns. The status column is the
 **completion badge** (§8): `"●"` alone when complete (no `DONE` word), `"● m/n"`
 in progress, `"◯"` at 0%.

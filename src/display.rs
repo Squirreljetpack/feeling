@@ -59,15 +59,15 @@ pub(crate) fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> 
         // Scheduled/recurring: the start is the window start / recurrence
         // anchor.
         if let Some(st) = task.start_time {
-            rows.push(("Start".to_string(), crate::date::format_date_time(st)));
+            rows.push(("Start".to_string(), crate::date::format_datetime(st)));
         }
     } else {
         // Oneshot: creation time always, due only when an end time was set.
         if let Some(st) = task.start_time {
-            rows.push(("Created".to_string(), crate::date::format_date_time(st)));
+            rows.push(("Created".to_string(), crate::date::format_datetime(st)));
         }
         if let Some(et) = task.end_time {
-            rows.push(("Due".to_string(), crate::date::format_date_time(et)));
+            rows.push(("Due".to_string(), crate::date::format_datetime(et)));
         }
     }
     if task.is_recurring() {
@@ -89,7 +89,7 @@ pub(crate) fn task_rows(task: &crate::sql::TaskObject) -> Vec<(String, String)> 
         rows.push((
             "End".to_string(),
             match task.end_time {
-                Some(e) => crate::date::format_date_time(e),
+                Some(e) => crate::date::format_datetime(e),
                 None => "Never".to_string(),
             },
         ));
@@ -156,7 +156,7 @@ pub fn format_today_simple(entries: &[TodayEntry]) -> String {
 ///
 /// 6 columns: `id \t interval \t next_available \t pri \t name \t status`.
 /// Recurring tasks fill `interval` (`format_duration`) and `next_available`
-/// (the next interval window start, `format_date_time`); oneshot tasks render
+/// (the next interval window start, `format_datetime`); oneshot tasks render
 /// a single space in both. `done_view` renders the done-list badge variant
 /// (`@done` — scheduled `✓`→`◷`, recurring `✓`→`↻`, see `badge::task_badge`).
 pub fn format_tasks_simple(tasks: &[TaskRow], config: &Config, done_view: bool) -> String {
@@ -202,7 +202,7 @@ pub fn format_tasks_simple(tasks: &[TaskRow], config: &Config, done_view: bool) 
                 } else {
                     start + ((now - start) / interval + 1) * interval
                 };
-                crate::date::format_date_time(next)
+                crate::date::format_datetime(next)
             }
             _ => " ".to_string(),
         };

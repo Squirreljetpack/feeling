@@ -670,7 +670,7 @@ fn render_app_preview(f: &mut Frame, app: &TasksApp, area: Rect) {
     }
 
     let task = &app.tasks[app.selected];
-    let lines = build_preview(task);
+    let lines = build_preview(task, false, &app.config.preview);
     let paragraph = Paragraph::new(Text::from(lines))
         .block(Block::bordered().title("Preview"))
         .style(Style::default())

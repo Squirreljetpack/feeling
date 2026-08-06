@@ -17,15 +17,19 @@ record in `todo_completions`. Shorthand used in the matrices below:
 | `ongoing(S)` | no entry, window still open |
 | `failed(S)` | has an entry with count 0 |
 | `auto_completed(S)` | no entry, window elapsed |
-| `expired(R)` | `end_time` set, `now > end_time`, not done |
+| `expired(R)` | `end_time` set, `now > end_time`, not done — tasks TUI only; TodayView window rows carry the unscoped last completion in `end_time` instead of the expiry, and the per-window badge has no expired state |
 | `has_entry(t)` | any completion row exists |
-| `availability_passed(t)` | window end `<= now` — recurring: current-interval-anchored; scheduled: absolute (`start + duration`) |
+| `availability_passed(t)` | window end `<= now` — recurring: current-interval-anchored; scheduled: absolute (`start + duration`); the TodayView D10 confirm uses the per-window check instead (see below) |
 
-Completion sums are scoped to the current interval for recurring tasks; the
-`@done` history view uses an unscoped sum instead. Availability-window checks
-must first exclude `expired(t)` tasks — an expired task has no current
-interval.
-
+Completion sums are scoped to the current interval for recurring tasks in the
+pending/done views; the TodayView per-window fetch scopes them per availability
+window instead. The `@done` history view uses an unscoped sum. `last_time`
+follows the completion sum's scoping, except: the tasks-TUI fetches carry the
+unscoped last completion for recurring tasks (last completion ever — used by
+the pending D9 sort, the done-view sort, and the preview `last:` field), and
+TodayView window rows carry the unscoped last completion in `end_time` (the
+expiry is not used there). Availability-window checks must first exclude
+`expired(t)` tasks — an expired task has no current interval.
 ## CLI syntax
 
 | Command | Effect |
@@ -85,16 +89,24 @@ Note: the two spellings use different defaults — `@due` starts at
 | Variant | Behavior |
 | --- | --- |
 | `All` | All tasks/trackers/mood sections for the day (oneshots, recurring, scheduled, completed today) |
-| `A` | Same but completed tasks filtered out; done rows dropped from regular task lists |
+| `A` | Same but completed tasks filtered out; done rows dropped from regular task lists — for recurring tasks this is per window (a window whose own interval reached target is dropped, not-done windows stay) |
 | `B` | Tasks only — no trackers, no mood sections; otherwise the same as `All` (completed tasks and completion-today rows included) |
 
 Time cell: done rows show the completion time (an entry-less auto-completed
 scheduled task falls back to `start + duration`); not-done scheduled rows
-show `start_time`; not-done recurring rows show the current interval's
-availability-window end while the window is still open
-(`now < interval_start + dur`), otherwise the start of the *next* interval
-(a closed window defers to the next opportunity — a no-duration recurring
-row is untimed and shows no cell).
+show `start_time`. Recurring tasks appear once per availability window that
+intersects the horizon — `All` shows every such window, `B` shows only the
+next (earliest) window per task, `A` shows only not-done windows. A recurring
+window's time cell is the last completion inside the window's interval once
+it is completed — and also once it has passed (`now >= window_end`), falling
+back to the window end when the interval has no completion — while an open
+or future not-done window shows the window start. The D10 confirm modal
+("availability window passed") applies per window: it triggers when
+`now >= window_end` on a not-done window. The preview pane for a recurring
+window shows `last:` from the window row's `end_time` — the unscoped last
+completion, not the expiry — and omits the `ends` field; in the tasks TUI the
+preview's `last:` reads `last_time` (unscoped for recurring tasks) and `ends`
+reads the real expiry.
 
 ## Who sets the variant
 
@@ -129,7 +141,9 @@ is_in_interval(t):
 ---
 
 done(t):
-    // Recurring: reached target in current interval
+    // Recurring: reached target in current interval (pending/done views);
+    // the TodayView checks per window instead — window-scoped completions
+    // vs target on the window's own row
     // Scheduled: has any completion entry (entry >= 1) or auto-completed
     // Oneshot/Threshold: completions >= target_count (target 0: any entry)
 
@@ -190,17 +204,36 @@ unscoped_completions(t):
 availability_passed(t):
     // Window end is anchored to the current interval for recurring tasks
     // (start_time is the chain origin and never advances) and absolute for
-    // scheduled tasks.
+    // scheduled tasks. The TodayView D10 check uses the per-window variant
+    // below instead: window_end(k) <= now on the window's own row.
     return t.available_duration_secs is not null
         and (if t.interval_secs is not null
              then current_interval_start(t, now) + t.available_duration_secs
              else t.start_time + t.available_duration_secs) <= now
 
----
+window_start(k):
+    // Start of the k-th availability window of a recurring task
+    return t.start_time + k * t.interval_secs
 
-Note: any function that checks whether `now` is inside a task's availability
-window (e.g. `window_elapsed`, `availability_passed`, `recurring_available` in
-sql.rs) must first filter out `expired(t)` tasks — an expired task has no
+window_end(k):
+    // End of the k-th availability window: available_duration_secs when
+    // set and shorter than the interval, else the whole interval;
+    // truncated by end_time when set.
+    dur = if t.available_duration_secs is not null
+              and t.available_duration_secs < t.interval_secs
+          then t.available_duration_secs else t.interval_secs
+    return min(window_start(k) + dur, t.end_time)
+
+recurring_window_time(k, now):
+    // TodayView time cell for the k-th window. Completions are scoped to
+    // the window's whole interval [window_start(k), window_start(k) + interval).
+    if done_window(k) or now >= window_end(k):
+        if interval_completions(k) >= 1:
+            return last_completion_in_interval(k)
+        else:
+            return window_end(k)
+    else:
+        return window_start(k)
 current interval, so the availability-window check does not apply to it.
 
 is_recurring(t):

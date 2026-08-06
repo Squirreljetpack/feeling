@@ -39,6 +39,15 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/help.txt");
     println!("cargo:rerun-if-env-changed=EMBED_MODEL");
 
+    #[cfg(target_os = "linux")]
+    println!("cargo:rustc-link-lib=dylib=stdc++");
+
+    #[cfg(target_os = "windows")]
+    {
+        println!("cargo:rustc-link-lib=ucrt");
+        println!("cargo:rustc-link-lib=oldnames");
+    }
+
     update_readme_usage();
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());

@@ -151,11 +151,11 @@ impl TaskRow {
     }
 
     pub fn start_datetime(&self) -> Option<String> {
-        self.start_time.map(crate::date::format_date_time)
+        self.start_time.map(crate::date::format_datetime)
     }
 
     pub fn end_datetime(&self) -> Option<String> {
-        self.end_time.map(crate::date::format_date_time)
+        self.end_time.map(crate::date::format_datetime)
     }
 }
 
@@ -978,21 +978,25 @@ pub async fn fetch_tasks_completed_on(
     Ok(tasks)
 }
 
-/// Whether any per-interval availability window of a recurring task
-/// overlaps `[period_start, period_end]`. Availability windows are
-/// `[start + k*interval, start + k*interval + dur)` (the whole interval
-/// when `dur` is None or >= interval — matching `recurring_available`) and
-/// move with each interval, so the check is built from `interval_start`
-/// math. A raw `start_time + duration >= period_start` comparison would
-/// degenerate to "every task ever started" for old start times — this is
-/// the interval-aware form. When `end_time` is set, windows after the
-/// expiry don't count.
-pub fn availability_windows_overlap(task: &TaskRow, period_start: i64, period_end: i64) -> bool {
+/// Availability windows of a recurring task that intersect
+/// `[period_start, period_end]`, as `(window_start, window_end)` pairs
+/// (ascending). Windows are `[start + k*interval, start + k*interval +
+/// dur)` — the whole interval when `dur` is None or >= interval — and
+/// move with each interval, so the scan is built from `interval_start`
+/// math: a raw `start_time + duration >= period_start` comparison would
+/// degenerate to "every task ever started" for old start times. When
+/// `end_time` is set, the last window is truncated at the expiry and
+/// windows after it don't count.
+fn recurring_windows_in_period(
+    task: &TaskRow,
+    period_start: i64,
+    period_end: i64,
+) -> Vec<(i64, i64)> {
     let (Some(st), Some(interval)) = (task.start_time, task.interval_secs) else {
-        return false;
+        return Vec::new();
     };
     if interval <= 0 {
-        return false;
+        return Vec::new();
     }
     // Window length: explicit duration when set and < interval, else the
     // whole interval.
@@ -1003,63 +1007,118 @@ pub fn availability_windows_overlap(task: &TaskRow, period_start: i64, period_en
     // First window index that could reach the period (integer division
     // truncates, so overshoot by one window; k >= 0).
     let k0 = ((period_start - st) / interval - 1).max(0);
+    let mut windows = Vec::new();
     let mut k = k0;
     loop {
         let w_start = st + k * interval;
         if w_start > period_end {
-            return false;
+            break;
         }
         let w_end = match task.end_time {
             Some(end) => (w_start + dur).min(end),
             None => w_start + dur,
         };
         if w_end > period_start {
-            return true;
+            windows.push((w_start, w_end));
         }
         k += 1;
     }
+    windows
 }
 
-/// Recurring tasks active at any point during `[period_start, period_end]`
-/// — the today-view recurring fetch (all variants). A task is active if
-/// any of its per-interval availability windows overlaps the period
-/// (interval-aware — see [`availability_windows_overlap`]); expired tasks
-/// (`end_time` passed before the period) are excluded, they have no
-/// current interval. Completions and `last_time` are scoped to the current
-/// interval, matching `fetch_tasks_completed_on` (D8).
-pub async fn fetch_recurring_tasks_for_period(
+/// One availability window of a recurring task, with the completion
+/// aggregates scoped to that window's interval.
+#[derive(Debug, Clone)]
+pub struct RecurringWindow {
+    /// The task row; `completions` and `last_time` are scoped to this
+    /// window's interval (`[window_start, window_start + interval)`);
+    /// `end_time` carries the task's unscoped last completion instead of
+    /// the expiry (the today view doesn't use the expiry).
+    pub task: TaskRow,
+    /// Window start (the interval start).
+    pub window_start: i64,
+    /// Window end: the availability-window end — `window_start +
+    /// available_duration_secs` (the whole interval when no duration is
+    /// set or it covers the interval), capped at the task's `end_time`.
+    pub window_end: i64,
+}
+
+/// A recurring task row plus its unscoped last completion — the today-view
+/// window fetch returns it so each window row can carry the unscoped last
+/// in `end_time`.
+#[derive(Debug, FromRow)]
+struct RecurringTaskRow {
+    #[sqlx(flatten)]
+    task: TaskRow,
+    unscoped_last: Option<i64>,
+}
+/// Per-availability-window rows for every recurring task with a window
+/// intersecting `[period_start, period_end]` — the today-view recurring
+/// fetch (all variants). One [`RecurringWindow`] per intersecting window;
+/// the view decides whether to keep them all (All) or only the next per
+/// task (B). Completions are scoped per window's interval (sum + most
+/// recent completion time), matching the interval-scoped completion
+/// queries elsewhere (D8). Expired tasks (`end_time` passed before the
+/// period) are excluded, they have no windows in it.
+pub async fn fetch_recurring_windows_for_period(
     pool: &SqlitePool,
     period_start: i64,
     period_end: i64,
-) -> Result<Vec<TaskRow>> {
-    let now = crate::date::now();
-    let tasks = sqlx::query_as::<_, TaskRow>(
-        r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+) -> Result<Vec<RecurringWindow>> {
+    let tasks = sqlx::query_as::<_, RecurringTaskRow>(
+        r#"SELECT t.*, NULL AS completions, NULL AS last_time,
+                  (SELECT MAX(tc.time) FROM todo_completions tc
+                       WHERE tc.todo_id = t.id) AS unscoped_last
            FROM todos t
-           LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-               AND tc.time >= CASE
-                   WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
-                       CASE WHEN ? <= t.start_time THEN t.start_time
-                            ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                   ELSE 0 END
            WHERE t.interval_secs IS NOT NULL
            AND (t.end_time IS NULL OR t.end_time > ?)
            AND t.start_time <= ?
-           GROUP BY t.id
            ORDER BY t.priority DESC, t.start_time ASC"#,
     )
-    .bind(now)
-    .bind(now)
     .bind(period_start)
     .bind(period_end)
     .fetch_all(pool)
     .await
     .context("Failed to fetch recurring tasks for period")?;
 
-    Ok(tasks
-        .into_iter()
-        .filter(|t| availability_windows_overlap(t, period_start, period_end))
-        .collect())
+    let mut windows = Vec::new();
+    for row in &tasks {
+        let task = &row.task;
+        let wins = recurring_windows_in_period(task, period_start, period_end);
+        if wins.is_empty() {
+            continue;
+        }
+        let interval = task.interval_secs.expect("filtered to recurring tasks");
+        let st = task.start_time.expect("filtered to tasks with a start");
+        // Completion events within the span of the intersecting windows
+        // (each window's interval, i.e. up to the last interval end).
+        let span_end = wins.last().expect("non-empty").0 + interval;
+        let completions = fetch_completions_between(pool, task.id, wins[0].0, span_end).await?;
+        let k_first = (wins[0].0 - st) / interval;
+        for (wi, (w_start, w_end)) in wins.iter().enumerate() {
+            let mut count = 0i64;
+            let mut last_time: Option<i64> = None;
+            for c in &completions {
+                if (c.time - st).div_euclid(interval) == k_first + wi as i64 {
+                    count += c.count;
+                    last_time = Some(c.time);
+                }
+            }
+            let mut task = task.clone();
+            task.completions = Some(count as i32);
+            task.last_time = last_time;
+            // The window row's `end_time` carries the task's unscoped last
+            // completion (the today view doesn't use the expiry; the window
+            // geometry above was computed against the real end_time).
+            task.end_time = row.unscoped_last;
+            windows.push(RecurringWindow {
+                task,
+                window_start: *w_start,
+                window_end: *w_end,
+            });
+        }
+    }
+    Ok(windows)
 }
 
 /// Delete a custom tracker entry row.
@@ -1074,6 +1133,7 @@ pub async fn delete_custom(pool: &SqlitePool, id: i64) -> Result<u64> {
 
 /// The full row for one task, with completions scoped to the current
 /// interval for recurring tasks (TUI today-view selection).
+/// last_time is unscoped.
 pub async fn fetch_task_by_id(pool: &SqlitePool, id: i64, now: i64) -> Result<Option<TaskRow>> {
     let row = sqlx::query_as::<_, TaskRow>(
         r#"SELECT t.*, (SELECT SUM(tc.count) FROM todo_completions tc
@@ -1082,7 +1142,9 @@ pub async fn fetch_task_by_id(pool: &SqlitePool, id: i64, now: i64) -> Result<Op
                                WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
                                    CASE WHEN ? <= t.start_time THEN t.start_time
                                         ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                               ELSE 0 END) AS completions
+                               ELSE 0 END) AS completions,
+                      (SELECT MAX(tc.time) FROM todo_completions tc
+                           WHERE tc.todo_id = t.id) AS last_time
                FROM todos t WHERE t.id = ?"#,
     )
     .bind(now)
@@ -1225,7 +1287,8 @@ pub async fn fetch_tasks_for_view(
         // same-second completion stays visible).
         (ViewMode::PendingTasks, ShowVariant::All) => {
             let tasks = sqlx::query_as::<_, TaskRow>(
-                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                r#"SELECT t.*, SUM(tc.count) AS completions,
+                       (SELECT MAX(tc2.time) FROM todo_completions tc2 WHERE tc2.todo_id = t.id) AS last_time
                    FROM todos t
                    LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                        AND tc.time >= CASE
@@ -1302,7 +1365,8 @@ pub async fn fetch_tasks_for_view(
         // completion entry in the last persist_pending_seconds.
         (ViewMode::PendingTasks, ShowVariant::B) => {
             let tasks = sqlx::query_as::<_, TaskRow>(
-                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                r#"SELECT t.*, SUM(tc.count) AS completions,
+                       (SELECT MAX(tc2.time) FROM todo_completions tc2 WHERE tc2.todo_id = t.id) AS last_time
                    FROM todos t
                    LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                        AND tc.time >= CASE
@@ -1347,7 +1411,8 @@ pub async fn fetch_tasks_for_view(
         // or failed — D2) ∪ recurring done in the current interval.
         (ViewMode::DoneTasks, ShowVariant::All) => {
             let tasks = sqlx::query_as::<_, TaskRow>(
-                r#"SELECT t.*, SUM(tc.count) AS completions, MAX(tc.time) AS last_time
+                r#"SELECT t.*, SUM(tc.count) AS completions,
+                       (SELECT MAX(tc2.time) FROM todo_completions tc2 WHERE tc2.todo_id = t.id) AS last_time
                    FROM todos t
                    LEFT JOIN todo_completions tc ON tc.todo_id = t.id
                        AND tc.time >= CASE

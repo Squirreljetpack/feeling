@@ -1542,10 +1542,10 @@ async fn test_view_pending_b_not_availability_filtered() {
     // The row itself exists (sanity).
     let _ = id;
 }
-
 /// The today view includes any task with a completion entry on the anchored
-/// day, even when it would not appear in the regular task lists (recurring
-/// availability window passed), and the merged row's time cell is the last
+/// day, even when the recurring availability window passed: the per-window
+/// recurring fetch surfaces the window with its rule-based time cell (window
+/// passed → last completion within the interval, else the window start).
 /// completion timestamp (VIEWS.md time-label rule).
 #[tokio::test]
 async fn test_today_view_completed_today_inclusion_and_time_label() {
@@ -1606,7 +1606,8 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
             .find(|e| e.kind.is_task() && e.label == name)
             .expect("task row must appear in the today view")
     };
-    // Time cell = last completion timestamp on the anchored day.
+    // Time cell: the windows have passed (`now >= window_end`), so they
+    // show the last completion within their interval.
     assert_eq!(row("completed always").time_label, "10:30");
     assert_eq!(row("completed window passed").time_label, "10:00");
     // Both are done in the current interval? No — the badge reflects the
@@ -1615,10 +1616,9 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
     let _ = row("completed always").badge;
     let _ = row("completed window passed").badge;
 
-    // The A variant filters completed tasks out and shows no completions.
-    // Neither task is done in the current interval, so both keep their
-    // regular rows — the window-passed task is active earlier in the day
-    // (interval-aware period overlap) and shows its window-end time cell.
+    // The A variant filters completed windows out (per-window done state):
+    // both anchored-day windows are done — the 10:30 / 10:00 completions
+    // fall inside their windows' intervals — so neither task appears in A.
     let entries_a = feeling::views::fetch_today_entries(
         &pool,
         &config,
@@ -1629,46 +1629,147 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
     )
     .await
     .unwrap();
-    let a_win = entries_a
-        .iter()
-        .find(|e| e.label == "completed window passed")
-        .expect("window-passed task stays in A (active earlier in the day)");
+    for name in ["completed always", "completed window passed"] {
+        assert!(
+            entries_a.iter().all(|e| e.label != name),
+            "a completed window must not appear in A: {name}"
+        );
+    }
+}
 
-    let now = feeling::date::now();
-    let st = anchored_day + 8 * 3600;
-    let interval_start = if now <= st {
-        st
-    } else {
-        st + ((now - st).div_euclid(interval)) * interval
-    };
-    let window_end = interval_start + 3600;
-    let expected_a_win_time = if now < window_end {
-        window_end
-    } else {
-        interval_start + interval
-    };
-    let expected_a_win_label = if feeling::date::day_start(expected_a_win_time) == anchored_day {
-        feeling::date::format_time(expected_a_win_time)
-    } else {
-        format!(
-            "{} {}",
-            feeling::date::format_weekday(expected_a_win_time),
-            feeling::date::format_time(expected_a_win_time)
-        )
-    };
+/// TodayView recurring rows are per availability window: All shows every
+/// window intersecting the horizon, B shows only the next window per task,
+/// and A shows only not-done windows. A passed window shows the last
+/// completion within its interval (else the window end); an open/future
+/// window shows the window start (VIEWS.md).
+#[tokio::test]
+async fn test_today_view_per_window_recurring_rows() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    let embedder = feeling::embed::global_embedder();
+    config.moods.init_with(&pool, embedder).await.unwrap();
 
+    let interval = 6 * 3600i64;
+    let anchored_day = feeling::date::today_start() - 2 * 86_400;
+
+    // 1-hour availability windows every 6 hours starting 02:00 on the
+    // anchored day: 02:00, 08:00, 14:00, 20:00 (all in the past by the
+    // time the test runs — no weekday prefixes in the labels).
+    let t = insert_recurring_task(
+        &pool,
+        "per-window",
+        anchored_day + 2 * 3600,
+        interval,
+        Some(3600),
+        0,
+        None,
+    )
+    .await;
+    // Complete the 08:00 window at 08:30: that window is then done
+    // (completions are scoped to its own interval) and shows 08:30.
+    update_task(&pool, t, anchored_day + 8 * 3600 + 1800, 1).await;
+
+    let mut color_cache = std::collections::HashMap::new();
+    macro_rules! get_labels {
+        ($show:expr) => {{
+            let entries = feeling::views::fetch_today_entries(
+                &pool,
+                &config,
+                feeling::views::TodayHorizon::Today,
+                Some(anchored_day),
+                $show,
+                &mut color_cache,
+            )
+            .await
+            .unwrap();
+            entries
+                .iter()
+                .filter(|e| e.kind.is_task() && e.label == "per-window")
+                .map(|e| e.time_label.clone())
+                .collect::<Vec<_>>()
+        }};
+    }
+
+    // All: every intersecting window. Passed windows show the last
+    // completion within their interval, else the window end.
     assert_eq!(
-        a_win.time_label, expected_a_win_label,
-        "window-passed recurring row shows the next interval start"
+        get_labels!(feeling::clap::ShowVariant::All),
+        ["03:00", "08:30", "15:00", "21:00"]
     );
-    let a_row = entries_a
-        .iter()
-        .find(|e| e.label == "completed always")
-        .expect("always-available task stays in A");
+    // B: only the next (earliest) window per task.
+    assert_eq!(get_labels!(feeling::clap::ShowVariant::B), ["03:00"]);
+    // A: completed windows filtered out — the done 08:00 window is gone,
+    // the other three stay.
     assert_eq!(
-        a_row.time_label, "",
-        "regular recurring row has no time cell"
+        get_labels!(feeling::clap::ShowVariant::A),
+        ["03:00", "15:00", "21:00"]
     );
+}
+
+/// A completed recurring window shows the last completion time even while
+/// the window is still open (`now < window_end`) — the revised time rule:
+/// done window → last completion; passed window → last completion in the
+/// interval, else window end; open/future window → window start.
+#[tokio::test]
+async fn test_today_view_open_done_window_shows_completion() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    let embedder = feeling::embed::global_embedder();
+    config.moods.init_with(&pool, embedder).await.unwrap();
+
+    let anchored_day = feeling::date::today_start() - 2 * 86_400;
+    // 24-hour availability window every 48h starting yesterday 23:00:
+    // the only window intersecting the anchored-day horizon runs
+    // [yesterday 23:00, today 23:00) — still open whenever the suite runs
+    // during the day.
+    let t = insert_recurring_task(
+        &pool,
+        "open done window",
+        anchored_day + 23 * 3600,
+        48 * 3600,
+        Some(24 * 3600),
+        0,
+        None,
+    )
+    .await;
+    // Complete it at 01:00 today (inside the window's interval): the
+    // window is then done but not passed.
+    let completion = anchored_day + 25 * 3600;
+    update_task(&pool, t, completion, 1).await;
+    let expected_label = format!(
+        "{} {}",
+        feeling::date::format_weekday(completion),
+        feeling::date::format_time(completion)
+    );
+
+    let mut color_cache = std::collections::HashMap::new();
+    macro_rules! get_labels {
+        ($show:expr) => {{
+            let entries = feeling::views::fetch_today_entries(
+                &pool,
+                &config,
+                feeling::views::TodayHorizon::Today,
+                Some(anchored_day),
+                $show,
+                &mut color_cache,
+            )
+            .await
+            .unwrap();
+            entries
+                .iter()
+                .filter(|e| e.kind.is_task() && e.label == "open done window")
+                .map(|e| e.time_label.clone())
+                .collect::<Vec<_>>()
+        }};
+    }
+
+    // All and B show the row at the completion time, not the window start
+    // (the window is still open).
+    let all = get_labels!(feeling::clap::ShowVariant::All);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0], expected_label);
+    assert_eq!(get_labels!(feeling::clap::ShowVariant::B), [expected_label]);
+    assert!(get_labels!(feeling::clap::ShowVariant::A).is_empty());
 }
 
 /// D9: a just-completed task stays visible in `@` (All) within

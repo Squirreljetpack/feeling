@@ -139,6 +139,10 @@ color = "#c12222"
 # year_rolling = true
 # week_start = "Monday"
 
+[preview]
+# Show a `last:` field for done tasks in the preview pane.
+show_last_when_done = true
+
 [today_view]
 # include_overdue = false
 

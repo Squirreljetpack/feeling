@@ -1,0 +1,22 @@
+[package]
+name = "feeling-dynamic"
+version = "0.2.0"
+edition = "2021"
+repository = "https://github.com/Squirreljetpack/feeling"
+homepage = "https://github.com/Squirreljetpack/feeling"
+description = "Dynamic ONNX Runtime variant of feeling CLI (requires system libonnxruntime)"
+
+[dependencies]
+feeling = { path = "../..", default-features = false, features = ["load-dynamic"] }
+tokio = { version = "1", features = ["full"] }
+mimalloc = "0.1"
+
+# Target override: Builds on all platforms including Intel Mac & musl Linux via load-dynamic
+[package.metadata.dist]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "x86_64-pc-windows-msvc",
+]

@@ -1,3 +1,5 @@
+#![allow(clippy::derivable_impls)]
+
 use cba::wbog;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -37,6 +39,9 @@ pub struct Config {
 
     #[serde(default)]
     pub grid: GridViewConfig,
+
+    #[serde(default)]
+    pub preview: PreviewConfig,
 
     #[serde(default)]
     pub tasks_view: TasksViewConfig,
@@ -180,6 +185,19 @@ impl Default for DateConfig {
     fn default() -> Self {
         Self {
             dialect: crate::date::DateDialect::Uk,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PreviewConfig {
+    pub show_last_when_done: bool,
+}
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self {
+            show_last_when_done: false,
         }
     }
 }

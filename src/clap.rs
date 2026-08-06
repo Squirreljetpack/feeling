@@ -688,29 +688,54 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
 }
 
 fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
-    let first = &args[0];
-    let token = first.strip_prefix('@').unwrap_or(first);
-    let (base, suffix) = match token.split_once(':') {
-        Some((base, suffix)) => (base, Some(suffix)),
+    // Everything after the `@` token joins into the command text: multi-word
+    // datetimes work (`feeling @2024-03-20 14:30`), while a stray token
+    // after `@`/`@due`/`@done` is rejected here (or by the handler's date
+    // parse for `@ <words>`) — never silently ignored. Only the first word
+    // can carry a variant/horizon suffix (`@:o`, `@due:t`); a colon later
+    // in the string is part of a time (`@2024-03-20 14:30`).
+    let joined = args.join(" ");
+    let token = joined.strip_prefix('@').unwrap_or(&joined).trim_start();
+    let (word, rest) = match token.split_once(' ') {
+        Some((word, rest)) => (word, Some(rest)),
         None => (token, None),
+    };
+    let (base, suffix) = match word.split_once(':') {
+        Some((base, suffix)) => (base, Some(suffix)),
+        None => (word, None),
+    };
+    let reject_extra = |rest: Option<&str>| -> anyhow::Result<()> {
+        if let Some(extra) = rest {
+            anyhow::bail!(
+                "Unexpected argument '{extra}' after '{joined}' — view commands take no further arguments"
+            );
+        }
+        Ok(())
     };
 
     match base {
         // `@[:o|:O]` → pending view; suffix `` → All, `o` → A, `O` → B.
         // The variant suffix is `o` (A) or `O` (B) — there is no `a`
         // suffix, so `@:a` is invalid.
-        "" => Ok(Command::View {
-            mode: ViewMode::PendingTasks,
-            show: parse_variant_suffix(suffix)?,
-        }),
+        "" => {
+            reject_extra(rest)?;
+            Ok(Command::View {
+                mode: ViewMode::PendingTasks,
+                show: parse_variant_suffix(suffix)?,
+            })
+        }
         // `@done[:o|:O]` → completed view with the same suffixes.
-        "done" => Ok(Command::View {
-            mode: ViewMode::DoneTasks,
-            show: parse_variant_suffix(suffix)?,
-        }),
+        "done" => {
+            reject_extra(rest)?;
+            Ok(Command::View {
+                mode: ViewMode::DoneTasks,
+                show: parse_variant_suffix(suffix)?,
+            })
+        }
         // `@due[:t|:w]` → TodayView at ShowVariant::B, horizon per suffix
         // (`` → Today, `t` → Tomorrow, `w` → Week).
         "due" => {
+            reject_extra(rest)?;
             let horizon = match suffix {
                 None => TodayHorizon::Today,
                 Some("t") => TodayHorizon::Tomorrow,
@@ -723,7 +748,8 @@ fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
                 horizon,
             })
         }
-        // Any other @-word is a today-view date: `feeling @2024-03-20`.
+        // Any other @-word is a today-view date: `feeling @2024-03-20`
+        // (plus optional time words, `feeling @2024-03-20 14:30`).
         // Parsing itself happens in the handler with the configured date
         // dialect (the CLI parser has no config), so an unparseable date
         // fails there with a clear error rather than here.
@@ -731,11 +757,11 @@ fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
             if suffix.is_some() {
                 anyhow::bail!(
                     "Unknown view suffix: '{}' (use :o or :O after @/@done, :t or :w after @due)",
-                    first
+                    joined
                 );
             }
             Ok(Command::Today {
-                date: Some(base.to_string()),
+                date: Some(token.to_string()),
                 show: ShowVariant::All,
                 horizon: TodayHorizon::Today,
             })
@@ -1393,6 +1419,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_view_rejects_extra_args() {
+        // Extra words join into the command text: `@due extra` and
+        // `@done extra` fail their suffix checks, while `@ <date> extra`
+        // becomes a multi-word date that the handler rejects at parse time
+        // (it can no longer be silently ignored).
+        assert!(parse_from(args(&["@due", "extra"])).is_err());
+        assert!(parse_from(args(&["@due:t", "extra"])).is_err());
+        assert!(parse_from(args(&["@done", "extra"])).is_err());
+        assert!(parse_from(args(&["@done:O", "extra"])).is_err());
+        assert!(parse_from(args(&["@:o", "extra"])).is_err());
+        let cmd = parse_from(args(&["@", "extra"])).unwrap();
+        assert!(matches!(cmd, Command::Today { date: Some(d), .. } if d == "extra"));
+        let cmd = parse_from(args(&["@2024-03-15", "extra"])).unwrap();
+        assert!(matches!(cmd, Command::Today { date: Some(d), .. } if d == "2024-03-15 extra"));
+    }
+
+    #[test]
     fn test_parse_view_invalid_suffixes() {
         // There is no `a` suffix; unknown suffixes are rejected.
         assert!(parse_from(args(&["@:a"])).is_err());
@@ -1961,9 +2004,9 @@ mod tests {
                 show,
                 horizon,
             } => {
-                // Only the first token is the date; the rest is ignored by
-                // the view dispatcher (parse_from sees the full args).
-                assert_eq!(date, Some("2024-03-20".to_string()));
+                // Multi-word datetimes join into the date: the dispatcher
+                // passes the full command text through.
+                assert_eq!(date, Some("2024-03-20 14:30".to_string()));
                 assert_eq!(show, ShowVariant::All);
                 assert_eq!(horizon, TodayHorizon::Today);
             }

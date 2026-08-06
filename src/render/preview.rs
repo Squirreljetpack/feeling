@@ -19,13 +19,20 @@ fn field_line(label: &str, value: String) -> Line<'static> {
 /// The entry's timestamp, right-aligned and dark gray.
 fn date_line(ts: i64) -> Line<'static> {
     Line::from(Span::styled(
-        date::format_date_time(ts),
+        date::format_datetime(ts),
         Style::default().fg(Color::DarkGray),
     ))
     .alignment(Alignment::Right)
 }
 
-/// Build the preview pane for a task row. The layout, top to bottom:
+/// Build the preview pane lines for a task row. With `today`, the row is
+/// a today-view entry row: for recurring tasks `end_time` carries the
+/// unscoped last completion (not the expiry), so `last` is read from it
+/// and the `ends` field is skipped. `preview.show_last_when_done` controls
+/// whether done rows still show their `last` field (`last:` is otherwise
+/// shown only while the task is not done).
+///
+/// The layout, top to bottom:
 ///
 /// - a blank line, then the heading: the type name ("Task" / "Recurring"
 ///   / "Scheduled", full caps, bold) in its own color, indented one space,
@@ -38,7 +45,11 @@ fn date_line(ts: i64) -> Line<'static> {
 /// - the progress bar for counted tasks (a blank line on each side), then
 ///   the body when nonempty (a blank line, then the body indented two
 ///   spaces).
-pub fn build_preview(task: &crate::sql::TaskRow) -> Vec<Line<'static>> {
+pub fn build_preview(
+    task: &crate::sql::TaskRow,
+    today: bool,
+    preview: &crate::config::PreviewConfig,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     // Start with a blank line so the heading reads as a heading.
@@ -80,6 +91,22 @@ pub fn build_preview(task: &crate::sql::TaskRow) -> Vec<Line<'static>> {
         }
     }
     lines.push(field_line("priority", task.priority.to_string()));
+    // The last completion on the task. Done rows show it only when
+    // `preview.show_last_when_done` is set (the default). Today-view
+    // recurring rows carry the unscoped last completion in `end_time`
+    // (their `last_time` is window-scoped); everywhere else `last_time` is
+    // unscoped for recurring rows too.
+    if !task.is_done() || preview.show_last_when_done {
+        let last = if today && task.is_recurring() {
+            task.end_time
+        } else {
+            task.last_time
+        };
+        if let Some(last) = last {
+            lines.push(field_line("last", date::format_datetime(last)));
+        }
+    }
+
     if task.is_recurring() {
         // Recurring tasks show when the next interval opens instead of
         // a fixed start time.
@@ -95,21 +122,21 @@ pub fn build_preview(task: &crate::sql::TaskRow) -> Vec<Line<'static>> {
                 }
                 _ => st,
             };
-            lines.push(field_line("next", date::format_date_time(next)));
+            lines.push(field_line("next", date::format_datetime(next)));
         }
     } else if task.is_scheduled() {
         // Scheduled tasks show the window start.
         if let Some(st) = task.start_time {
-            lines.push(field_line("start", date::format_date_time(st)));
+            lines.push(field_line("start", date::format_datetime(st)));
         }
     } else {
         // Oneshot tasks: the creation time always, and the due time only
         // when one was set (`! name @<time>` → end_time).
         if let Some(st) = task.start_time {
-            lines.push(field_line("creation", date::format_date_time(st)));
+            lines.push(field_line("creation", date::format_datetime(st)));
         }
         if let Some(et) = task.end_time {
-            lines.push(field_line("due", date::format_date_time(et)));
+            lines.push(field_line("due", date::format_datetime(et)));
         }
     }
 
@@ -145,8 +172,12 @@ pub fn build_preview(task: &crate::sql::TaskRow) -> Vec<Line<'static>> {
         if let Some(avail) = task.available_duration_secs {
             lines.push(field_line("duration", date::format_duration(avail)));
         }
-        if let Some(ref s) = task.end_datetime() {
+        // Today-view rows carry the unscoped last completion in `end_time`
+        // instead of the expiry — no `ends` field there.
+        if !today {
+            if let Some(ref s) = task.end_datetime() {
             lines.push(field_line("ends", s.clone()));
+            }
         }
         // The optional flag is only shown when the task is skippable.
         if task.optional != 0 {
@@ -273,4 +304,81 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recurring_row() -> crate::sql::TaskRow {
+        crate::sql::TaskRow {
+            id: 1,
+            short_id: Some(7),
+            name: "water plants".to_string(),
+            body: String::new(),
+            priority: 3,
+            start_time: Some(1_700_000_000),
+            available_duration_secs: Some(3600),
+            interval_secs: Some(86_400),
+            target_count: 0,
+            optional: 0,
+            end_time: Some(1_700_500_000),
+            completions: Some(0),
+            last_time: Some(1_700_400_000),
+        }
+    }
+
+    fn preview_config(show_last_when_done: bool) -> crate::config::PreviewConfig {
+        crate::config::PreviewConfig { show_last_when_done }
+    }
+
+    /// The values of the `field: value` lines, e.g. `["id: 7", "last: ..."]`.
+    fn fields(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|l| {
+                let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+                text.strip_prefix("  ").map(|s| s.trim().to_string())
+            })
+            .filter(|s| s.contains(':'))
+            .collect()
+    }
+
+    #[test]
+    fn test_build_preview_today_recurring_last_from_end_time() {
+        let task = recurring_row();
+        let lines = build_preview(&task, true, &preview_config(true));
+        let fields = fields(&lines);
+        // `last` reads the unscoped completion carried in `end_time`, and
+        // the `ends` field is skipped (end_time is not the expiry here).
+        assert!(
+            fields.iter().any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
+            "expected last: from end_time, got {fields:?}"
+        );
+        assert!(!fields.iter().any(|f| f.starts_with("ends:")), "{fields:?}");
+    }
+
+    #[test]
+    fn test_build_preview_not_today_recurring_last_from_last_time() {
+        let task = recurring_row();
+        let lines = build_preview(&task, false, &preview_config(true));
+        let fields = fields(&lines);
+        assert!(
+            fields.iter().any(|f| f == &format!("last: {}", date::format_datetime(1_700_400_000))),
+            "expected last: from last_time, got {fields:?}"
+        );
+        assert!(fields.iter().any(|f| f == &format!("ends: {}", date::format_datetime(1_700_500_000))));
+    }
+
+    #[test]
+    fn test_build_preview_done_shows_last() {
+        let mut task = recurring_row();
+        task.completions = Some(1); // target 0 -> done
+        let fields = fields(&build_preview(&task, true, &preview_config(true)));
+        assert!(
+            fields.iter().any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
+            "expected last: on a done row, got {fields:?}"
+        );
+    }
+
 }

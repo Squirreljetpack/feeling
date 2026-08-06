@@ -104,6 +104,36 @@ fn oneshot_badge(task: &TaskRow, config: &Config, now: i64) -> (char, CtColor) {
     ('○', count_color(count, task.target_count, colors))
 }
 
+/// Recurring badge color by state (shared by the per-task and per-window
+/// forms): expired → dark grey; availability passed → Reset for optional
+/// tasks, else the count bin; during availability zero entries → Reset;
+/// partial → the count bin.
+fn recurring_badge_color(
+    count: i64,
+    target_count: i32,
+    expired: bool,
+    availability_passed: bool,
+    optional: i32,
+    colors: &[CtColor],
+) -> CtColor {
+    if expired {
+        CtColor::DarkGrey
+    } else if availability_passed {
+        if optional != 0 {
+            CtColor::Reset
+        } else {
+            // Non-optional window elapsed: missed (0 → colors[0]) or binned.
+            count_color(count, target_count, colors)
+        }
+    } else if count == 0 {
+        // During availability, zero entries.
+        CtColor::Reset
+    } else {
+        // During availability, partial.
+        count_color(count, target_count, colors)
+    }
+}
+
 /// Recurring badge. The glyph is `✓` when done (`↻` when `done_view`),
 /// `↻` always otherwise.
 ///
@@ -126,22 +156,43 @@ fn recurring_badge(task: &TaskRow, config: &Config, done_view: bool, now: i64) -
     }
     let expired = task.end_time.is_some_and(|end| now > end);
     let availability_passed = crate::task::availability_passed(task, now);
-    let color = if expired {
-        CtColor::DarkGrey
-    } else if availability_passed {
-        if task.optional != 0 {
-            CtColor::Reset
-        } else {
-            // Non-optional window elapsed: missed (0 → colors[0]) or binned.
-            count_color(count, task.target_count, colors)
-        }
-    } else if count == 0 {
-        // During availability, zero entries.
-        CtColor::Reset
-    } else {
-        // During availability, partial.
-        count_color(count, task.target_count, colors)
-    };
+    let color = recurring_badge_color(
+        count,
+        task.target_count,
+        expired,
+        availability_passed,
+        task.optional,
+        colors,
+    );
+    ('↻', color)
+}
+
+/// Per-window recurring badge for the today view (one row per availability
+/// window): the window is done (`is_task_done` on the window-scoped row) →
+/// `✓`; the window has passed (`now >=
+/// window_end`) → Reset for optional tasks, else the count bin; during an
+/// open window zero entries → Reset, partial → the count bin.
+pub fn recurring_window_badge(
+    task: &TaskRow,
+    window_end: i64,
+    config: &Config,
+    now: i64,
+) -> (char, CtColor) {
+    let colors = &config.tasks.colors;
+    let count = task.completions.unwrap_or(0) as i64;
+    if crate::task::is_task_done(task.target_count, task.completions) {
+        return ('✓', *colors.last().unwrap_or(&CtColor::Reset));
+    }
+    // No expired state: today-view window rows carry the task's unscoped
+    // last completion in `end_time`, not the expiry.
+    let color = recurring_badge_color(
+        count,
+        task.target_count,
+        false,
+        now >= window_end,
+        task.optional,
+        colors,
+    );
     ('↻', color)
 }
 
