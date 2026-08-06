@@ -1,7 +1,12 @@
 [moods]
-prefix_string = "person says: "
+
+# Mood-to-color anchors live in this file. Generate it by calling `feeling :moods`.
+# source = "moods.toml"
+
+# Instruction prefix for embedding model
+prefix_string = "Emotional state: "
 # A neutral phrase standing for "no particular mood"; anchor colors are measured from this baseline.
-base_string = "this person feels:"
+base_string = "Emotional state"
 
 # How decisively the strongest anchor mood wins the final color (1.0 = even mix, higher = dominant).
 blend_steepness = 2.0
@@ -16,116 +21,6 @@ baseline_oklab_l = 65
 # An anchor mood must make up at least this % of the color mix to be included at all.
 # min_contribution = 7
 # top_k = 5
-
-
-[[moods.pairs]]
-mood = "happy"
-color = "#84c741"
-
-[[moods.pairs]]
-mood = "sad"
-color = "#0b3575"
-
-[[moods.pairs]]
-mood = "drained"
-color = "#495057"
-
-[[moods.pairs]]
-mood = "energetic"
-color = "#c5451e"
-
-[[moods.pairs]]
-mood = "thoughtful"
-color = "#6B705C"
-
-[[moods.pairs]]
-mood = "purposeful"
-color = "#FFC107"
-
-[[moods.pairs]]
-mood = "passive"
-color = "#7b8caa"
-
-[[moods.pairs]]
-mood = "frustrated"
-color = "#ae1550"
-
-[[moods.pairs]]
-mood = "neutral"
-color = "#E2D4C9"
-
-[[moods.pairs]]
-mood = "nostalgic"
-color = "#B56547"
-
-[[moods.pairs]]
-mood = "humble"
-color = "#3B2319"
-
-[[moods.pairs]]
-mood = "secure"
-color = "#2E1352"
-
-[[moods.pairs]]
-mood = "pained"
-color = "#870c0c"
-
-[[moods.pairs]]
-mood = "comfortable"
-color = "#4eb9b9"
-
-[[moods.pairs]]
-mood = "guarded"
-color = "#244646"
-
-[[moods.pairs]]
-mood = "vulnerable"
-color = "#b02cbc"
-
-[[moods.pairs]]
-mood = "isolated"
-color = "#090977"
-
-[[moods.pairs]]
-mood = "sociable"
-color = "#F07167"
-
-[[moods.pairs]]
-mood = "connected"
-color = "#2A9D8F"
-
-[[moods.pairs]]
-mood = "confused"
-color = "#5a0475"
-
-[[moods.pairs]]
-mood = "lucid"
-color = "#bbcc8c"
-
-[[moods.pairs]]
-mood = "proud"
-color = "#f354e3"
-
-[[moods.pairs]]
-mood = "let down"
-color = "#351c88"
-
-[[moods.pairs]]
-mood = "engrossed"
-color = "#e1e0ce"
-
-[[moods.pairs]]
-mood = "disgusted"
-color = "#49891b"
-
-[[moods.pairs]]
-mood = "satiated"
-color = "#c9a72d"
-
-[[moods.pairs]]
-mood = "hungry"
-color = "#c12222"
-
 
 [tasks]
 # colors = ["dark_red", "dark_yellow", "dark_green"]
@@ -172,5 +67,3 @@ hint = true
 # kind = "float"      # text | number | float
 # min = 0
 # max = 10
-
-

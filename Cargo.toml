@@ -53,7 +53,11 @@ thiserror = "2"
 atty = "0.2"
 
 # Embeddings: nomic-embed-text-v1.5 INT8 QDQ ONNX via ONNX Runtime (ort)
-ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing"] }
+ort = { version = "2.0.0-rc.13", default-features = false, features = [
+  "std",
+  "ndarray",
+  "tracing",
+] }
 tokenizers = { version = "0.*", default-features = false, features = ["onig"] }
 ureq = { version = "3.*", default-features = false, features = ["rustls"] }
 
@@ -80,7 +84,6 @@ targets = [
 ]
 
 [build-dependencies]
-toml = "1.1"
 ureq = { version = "3.*", default-features = false, features = ["rustls"] }
 
 # Maximum optimization for release builds

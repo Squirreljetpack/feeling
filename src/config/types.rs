@@ -11,9 +11,25 @@ pub struct MoodEndpoint {
     pub color: Color,
 }
 
-// The default pairs are compiled in from the bundled config's `[[moods.pairs]]`
-// section by `build.rs`; see the generated `default_pairs` fn's doc comment.
-include!(concat!(env!("OUT_DIR"), "/default_pairs.rs"));
+/// The moods file (`[moods] source`) — one `[[pairs]]` entry per mood
+/// anchor, mapping a mood word (or phrase) to the color it should produce.
+///
+/// The bundled `assets/moods.toml` (release) / `assets/moods.dev.toml`
+/// (debug) is the default: `Default` deserializes it at runtime, replacing
+/// the old build-time `default_pairs()` codegen (see `build.rs` history).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoodsFile {
+    /// The anchor moods: one entry per mood.
+    pub pairs: Vec<MoodEndpoint>,
+}
+
+impl Default for MoodsFile {
+    fn default() -> Self {
+        toml::from_str(crate::config::DEFAULT_MOODS)
+            .expect("bundled assets/moods.toml must parse into MoodsFile")
+    }
+}
 
 define_collection_wrapper!(
   /// A list of colors, e.g. the completion-badge bins in `[tasks] colors`

@@ -42,13 +42,9 @@ fn main() {
     #[cfg(target_os = "linux")]
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
-
-
     update_readme_usage();
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    generate_default_pairs(&out_dir);
     let cache = cache_dir();
 
     let embed_model = env::var("EMBED_MODEL").unwrap_or_else(|_| DEFAULT_EMBED_MODEL.to_string());
@@ -132,115 +128,6 @@ fn cache_dir() -> PathBuf {
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
         .join("target")
         .join("cache")
-}
-
-/// Emit `default_axes.rs` into `OUT_DIR` — the bundled config's
-/// `[[moods.axes]]` section compiled into a Rust fn, so startup never
-/// re-parses TOML for the default axes. Debug builds read `assets/dev.toml`,
-/// release builds `assets/config.toml`, mirroring the `cfg(debug_assertions)`
-/// gating of `Config::DEFAULT_CONFIG`.
-/// Emit `default_pairs.rs` into `OUT_DIR` — the bundled config's
-/// `[[moods.pairs]]` section compiled into a Rust fn, so startup never
-/// re-parses TOML for the default pairs. Debug builds read `assets/dev.toml`,
-/// release builds `assets/config.toml`, mirroring the `cfg(debug_assertions)`
-/// gating of `Config::DEFAULT_CONFIG`.
-fn generate_default_pairs(out_dir: &Path) {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let profile = env::var("PROFILE").unwrap_or_default();
-    let config_name = if profile == "release" {
-        "assets/config.toml"
-    } else {
-        "assets/dev.toml"
-    };
-    let config_path = manifest_dir.join(config_name);
-    println!("cargo:rerun-if-changed={}", config_path.display());
-
-    let src = std::fs::read_to_string(&config_path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", config_path.display()));
-    let doc: toml::Value = toml::from_str(&src)
-        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", config_path.display()));
-
-    let pairs = doc
-        .get("moods")
-        .and_then(|m| m.get("pairs"))
-        .and_then(|a| a.as_array())
-        .unwrap_or_else(|| panic!("[{config_name}] has no [[moods.pairs]] section"));
-
-    let mut out = String::from(
-        "/// Default mood pairs, compiled in from the bundled config's `[[moods.pairs]]`\n\
-         /// section by `build.rs` (debug: `assets/dev.toml`, release: `assets/config.toml`,\n\
-         /// mirroring `Config::DEFAULT_CONFIG`).\n\
-         pub(crate) fn default_pairs() -> Vec<MoodEndpoint> {\n    vec![\n",
-    );
-    for pair in pairs {
-        out.push_str(&format!(
-            "        MoodEndpoint {{ mood: {mood:?}.to_string(), color: {} }},\n",
-            color_expr(
-                pair.get("color")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or_else(|| panic!("pair missing string `color`"))
-            ),
-            mood = pair
-                .get("mood")
-                .and_then(|m| m.as_str())
-                .unwrap_or_else(|| panic!("pair missing string `mood`"))
-        ));
-    }
-    out.push_str("    ]\n}\n");
-
-    std::fs::write(out_dir.join("default_pairs.rs"), out)
-        .expect("failed to write default_pairs.rs");
-}
-
-/// Map a bundled-config color string to a `crossterm::style::Color` literal.
-/// Accepts `#RRGGBB` hex, `rgb_(r,g,b)` tuples, and the named crossterm
-/// colors (the same set its serde feature accepts).
-fn color_expr(color: &str) -> String {
-    let color = color.trim();
-    if let Some(hex) = color.strip_prefix('#') {
-        let v =
-            u32::from_str_radix(hex, 16).unwrap_or_else(|_| panic!("invalid hex color {color:?}"));
-        return format!(
-            "Color::Rgb {{ r: {}, g: {}, b: {} }}",
-            (v >> 16) & 0xFF,
-            (v >> 8) & 0xFF,
-            v & 0xFF,
-        );
-    }
-    if let Some(inner) = color.strip_prefix("rgb_") {
-        let inner = inner.trim_start_matches('(').trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').collect();
-        let parse = |s: &str| s.trim().parse::<u8>().ok();
-        if parts.len() == 3 {
-            if let (Some(r), Some(g), Some(b)) = (parse(parts[0]), parse(parts[1]), parse(parts[2]))
-            {
-                return format!("Color::Rgb {{ r: {r}, g: {g}, b: {b} }}");
-            }
-        }
-        panic!("invalid rgb_(r,g,b) color {color:?}");
-    }
-    let variant = match color {
-        "reset" => "Reset",
-        "black" => "Black",
-        "grey" | "dark_grey" => "DarkGrey",
-        "red" => "Red",
-        "dark_red" => "DarkRed",
-        "green" => "Green",
-        "dark_green" => "DarkGreen",
-        "yellow" => "Yellow",
-        "dark_yellow" => "DarkYellow",
-        "blue" => "Blue",
-        "dark_blue" => "DarkBlue",
-        "magenta" => "Magenta",
-        "dark_magenta" => "DarkMagenta",
-        "cyan" => "Cyan",
-        "dark_cyan" => "DarkCyan",
-        "white" => "White",
-        _ => panic!(
-            "unsupported color {color:?} (use #RRGGBB, rgb_(r,g,b), or a named crossterm color)"
-        ),
-    };
-    format!("Color::{variant}")
 }
 
 fn file_len(path: &Path) -> Option<u64> {

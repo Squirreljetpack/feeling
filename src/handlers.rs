@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 use std::io::{BufRead, Write};
 
 use crate::clap::{CliOpts, Command, TaskType, UpdateTarget};
-use crate::config::{Config, TrackerKind, DEFAULT_CONFIG};
+use crate::config::{Config, TrackerKind, DEFAULT_CONFIG, DEFAULT_MOODS};
 use crate::date::{self, format_duration};
 use crate::editor::{open_editor_at, open_editor_for_body};
 use crate::paths::default_config_path;
@@ -104,6 +104,8 @@ pub async fn handle_command<W: Write>(
         }
 
         Command::Config => handle_config().await,
+
+        Command::Moods => handle_moods(config).await,
 
         Command::Prune => handle_prune(pool, config).await,
 
@@ -233,11 +235,47 @@ async fn handle_config() -> Result<()> {
     if created {
         cba::ibog!(
             "config";
-            "Created config at {} from bundled defaults; edit and save to apply.",
+            "Created file at {} from bundled defaults; edit and save to apply.",
             path.display()
         );
     }
     open_editor_at(path)
+}
+
+/// `feeling :moods` — open the moods file (`[moods] source`, relative to
+/// the config directory) in $VISUAL/$EDITOR.
+///
+/// Like [`handle_config`], a missing file is created from the bundled moods
+/// defaults first, announced with `ibog!`. When `[moods] source` is empty
+/// (the default) there is no moods file to open: warn that `source` must be
+/// set in the config, and do nothing else.
+async fn handle_moods(config: &Config) -> Result<()> {
+    if config.moods.source.as_os_str().is_empty() {
+        cba::wbog!(
+            "feeling :moods needs a moods file, but [moods] source is unset: add \
+             source = \"moods.toml\" to the [moods] section of your config"
+        );
+        return Ok(());
+    }
+    let path = crate::paths::config_dir().join(&config.moods.source);
+    let mut created = false;
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config dir {:?}", parent))?;
+        }
+        std::fs::write(&path, DEFAULT_MOODS.as_bytes())
+            .with_context(|| format!("Failed to write default moods file to {:?}", path))?;
+        created = true;
+    }
+    if created {
+        cba::ibog!(
+            "moods";
+            "Created file at {} from bundled defaults; edit and save to apply.",
+            path.display()
+        );
+    }
+    open_editor_at(&path)
 }
 
 async fn handle_entry(
@@ -263,11 +301,6 @@ async fn handle_entry(
 
     if feeling.is_empty() && customs.is_empty() && body.is_empty() {
         anyhow::bail!("Nothing to log");
-    }
-
-    // Validate mood doesn't contain tabs (view output uses tab separators)
-    if feeling.contains('\t') {
-        anyhow::bail!("Mood cannot contain tab characters");
     }
 
     // Determine the timestamp (Unix epoch in seconds).

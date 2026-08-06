@@ -85,6 +85,12 @@ pub enum Command {
     /// $VISUAL/$EDITOR via [`crate::editor::open_editor_at`]. The bundled
     /// `assets/config.toml` is copied to the path first when missing.
     Config,
+    /// `feeling :moods` — like `:config`, but opens the moods file named by
+    /// `[moods] source` (relative to the config directory) in
+    /// $VISUAL/$EDITOR. A missing file is created from the bundled moods
+    /// defaults first; when `source` is unset the handler warns that it
+    /// must be configured.
+    Moods,
     /// `feeling :prune` — handlers delete completed oneshot tasks and
     /// recurring tasks whose `end_time` has passed.
     Prune,
@@ -292,6 +298,13 @@ fn parse_special_command(args: &[String]) -> anyhow::Result<Command> {
             anyhow::bail!("Usage: feeling :config");
         }
         return Ok(Command::Config);
+    }
+
+    if first == ":moods" {
+        if args.len() != 1 {
+            anyhow::bail!("Usage: feeling :moods");
+        }
+        return Ok(Command::Moods);
     }
 
     if first == ":prune" {
@@ -924,6 +937,11 @@ fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
     };
     let body = body_parts.join(" ");
     let open_editor = has_dotdot && body.is_empty();
+
+    // Mood must not contain tabs: view output uses tab separators.
+    if feeling.contains('\t') {
+        anyhow::bail!("Mood cannot contain tab characters");
+    }
 
     Ok(Command::Entry(Entry {
         feeling,
@@ -2072,6 +2090,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_moods() {
+        let cmd = parse_from(args(&[":moods"])).unwrap();
+        assert_eq!(cmd, Command::Moods);
+    }
+
+    #[test]
+    fn test_parse_moods_rejects_extra_args() {
+        let result = parse_from(args(&[":moods", "extra"]));
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_parse_prune() {
         let cmd = parse_from(args(&[":prune"])).unwrap();
         assert_eq!(cmd, Command::Prune);
@@ -2108,15 +2138,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tabs_preserved() {
-        // Tabs are passed through by parser, rejected by handler
-        let cmd = parse_from(args(&["ok\ttab"])).unwrap();
-        match cmd {
-            Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "ok\ttab");
-            }
-            _ => panic!("Expected Entry command"),
-        }
+    fn test_parse_rejects_tabs_in_mood() {
+        // Tabs are rejected at parse time (view output uses tab separators).
+        let result = parse_from(args(&["ok\ttab"]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("tab characters"));
     }
 
     #[test]

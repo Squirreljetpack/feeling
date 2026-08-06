@@ -31,6 +31,8 @@ fn state_dir_impl() -> Option<PathBuf> {
 
 expr_as_path_fn!(state_dir, state_dir_impl().unwrap_or_default());
 
+expr_as_path_fn!(config_dir, config_dir_impl().unwrap_or_default());
+
 #[cfg(debug_assertions)]
 expr_as_path_fn!(
     default_config_path,

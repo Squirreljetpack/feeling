@@ -1,4 +1,8 @@
 [moods]
+# Mood-to-color anchors live in the file named by `source` (relative to the
+# config directory); see assets/moods.dev.toml for the bundled default set.
+source = "moods.dev.toml"
+
 prefix_string = "person says: "
 # A neutral phrase standing for "no particular mood"; anchor colors are measured from this baseline.
 base_string = "this person feels:"
@@ -17,34 +21,10 @@ baseline_oklab_l = 65
 # min_contribution = 7
 # top_k = 5
 
-[[moods.pairs]]
-mood = "happy"
-color = "#a5f69c"
-
-[[moods.pairs]]
-mood = "sad"
-color = "#00327f"
-
-[[moods.pairs]]
-mood = "drained"
-color = "#495057"
-
-[[moods.pairs]]
-mood = "charged"
-color = "#FF3D00"
-
-[[moods.pairs]]
-mood = "passive"
-color = "#9370DB"
-
-[[moods.pairs]]
-mood = "purposeful"
-color = "#FFC107"
-
 [tasks]
 colors = ["dark_red", "dark_yellow", "dark_green"]
 default_priority = 5                               # 1..=999
-default_recurring_priority = 5                    # 1..=999 (recurring tasks)
+default_recurring_priority = 5                     # 1..=999 (recurring tasks)
 default_scheduled_priority = 10                    # 1..=999 (scheduled tasks)
 
 [grid]

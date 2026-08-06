@@ -32,6 +32,7 @@ store body files in folder, named by mood/time-mood_summary-disambiguating_numbe
 recommend using fs with rg to search through all notes.
 
 
+
 # Lowpri
 config value, confirm before accepting scheduled
 interactive todo creation requires opening editor, a bit odd but not sure how to signal to enable easily.
@@ -42,3 +43,5 @@ support attaching additional mood/journal entries to Moods, display timestamped 
 subcommands:
 :trackers [text|number|int|float]  list trackers
 support per-tracker colors config for binning
+more rigorous parse_from flow, i.e. validate_name before handle_command
+Syncing: todo_completions is easy to reconcile, task/mood edits we could just track last edit time and require (field level) confirmation for different fields, with Y being on newer if data diverged.

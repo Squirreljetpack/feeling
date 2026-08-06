@@ -3,6 +3,7 @@
 use cba::wbog;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::clap::FLAG_CHARACTERS;
 use crate::embed::Embedder;
@@ -13,6 +14,11 @@ pub const DEFAULT_CONFIG: &str = include_str!("../assets/dev.toml");
 #[cfg(not(debug_assertions))]
 pub const DEFAULT_CONFIG: &str = include_str!("../assets/config.toml");
 
+#[cfg(debug_assertions)]
+pub const DEFAULT_MOODS: &str = include_str!("../assets/moods.dev.toml");
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_MOODS: &str = include_str!("../assets/moods.toml");
+
 mod types;
 pub use types::*;
 
@@ -20,11 +26,11 @@ pub use types::*;
 /// — a missing section or key falls back to a built-in default, so a config
 /// can be as small as a single `[tracker.sleep]` block.
 ///
-/// Sections: `[moods]` (mood-to-color anchors and color settings),
-/// `[tasks]` (defaults for new tasks, badge colors), `[tracker.<name>]`
-/// (custom trackers), `[grid]` (tracker grid ranges), `[tasks_view]` and
-/// `[today_view]` (view options), `[date]` (date parsing dialect),
-/// `[editor]` (body editor).
+/// Sections: `[moods]` (color settings; the anchor pairs live in the file
+/// named by `[moods] source`), `[tasks]` (defaults for new tasks, badge
+/// colors), `[tracker.<name>]` (custom trackers), `[grid]` (tracker grid
+/// ranges), `[tasks_view]` and `[today_view]` (view options), `[date]` (date
+/// parsing dialect), `[editor]` (body editor).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -258,8 +264,8 @@ pub struct TodayViewConfig {
 }
 
 /// `[moods]` color settings — how mood words are turned into colors from
-/// your `[[moods.pairs]]` anchors. These keys live directly on the `[moods]`
-/// table (they are flattened into [`MoodConfig`]).
+/// the anchors in the moods file (`[moods] source`). These keys live
+/// directly on the `[moods]` table (they are flattened into [`MoodConfig`]).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
@@ -310,19 +316,22 @@ impl Default for ColorAxesSettings {
     }
 }
 
-/// `[moods]` section — your mood-to-color anchors (`pairs`) plus the color
-/// settings that derive every other mood's color from them.
+/// `[moods]` section — the color settings that derive every mood's color
+/// from the anchor pairs, plus `source`, the path of the moods file
+/// holding those anchors.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct MoodConfig {
-    /// The color settings — the `[moods]` keys other than `pairs`
+    /// The color settings — the `[moods]` keys other than `source`
     /// (flattened, so they live directly on the table).
     #[serde(flatten)]
     pub axes: ColorAxesSettings,
 
-    /// Your anchor moods: one `[[moods.pairs]]` entry per mood, mapping a
-    /// mood word (or phrase) to the color it should produce.
-    pub pairs: Vec<MoodEndpoint>,
+    /// Path of the moods file holding the `[[pairs]]` anchors, relative to
+    /// the config directory. Empty (the default) uses the bundled moods
+    /// file; a missing or unparsable file falls back to it as well.
+    #[serde(default)]
+    pub source: PathBuf,
 
     // The built color model. Computed once per run by `init_with`; never
     // serialized (marked `skip`).
@@ -342,13 +351,28 @@ impl MoodConfig {
         if self.color_axes.is_some() {
             return Ok(());
         }
-        if self.pairs.is_empty() {
-            self.pairs = default_pairs();
-        }
-        let axes =
-            crate::color::ColorAxes::build_async(pool, embedder, &self.axes, &self.pairs).await?;
+        let pairs = self.load_pairs();
+        let axes = crate::color::ColorAxes::build_async(pool, embedder, &self.axes, &pairs).await?;
         self.color_axes = Some(axes);
         Ok(())
+    }
+
+    /// Resolve the anchor pairs. An empty `source` skips deserialization
+    /// and uses the bundled default directly. Otherwise the `source` file
+    /// (relative to the config directory) is deserialized, falling back to
+    /// the bundled default when it can't be read or parsed, or when it
+    /// yields no pairs (the same load-or-default pattern as the config
+    /// itself, see `cba::bo::load_type_or_default`).
+    fn load_pairs(&self) -> Vec<MoodEndpoint> {
+        if self.source.as_os_str().is_empty() {
+            return MoodsFile::default().pairs;
+        }
+        let path = crate::paths::config_dir().join(&self.source);
+        let file = cba::bo::load_type_or_default(path, |s| toml::from_str::<MoodsFile>(s));
+        if file.pairs.is_empty() {
+            return MoodsFile::default().pairs;
+        }
+        file.pairs
     }
 }
 
@@ -580,25 +604,26 @@ mod tests {
     }
 
     #[test]
-    fn test_moods_flatten_serde_roundtrip() {
-        // [moods] with only `pairs` (all settings missing) → settings default.
-        let cfg: Config =
-            toml::from_str("[moods]\n[[moods.pairs]]\nmood = \"happy\"\ncolor = \"#FF0000\"\n")
-                .expect("[moods] with only pairs parses");
+    fn test_moods_source_serde_roundtrip() {
+        // [moods] with only `source` (all settings missing) → settings default.
+        let cfg: Config = toml::from_str("[moods]\nsource = \"moods.toml\"\n")
+            .expect("[moods] with only source parses");
         assert_eq!(cfg.moods.axes.prefix_string, "person says: ");
         assert_eq!(cfg.moods.axes.blend_steepness, 2.0);
-        assert_eq!(cfg.moods.pairs.len(), 1);
-        assert_eq!(cfg.moods.pairs[0].mood, "happy");
+        assert_eq!(cfg.moods.source, PathBuf::from("moods.toml"));
 
         // Explicit settings are honored through the flatten.
         let cfg: Config = toml::from_str(
-            "[moods]\nblend_steepness = 3.5\ntop_k = 8\n[[moods.pairs]]\nmood = \"sad\"\ncolor = \"blue\"\n",
+            "[moods]\nblend_steepness = 3.5\ntop_k = 8\nsource = \"my-moods.toml\"\n",
         )
         .expect("[moods] with settings parses");
         assert_eq!(cfg.moods.axes.blend_steepness, 3.5);
         assert_eq!(cfg.moods.axes.top_k, 8);
-        assert_eq!(cfg.moods.pairs.len(), 1);
-        assert_eq!(cfg.moods.pairs[0].mood, "sad");
+        assert_eq!(cfg.moods.source, PathBuf::from("my-moods.toml"));
+
+        // A missing `source` key defaults to the empty path.
+        let empty: Config = toml::from_str("").expect("empty toml parses");
+        assert!(empty.moods.source.as_os_str().is_empty());
 
         // Unknown keys under [moods] are rejected (deny_unknown_fields holds
         // through the flattened ColorAxesSettings).
@@ -607,11 +632,42 @@ mod tests {
             "unknown [moods] key must be rejected"
         );
 
-        // Full round-trip: serialize then re-parse keeps pairs + settings.
+        // Full round-trip: serialize then re-parse keeps source + settings.
         let serialized = toml::to_string(&cfg).expect("serializes");
         let reparsed: Config = toml::from_str(&serialized).expect("re-parses");
         assert_eq!(reparsed.moods.axes.blend_steepness, 3.5);
-        assert_eq!(reparsed.moods.pairs.len(), 1);
-        assert_eq!(reparsed.moods.pairs[0].color, cfg.moods.pairs[0].color);
+        assert_eq!(reparsed.moods.source, cfg.moods.source);
+    }
+
+    #[test]
+    fn test_moods_file_deserialization() {
+        // The bundled moods file must parse and yield anchors.
+        let moods = MoodsFile::default();
+        assert!(!moods.pairs.is_empty());
+        assert!(moods.pairs.iter().all(|p| !p.mood.is_empty()));
+
+        // A moods file with explicit entries deserializes.
+        let moods: MoodsFile = toml::from_str(
+            "[[pairs]]\nmood = \"happy\"\ncolor = \"#FF0000\"\n\
+             [[pairs]]\nmood = \"sad\"\ncolor = \"blue\"\n",
+        )
+        .expect("moods file parses");
+        assert_eq!(moods.pairs.len(), 2);
+        assert_eq!(moods.pairs[0].mood, "happy");
+        assert_eq!(moods.pairs[1].color, crossterm::style::Color::Blue);
+
+        // Unknown keys in the moods file are rejected.
+        assert!(toml::from_str::<MoodsFile>("bogus = 1\n").is_err());
+    }
+
+    #[test]
+    fn test_load_pairs_default_when_source_empty() {
+        // Empty source (the default) resolves to the bundled pairs, and
+        // never touches the filesystem.
+        let config = MoodConfig::default();
+        assert!(config.source.as_os_str().is_empty());
+        let pairs = config.load_pairs();
+        assert_eq!(pairs.len(), MoodsFile::default().pairs.len());
+        assert!(!pairs.is_empty());
     }
 }

@@ -965,22 +965,10 @@ async fn test_out_of_range_custom_still_inserts() {
     assert_eq!(custom_count, 1);
 }
 
-#[tokio::test]
-async fn test_tab_in_mood_rejected() {
-    let pool = test_pool().await.unwrap();
-    let config = Config::default();
-
-    // Mood with tab should be rejected
-    let cmd = parse_from(vec!["ok\tfeeling".to_string()]).unwrap();
-    let result = handle_command(
-        cmd,
-        &pool,
-        &config,
-        &CliOpts::default(),
-        &mut Vec::new(),
-        false,
-    )
-    .await;
+#[test]
+fn test_tab_in_mood_rejected() {
+    // Mood with tab is rejected at parse time (view output uses tab separators)
+    let result = parse_from(vec!["ok\tfeeling".to_string()]);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("tab characters"));
 }
@@ -3858,19 +3846,26 @@ async fn test_delete_task_cascades_completions() {
 #[tokio::test]
 async fn test_bundled_config_defaults_load_through_serde() {
     // The bundled `assets/config.toml` ships with hex RGB endpoints via the
-    // crossterm serde `#RRGGBB` format. If this test fails on a serde
-    // error, the bundled config has drifted from the parse path (e.g.
-    // someone changed a hex literal in `default_axes()` without updating
-    // `assets/config.toml`). It deliberately does NOT assert exact RGB
-    // values — tweak those freely for palette work without breaking the
-    // contract.
+    // crossterm serde `#RRGGBB` format; the anchor pairs now live in the
+    // bundled moods file (`DEFAULT_MOODS`, named by `[moods] source`). If
+    // this test fails on a serde error, the bundled config/moods files have
+    // drifted from the parse path (e.g. someone changed a hex literal in
+    // `assets/moods.toml` without updating the anchors). It deliberately
+    // does NOT assert exact RGB values — tweak those freely for palette
+    // work without breaking the contract.
     let cfg: Config = toml::from_str(feeling::config::DEFAULT_CONFIG)
         .expect("bundled DEFAULT_CONFIG must deserialize");
-    assert!(!cfg.moods.pairs.is_empty());
+
+    let moods: feeling::config::MoodsFile =
+        toml::from_str(feeling::config::DEFAULT_MOODS).expect("bundled DEFAULT_MOODS must parse");
+    assert!(!moods.pairs.is_empty());
+
+    // The default config points `source` at the moods file.
+    assert!(!cfg.moods.source.as_os_str().is_empty());
 
     // Mood names and order are valid.
-    assert_eq!(cfg.moods.pairs[0].mood, "happy");
-    assert_eq!(cfg.moods.pairs[1].mood, "sad");
+    assert_eq!(moods.pairs[0].mood, "happy");
+    assert_eq!(moods.pairs[1].mood, "sad");
 }
 
 // ---------- Event-loop architecture & new TUI actions ----------

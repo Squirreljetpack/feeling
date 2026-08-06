@@ -25,7 +25,7 @@ src/
   lib.rs        re-exports every module
   main.rs       thin binary: init flow + dispatch (the only TTY/TUI decision point)
   paths.rs      XDG-style paths (config dir, state dir, db, log)
-  config.rs     serde Config (config.toml) incl. mood pairs, task colors, custom trackers
+  config.rs     serde Config (config.toml) incl. mood source, task colors, custom trackers
   config/       config-side types (types.rs: MoodEndpoint, TrackerType, ColorBins)
   logger.rs     cba `bog`/env_logger setup (env_logger piped to the log file only)
   db.rs         SQLite pool, CREATE TABLE schema, indexes, PRAGMA foreign_keys
@@ -111,7 +111,12 @@ builds, `config.toml` in release (cba `expr_as_path_fn`). State dir:
 `state_dir/feeling.db`, log at `state_dir/feeling.log`.
 
 **config.rs** — `Config` (serde, every section `deny_unknown_fields` with
-per-field defaults).
+per-field defaults). The mood anchors were moved out of the config into a
+separate moods file: `[moods] source` names it (relative to the config
+directory); the bundled `assets/moods.toml` (`moods.dev.toml` in debug) is
+embedded via `DEFAULT_MOODS` and deserialized as the default (`MoodsFile`).
+`feeling :moods` opens the imported file in $EDITOR, creating it from the
+bundled default when missing.
 
 `Config::init` (called from main after load) drops tracker names that collide
 with CLI syntax — `:`-prefix, `-`/whitespace inside, or names made purely of
@@ -571,9 +576,8 @@ the tracker kind on Enter).
   (default `nomic`) must match `assets/model/.embed_model_stamp`; on mismatch,
   or when the vendored file is below the size floor, the model is regenerated
   via `pixi run --manifest-path model/pixi.toml python model/quantize_qdq.py`
-  (falling back to a bare `python3`). `build.rs` also generates
-  `default_pairs()` from the bundled config's `[[moods.pairs]]` and bundles
-  `assets/help.txt`.
+  (falling back to a bare `python3`). `build.rs` also bundles
+  `assets/help.txt` into the README.
 - Vector helpers: `format_vector`, `embedding_to_blob`/`blob_to_embedding`,
   `normalize`, `dot`, `cosine_similarity`.
 
@@ -581,8 +585,12 @@ the tracker kind on Enter).
 
 ## 11. Color (color.rs) — Oklab mood projection via NNLS basis-ray regression
 
-Config `[moods]` provides `ColorAxesSettings` (flattened; §2) plus a
-`Vec<MoodEndpoint>` of basis moods, each with a target color. The pipeline:
+Config `[moods]` provides `ColorAxesSettings` (flattened; §2) plus an
+`source` path naming the moods file (`[[pairs]]` anchors, relative to the
+config directory; see §2). The anchors resolve at `MoodConfig::init_with`
+time: an empty `source` — or a missing/unparsable/empty file — falls back to
+the bundled `assets/moods.toml` (`moods.dev.toml` in debug), deserialized
+from the `DEFAULT_MOODS` const at runtime. The pipeline:
 
 **Build (`ColorAxes::build_async(pool, embedder, settings, pairs)`)** —
 embeds the neutral base string (`base_string`, no prefix) and each pair mood
