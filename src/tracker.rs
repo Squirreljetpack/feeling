@@ -459,7 +459,14 @@ async fn display_tracker<W: Write>(
         let mut slot_sums: Vec<f64> = vec![0.0; num_slots];
         let mut slot_has_entry: Vec<bool> = vec![false; num_slots];
         // Null time-marker entries: remember the entry time per slot so the
-        // color can be computed from the time-of-day position.
+        // color can be computed from the time-of-day position. Semantics
+        // (see badge::null_tracker_color): the circular range [min, max] is
+        // traversed forward from min, wrapping when max < min. Inside the
+        // range the color is binned (min → last palette color, max → first;
+        // later = redder); outside, by circular proximity to the nearer
+        // endpoint (closer to min → last, closer to max → first). For
+        // wraparound time trackers like sleep, earlier is the good (last
+        // color) end — a pre-bedtime log colors like bedtime itself.
         let mut slot_time: Vec<Option<i64>> = vec![None; num_slots];
 
         for entry in &entries {

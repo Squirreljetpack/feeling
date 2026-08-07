@@ -10,6 +10,8 @@ same views run as a fullscreen ratatui TUI when stdout is a TTY.
 this project is in progress and we don't need to worry about migrations or
 breaking changes
 
+Keep _dbg!: it only emits in debug builds.
+
 removed features are treated as if they never existed: no tests, no mentions
 in this document, no changelog rows
 
@@ -166,7 +168,9 @@ bundled default when missing.
 `Config::init` (called from main after load) drops tracker names that collide
 with CLI syntax — `:`-prefix, `-`/whitespace inside, or names made purely of
 the flag letters `q`/`v` — and falls back to the default palette when
-`tasks.colors` has fewer than 3 entries.
+`tasks.colors` has fewer than 3 entries. Tracker-level `colors` overrides are
+only cleared when empty: single- and two-color palettes are valid there, and
+every badge/binning path degrades to the first/last (or sole) color.
 
 ---
 
@@ -332,7 +336,8 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   tracker's declared kind (text/number/float) with a clear error on mismatch;
   min/max apply to number/float, unknown tracker types are rejected. Insertion
   strategy is kind × interval: `text`/`float` trackers **with an interval**
-  (config `interval = ["2020-01-01 00:00", "1 day"]` — anchor + calendar span)
+  (config `interval = ["2020-01-01T00:00:00-04:00", "1 day"]` — RFC 3339
+  anchor timestamp + calendar span)
   keep one entry per interval slot — re-logging the same tracker inside the
   same slot replaces the previous entry; `number` trackers and interval-less
   trackers are plain inserts that accumulate (the views sum per-slot scores).

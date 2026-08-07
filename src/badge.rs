@@ -71,7 +71,7 @@ pub fn completion_badge_text(count: i64, target_count: i32) -> String {
 /// - only an upper bound → binary: above it the first color, at/below it the
 ///   last (success) color;
 /// - no usable range (neither bound, or degenerate `min == max`) → the middle
-///   palette color, rounded down (`colors.len() >= 2`).
+///   palette color, rounded down (`colors[0]` for a single-color palette).
 pub(crate) fn tracker_color(
     colors: &[CtColor],
     score: f64,

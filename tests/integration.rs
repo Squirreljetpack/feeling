@@ -3196,7 +3196,7 @@ async fn test_tracker_parse_errors() {
         result
             .unwrap_err()
             .to_string()
-            .contains("Cannot parse '3.5' as an integer for tracker 'bugs'"),
+            .contains("Value '3.5' for tracker 'bugs' is not a whole number (kind = number)"),
         "expected a clear integer parse error"
     );
 

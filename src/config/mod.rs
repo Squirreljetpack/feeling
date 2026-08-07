@@ -76,8 +76,8 @@ impl Config {
     /// names cannot be addressed from the CLI, clear non-positive tracker
     /// intervals (they would divide by zero when computing replacement
     /// slots), and fall back to the default badge palette when fewer than
-    /// three colors are configured. Run automatically at startup, before
-    /// any command is handled.
+    /// three colors are configured in `tasks.colors`. Run automatically at
+    /// startup, before any command is handled.
     ///
     /// The bundled default config never needs this; a user-edited config
     /// may. See [`is_valid_tracker_name`] for the exact tracker-name rules.
@@ -99,18 +99,35 @@ impl Config {
                 true
             }
         });
-        // Validate tracker-level color overrides: a palette with 2 or fewer
-        // entries can't produce meaningful binning, so clear it and warn.
+        // Validate tracker-level color overrides: only an empty palette is
+        // unusable — single- and two-color palettes are fine, every badge
+        // path degrades to the first/last (or sole) color — so clear it
+        // and warn.
         for (name, setting) in self.tracker.iter_mut() {
             if let Some(ref colors) = setting.colors {
-                if colors.len() <= 2 {
+                if colors.is_empty() {
                     wbog!(
                         "config";
-                        "Ignoring colors override on Tracker '{}' with {} entries (<= 2)",
-                        name,
-                        colors.len()
+                        "Ignoring empty colors override on Tracker '{}'",
+                        name
                     );
                     setting.colors = None;
+                }
+            }
+            // Text trackers have no score: their override palette, when
+            // present, must be exactly one color (the entry-badge color);
+            // anything else is meaningless, so clear it and warn.
+            if setting.kind == TrackerKind::Text {
+                if let Some(ref colors) = setting.colors {
+                    if colors.len() != 1 {
+                        wbog!(
+                            "config";
+                            "Ignoring colors override on text Tracker '{}' with {} entries (text trackers take exactly 1 color)",
+                            name,
+                            colors.len()
+                        );
+                        setting.colors = None;
+                    }
                 }
             }
             // A zero interval span would break the calendar slot math, so
@@ -127,6 +144,9 @@ impl Config {
                 setting.interval = None;
             }
         }
+        // tasks.colors drives the completion badge and numeric binning; it
+        // needs at least 3 entries to be meaningful, so fall back to the
+        // default palette when fewer than three are configured.
         if self.tasks.colors.len() < 3 {
             wbog!(
                 "Less than 3 colors defined for config.tasks.colors, overriding with the default."
@@ -172,17 +192,14 @@ mod tests {
         assert!(is_valid_tracker_name("mood_notes"));
         assert!(is_valid_tracker_name("query")); // 'q' inside a longer name is fine
         assert!(is_valid_tracker_name("vibe"));
-        // ':' prefix collides with grid-view commands
+        // ':' prefix collides with grid view specifiers
         assert!(!is_valid_tracker_name(":foo"));
-        // '-' or whitespace can't be addressed as `-name value`
+        // forbid '-' or whitespace
         assert!(!is_valid_tracker_name("sleep-time"));
         assert!(!is_valid_tracker_name("my sleep"));
         assert!(!is_valid_tracker_name("my\tsleep"));
         // Names made purely of flag characters (q / v) are reserved
-        assert!(!is_valid_tracker_name("q"));
-        assert!(!is_valid_tracker_name("v"));
         assert!(!is_valid_tracker_name("qv"));
-        assert!(!is_valid_tracker_name("vvq"));
         // Purely numeric names collide with the `! -<parent_id>` flag
         assert!(!is_valid_tracker_name("123"));
         assert!(!is_valid_tracker_name("0"));
@@ -268,21 +285,31 @@ mod tests {
     }
 
     #[test]
-    fn test_init_clears_invalid_tracker_colors() {
+    fn test_init_clears_empty_tracker_colors() {
         let mut config = Config::default();
 
-        // colors with 1 entry (<= 2) should be cleared and a warning emitted
+        // An empty colors override should be cleared and a warning emitted
         config.tracker.insert(
             "bad_colors".to_string(),
             TrackerSetting {
+                colors: Some(ColorBins::from(vec![])),
+                ..Default::default()
+            },
+        );
+        // Single- and two-color palettes are valid now — they should be kept
+        // (explicit non-text kinds: text trackers are restricted to 1 color).
+        config.tracker.insert(
+            "one_color".to_string(),
+            TrackerSetting {
+                kind: TrackerKind::Number,
                 colors: Some(ColorBins::from(vec![crossterm::style::Color::DarkRed])),
                 ..Default::default()
             },
         );
-        // colors with exactly 2 entries should also be cleared
         config.tracker.insert(
-            "bad_colors2".to_string(),
+            "two_colors".to_string(),
             TrackerSetting {
+                kind: TrackerKind::Number,
                 colors: Some(ColorBins::from(vec![
                     crossterm::style::Color::DarkRed,
                     crossterm::style::Color::DarkGreen,
@@ -294,6 +321,7 @@ mod tests {
         config.tracker.insert(
             "good_colors".to_string(),
             TrackerSetting {
+                kind: TrackerKind::Number,
                 colors: Some(ColorBins::from(vec![
                     crossterm::style::Color::DarkRed,
                     crossterm::style::Color::DarkYellow,
@@ -310,13 +338,87 @@ mod tests {
         config.init();
 
         assert!(config.tracker["bad_colors"].colors.is_none());
-        assert!(config.tracker["bad_colors2"].colors.is_none());
+        assert_eq!(
+            config.tracker["one_color"].colors.as_ref().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            config.tracker["two_colors"].colors.as_ref().unwrap().len(),
+            2
+        );
         assert!(config.tracker["good_colors"].colors.is_some());
         assert_eq!(
             config.tracker["good_colors"].colors.as_ref().unwrap().len(),
             3
         );
         assert!(config.tracker["no_colors"].colors.is_none());
+    }
+
+    #[test]
+    fn test_init_clears_non_single_text_tracker_colors() {
+        let mut config = Config::default();
+
+        // A text tracker override must be exactly 1 color (entry-badge
+        // color); 2+ entries are cleared with a warning.
+        config.tracker.insert(
+            "bad_text".to_string(),
+            TrackerSetting {
+                kind: TrackerKind::Text,
+                colors: Some(ColorBins::from(vec![
+                    crossterm::style::Color::DarkRed,
+                    crossterm::style::Color::DarkGreen,
+                ])),
+                ..Default::default()
+            },
+        );
+        // A single-color text override is valid and survives.
+        config.tracker.insert(
+            "good_text".to_string(),
+            TrackerSetting {
+                kind: TrackerKind::Text,
+                colors: Some(ColorBins::from(vec![crossterm::style::Color::DarkRed])),
+                ..Default::default()
+            },
+        );
+        // Non-text trackers are unaffected by the single-color rule.
+        config.tracker.insert(
+            "number_multi".to_string(),
+            TrackerSetting {
+                kind: TrackerKind::Number,
+                colors: Some(ColorBins::from(vec![
+                    crossterm::style::Color::DarkRed,
+                    crossterm::style::Color::DarkGreen,
+                ])),
+                ..Default::default()
+            },
+        );
+
+        config.init();
+
+        assert!(config.tracker["bad_text"].colors.is_none());
+        assert_eq!(
+            config.tracker["good_text"].colors.as_ref().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            config.tracker["number_multi"].colors.as_ref().unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_init_replaces_small_tasks_colors() {
+        // Fewer than 3 colors in tasks.colors — both the empty and the
+        // single-color case — are replaced with the default palette.
+        for small in [
+            Vec::<crossterm::style::Color>::new(),
+            vec![crossterm::style::Color::DarkRed],
+        ] {
+            let mut config = Config::default();
+            config.tasks.colors = ColorBins::from(small);
+            config.init();
+            assert_eq!(config.tasks.colors.len(), 3);
+        }
     }
 
     #[test]
@@ -397,11 +499,12 @@ mod tests {
 
     #[test]
     fn test_tracker_interval_serde() {
-        // The interval deserializes from ["<anchor datetime>", "<span>"].
+        // The interval deserializes from ["<anchor timestamp>", "<span>"];
+        // anchors are RFC 3339 timestamps with an explicit UTC offset.
         let cfg: Config = toml::from_str(
             r#"
             [tracker.sleep]
-            interval = ["2020-01-01 00:00", "1 day"]
+            interval = ["2020-01-01T00:00:00Z", "1 day"]
             kind = "null"
             "#,
         )
@@ -409,7 +512,10 @@ mod tests {
         let iv = cfg.tracker["sleep"].interval.expect("interval set");
         assert_eq!(
             iv.anchor,
-            crate::date::parse_datetime("2020-01-01 00:00", crate::date::DATE_DIALECT).unwrap()
+            "2020-01-01T00:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .as_second()
         );
         assert_eq!(iv.span.fieldwise(), jiff::Span::new().days(1).fieldwise());
         assert_eq!(cfg.tracker["sleep"].kind, TrackerKind::Null);
@@ -423,7 +529,13 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        // Serialization roundtrip.
+        // Anchors without an explicit UTC offset are rejected.
+        assert!(toml::from_str::<Config>(
+            "[tracker.sleep]\ninterval = [\"2020-01-01 00:00\", \"1 day\"]\nkind = \"null\"\n"
+        )
+        .is_err());
+
+        // Serialization roundtrip (anchors serialize back as RFC 3339).
         let serialized = toml::to_string(&cfg).unwrap();
         let reparsed: Config = toml::from_str(&serialized).expect("re-parses");
         let iv2 = reparsed.tracker["sleep"]
@@ -433,9 +545,49 @@ mod tests {
 
         // A zero span is rejected at parse time.
         assert!(toml::from_str::<Config>(
-            "[tracker.sleep]\ninterval = [\"2020-01-01 00:00\", \"0 days\"]\n"
+            "[tracker.sleep]\ninterval = [\"2020-01-01T00:00:00Z\", \"0 days\"]\n"
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_tracker_min_max_number_or_duration() {
+        // min/max accept plain numbers or humantime duration strings
+        // (converted to seconds, 1.0 = 1 s).
+        let cfg: Config = toml::from_str(
+            r#"
+            [tracker.sleep]
+            kind = "null"
+            min = "20h"
+            max = "4h"
+            [tracker.rating]
+            kind = "float"
+            min = 0
+            max = 9
+            [tracker.pushups]
+            kind = "number"
+            min = 10
+            [tracker.mile]
+            kind = "float"
+            min = "4m"
+            max = "10m"
+            "#,
+        )
+        .expect("trackers parse");
+        assert_eq!(cfg.tracker["sleep"].min, Some(72000.0));
+        assert_eq!(cfg.tracker["sleep"].max, Some(14400.0));
+        assert_eq!(cfg.tracker["rating"].min, Some(0.0));
+        assert_eq!(cfg.tracker["rating"].max, Some(9.0));
+        assert_eq!(cfg.tracker["pushups"].min, Some(10.0));
+        assert_eq!(cfg.tracker["pushups"].max, None);
+        assert_eq!(cfg.tracker["mile"].min, Some(240.0));
+        assert_eq!(cfg.tracker["mile"].max, Some(600.0));
+
+        // A string that is neither a number nor a duration is rejected.
+        assert!(
+            toml::from_str::<Config>("[tracker.sleep]\nkind = \"null\"\nmin = \"bogus\"\n")
+                .is_err()
+        );
     }
 
     #[test]

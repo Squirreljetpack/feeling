@@ -55,9 +55,64 @@ persist_pending_seconds = 300
 hint = true
 
 # --- TRACKERS ---
+#
+# Each tracker is its own section; log it with `-<name> <value>`.
+#
+# Intervals: If an interval is specified, tracker entries bin into the slots
+# given by the interval span, starting from the interval anchor.
+# - Newer entries replacing older entries in the same slot.
+# - Interval anchors are RFC 3339 timestamps with an explicit UTC offset.
+#
+# Bounds: min/max are used to determine display color of entries, not to gate insertion.
+# - If max < min, the semantics are reversed, with numbers closer to `max` mapping to earlier colors.
 
-# [tracker.<name>]
-# interval = "1 day"
-# kind = "float"      # text | number | float
-# min = 0
-# max = 10
+# Types:
+# null:
+#  - when min/max/interval are all specified
+#    this acts as a timestamp tracker,
+#    with min/max interpreted as seconds-from-interval-start
+#    defining a circular time-of-day color range
+#  - With either min/min omitted, this simply counts occurrences with an interval
+#  - null trackers don't accept a payload, and cannot be _followed by_ a mood (log with `feeling -<name>`).
+# float | number:
+#  - Values and min/max bounds accept a plain number or a duration string
+#    (e.g. "6.5", "4h", "30m") — durations convert to seconds.
+# text:
+#  - Plain text entry.
+#  - colors override is limited to length 1.
+
+[tracker.sleep]
+kind = "null"            # text | number | float | null
+interval = ["2026-01-01T00:00:00-04:00", "1 day"]
+min = "20h"              # 20:00 local
+max = "4h"               # 04:00 local — wraps the interval boundary
+colors = ["#933c3c", "#1a2b83", "#3f6b93"] # because min < max, the earlier color comes later in the array.
+
+[tracker.rating]
+kind = "float"
+interval = ["2026-01-01T00:00:00-04:00", "1 day"]
+min = 0
+max = 9
+colors = ["red", "dark_yellow", "#3f8a5a"]
+
+[tracker.pushups]
+kind = "number"
+interval = ["2026-01-01T00:00:00-04:00", "1 day"]
+min = 10
+
+[tracker.mile]  # mile run time .e.g. -mile 6.5m (pure numbers have units in seconds!)
+kind = "float"
+interval = ["2026-01-01T00:00:00-04:00", "1 day"]
+min = "4m"
+max = "10m"
+
+[tracker.acc]
+kind = "text"
+colors = ["#b5b224"]   # single color only for text trackers
+
+[tracker.thought]
+kind = "text"
+
+[tracker.grateful]
+kind = "text"
+colors = ["#a7347e"]

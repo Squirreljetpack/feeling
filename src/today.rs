@@ -268,6 +268,15 @@ pub async fn fetch_today_entries(
                     time,
                     score.unwrap_or(0.0),
                 )),
+                // Text entries have no score; a single-color palette
+                // override (validated to exactly 1 entry in Config::init)
+                // colors their badge, otherwise neutral gray.
+                TrackerKind::Text => tracker
+                    .colors
+                    .as_ref()
+                    .and_then(|c| c.first())
+                    .map(|c| RatColor::from_crossterm(*c))
+                    .unwrap_or(RatColor::DarkGray),
                 _ => match score {
                     Some(s) => RatColor::from_crossterm(crate::badge::tracker_color(
                         colors,
