@@ -1,8 +1,14 @@
 [workspace]
-members = ["cargo:."]
+members = ["cargo:.", "cargo:crates/feeling-dynamic"]
 
 # Config for 'dist'
 [dist]
+# Force cargo-dist to execute isolated cargo build commands per app to prevent workspace feature unification
+precise-builds = true
+
+# ONNX Runtime's static lib for Windows was prebuilt upstream against the dynamic CRT (/MD)
+msvc-crt-static = false
+
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
 # CI backends to support

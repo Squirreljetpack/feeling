@@ -1,3 +1,9 @@
+## [0.2.3] - 2026-08-07
+
+### 🐛 Bug Fixes
+
+- Reorganize parse, fix overflow
+
 ## [0.2.2] - 2026-08-07
 
 ### 🚀 Features

@@ -1,8 +1,9 @@
 [workspace]
 members = [".", "crates/feeling-dynamic"]
+default-members = ["."]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 repository = "https://github.com/Squirreljetpack/feeling"
 homepage = "https://github.com/Squirreljetpack/feeling"
@@ -72,8 +73,8 @@ oklab = "1.1"
 
 # Utilities
 tempfile = "3"
-cliclack = "0.5.5"
-ratatui = "0.30.2"
+cliclack = "0.5"
+ratatui = "0.30"
 mimalloc = "0.1"
 
 [features]

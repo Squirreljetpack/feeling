@@ -19,18 +19,27 @@ feeling — mood, journal, and task tracker
 Usage:
   feeling <mood> [.. [body]]                          log a mood (with an optional body)
   feeling [-tracker <value>]...                       add one or more custom tracker records
-    [mood] [-tracker <value>]... [.. [body]]            (optionally, linked to a new mood entry)
+    [mood] [-tracker <value>]...                        (optionally linked to a new mood entry)
 
-  feeling ! [-<parent_id>]                            create a oneshot task (interactive)
-  feeling ! [-<parent_id>] <name> [@<time>]           create a oneshot task
-    [.. [body]]                                         (optionally, linked to a parent)
+  feeling ! [-<parent_id>] [.. body]                  create a oneshot task (interactive)
+  feeling ! <name> [@<time>]                          create a oneshot task
   feeling ! @ [name]                                  create a recurring task (interactive)
-  feeling ! @<time> [:name]                           create a scheduled task
-    [%duration] [.. [body]]                             (interactive unless all 3 fields are specified)
+  feeling ! @<time> [:name] [%duration]               create a scheduled task (interactive
+                                                        unless all fields are filled)
+
+  All creation subcommands above support a trailing body [.. [body]].
+  If the body is empty, and creation is interactive or .. is given,
+  the `$EDITOR` will open for writing the body.
+
+  Oneshot tasks can be optionally linked to a parent (i.e. subtasks)
+  by writing the parent's id prefixed with `-` in the first argument.
+    A bare - allows you to pick the parent interactively.
 
   feeling - <query words> [count]                     update completion of the unique task
-                                                        whose name contains <query words> in their order
+                                                        whose name contains <query words>
+                                                        in their order
   feeling - <id> [count]                              update task completion by id
+
 
 Views:
   feeling [@date]                                     today view
@@ -40,19 +49,21 @@ Views:
                                                         (all / oneshot / recurring+scheduled)
   feeling @done[:o|:O]                                completed tasks
 
+
 Trackers and grids:
   feeling :[week|month|year] [ids]                    dot-sequence tracker grid
                                                         ids: <tracker> or @<recurring-name>
                                                         period defaults to "week"
-  feeling :embed                                      embed stdin lines (one vector/line)
-  feeling :score "start" "end"                        score stdin vectors onto an axis
-  feeling :color <feeling>                            projected mood color diagnostic
 
 Other:
   feeling :config | :c                                open the config in $VISUAL / $EDITOR
   feeling :moods                                      open the moods config file
+  feeling :embed                                      embed stdin lines (one vector/line)
+  feeling :color <feeling>                            projected mood color diagnostic
   feeling :clear [@date]                              clear all mood entries from a day
   feeling :prune                                      delete completed and expired tasks
+
+Flags:
   feeling -q | -v <command>                           quiet / verbose; flags go first
   feeling --help | -h                                 show this help
 ```
