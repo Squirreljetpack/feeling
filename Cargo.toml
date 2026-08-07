@@ -1,12 +1,18 @@
 [workspace]
 members = [".", "crates/feeling-dynamic"]
 
-[package]
-name = "feeling"
-version = "0.2.1"
+[workspace.package]
+version = "0.2.2"
 edition = "2021"
 repository = "https://github.com/Squirreljetpack/feeling"
 homepage = "https://github.com/Squirreljetpack/feeling"
+
+[package]
+name = "feeling"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "A CLI tool for tracking moods, journaling, habits, metrics, and for managing oneshot, recurring and scheduled tasks"
 
 [[example]]
