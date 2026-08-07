@@ -105,7 +105,7 @@ pub fn build_preview(
             task.last_time
         };
         if let Some(last) = last {
-            lines.push(field_line("last", date::format_datetime(last)));
+            lines.push(field_line("last", date::format_human_datetime(last)));
         }
     }
 
@@ -125,21 +125,21 @@ pub fn build_preview(
                 }
                 _ => st,
             };
-            lines.push(field_line("next", date::format_datetime(next)));
+            lines.push(field_line("next", date::format_human_datetime(next)));
         }
     } else if task.is_scheduled() {
         // Scheduled tasks show the window start.
         if let Some(st) = task.start_time {
-            lines.push(field_line("start", date::format_datetime(st)));
+            lines.push(field_line("start", date::format_human_datetime(st)));
         }
     } else {
         // Oneshot tasks: the creation time always, and the due time only
         // when one was set (`! name @<time>` → end_time).
         if let Some(st) = task.start_time {
-            lines.push(field_line("creation", date::format_datetime(st)));
+            lines.push(field_line("creation", date::format_human_datetime(st)));
         }
         if let Some(et) = task.end_time {
-            lines.push(field_line("due", date::format_datetime(et)));
+            lines.push(field_line("due", date::format_human_datetime(et)));
         }
     }
 
@@ -326,9 +326,9 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
     // Date after the name, right-aligned and dark gray.
     lines.push(date_line(entry.time));
 
-    // Interval trackers show when the next interval opens and the last
-    // (unscoped) entry — like recurring tasks.
-    if let (Some((anchor, span)), Some(last)) = (entry.tracker_interval, entry.tracker_last) {
+    // Interval trackers show when the next interval opens — like recurring
+    // tasks.
+    if let Some((anchor, span)) = entry.tracker_interval {
         if crate::date::span_rough_seconds(span) > 0.0 {
             let now = date::now();
             let next = if now <= anchor {
@@ -337,8 +337,42 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
                 // Next interval start = end of the current interval.
                 crate::date::interval_end_unix_secs(anchor, span, now).unwrap_or(anchor)
             };
-            lines.push(field_line("next", date::format_datetime(next)));
-            lines.push(field_line("last", date::format_datetime(last)));
+            lines.push(field_line("next", date::format_human_datetime(next)));
+        }
+    }
+
+    // `prev:` shows the previous entry of this kind whenever one exists.
+    if let Some(prev) = entry.tracker_prev {
+        lines.push(field_line("prev", date::format_human_datetime(prev)));
+    }
+
+    // Linked trackers and tasks (mood entries): a `linked:` field with one
+    // `  - {tracker}: {payload}` line per attached tracker (the name in the
+    // tracker's own color, matching the main `name: value` label format;
+    // payload omitted when the tracker carries none) and one
+    // `  - {badge} {task name}` line per linked task.
+    if !entry.linked_trackers.is_empty() || !entry.linked_tasks.is_empty() {
+        lines.push(field_line("linked", String::new()));
+        for t in &entry.linked_trackers {
+            let mut spans = vec![
+                Span::raw("  - "),
+                Span::styled(format!("{}:", t.name), Style::default().fg(t.color)),
+            ];
+            if !t.payload.is_empty() {
+                spans.push(Span::raw(format!(" {}", t.payload)));
+            }
+            lines.push(Line::from(spans));
+        }
+        for t in &entry.linked_tasks {
+            let mut spans = vec![Span::raw("  - ")];
+            if let Some(badge) = t.badge {
+                spans.push(Span::styled(
+                    badge.to_string(),
+                    Style::default().fg(t.color),
+                ));
+            }
+            spans.push(Span::raw(format!(" {}", t.name)));
+            lines.push(Line::from(spans));
         }
     }
 
@@ -404,7 +438,7 @@ mod tests {
         assert!(
             fields
                 .iter()
-                .any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
+                .any(|f| f == &format!("last: {}", date::format_human_datetime(1_700_500_000))),
             "expected last: from end_time, got {fields:?}"
         );
         assert!(!fields.iter().any(|f| f.starts_with("ends:")), "{fields:?}");
@@ -418,12 +452,12 @@ mod tests {
         assert!(
             fields
                 .iter()
-                .any(|f| f == &format!("last: {}", date::format_datetime(1_700_400_000))),
+                .any(|f| f == &format!("last: {}", date::format_human_datetime(1_700_400_000))),
             "expected last: from last_time, got {fields:?}"
         );
         assert!(fields
             .iter()
-            .any(|f| f == &format!("ends: {}", date::format_datetime(1_700_500_000))));
+            .any(|f| f == &format!("ends: {}", date::format_human_datetime(1_700_500_000))));
     }
 
     #[test]
@@ -440,8 +474,119 @@ mod tests {
         assert!(
             fields
                 .iter()
-                .any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
+                .any(|f| f == &format!("last: {}", date::format_human_datetime(1_700_500_000))),
             "expected last: on a done row, got {fields:?}"
+        );
+    }
+
+    /// A tracker entry preview shows `prev:` (the previous entry of this
+    /// kind, human-formatted) when one exists, and no `prev:`/`last:` field
+    /// at all otherwise.
+    #[test]
+    fn test_build_today_preview_prev() {
+        let mk = |tracker_prev: Option<i64>| TodayEntry {
+            id: Some(1),
+            time: 1_700_000_000,
+            time_label: "18:00".to_string(),
+            kind: EntryKind::Tracker(crate::config::TrackerKind::Float),
+            label: "sleep: 7.5".to_string(),
+            body: String::new(),
+            task_id: None,
+            priority: 0,
+            badge: Some('◆'),
+            color: Color::DarkGray,
+            recurring_window: None,
+            tracker_interval: None,
+            tracker_prev,
+            linked_trackers: Vec::new(),
+            linked_tasks: Vec::new(),
+        };
+        let rendered: Vec<String> = build_today_preview(&mk(Some(1_699_000_000)))
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l == &format!("  prev: {}", date::format_human_datetime(1_699_000_000))),
+            "expected a prev: field, got {rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("last:")),
+            "{rendered:?}"
+        );
+
+        let rendered: Vec<String> = build_today_preview(&mk(None))
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert!(
+            !rendered.iter().any(|l| l.trim_start().starts_with("prev:")),
+            "expected no prev: field, got {rendered:?}"
+        );
+    }
+
+    /// A mood entry with attached trackers and linked tasks shows a
+    /// `linked:` field with one `  - {tracker} {payload}` line per tracker
+    /// (name in the tracker's color) and one `  - {badge} {task name}` line
+    /// per task; null-tracker payloads are omitted.
+    #[test]
+    fn test_build_today_preview_linked() {
+        use crate::today::{LinkedTask, LinkedTracker};
+        let entry = TodayEntry {
+            id: Some(1),
+            time: 1_700_000_000,
+            time_label: "18:00".to_string(),
+            kind: EntryKind::Mood,
+            label: "good".to_string(),
+            body: String::new(),
+            task_id: None,
+            priority: 0,
+            badge: Some('●'),
+            color: Color::DarkGray,
+            recurring_window: None,
+            tracker_interval: None,
+            tracker_prev: None,
+            linked_trackers: vec![
+                LinkedTracker {
+                    name: "sleep".to_string(),
+                    payload: "7.5".to_string(),
+                    color: Color::LightBlue,
+                },
+                // Null trackers carry the entry moment as their payload.
+                LinkedTracker {
+                    name: "sitting".to_string(),
+                    payload: "3-15 14:30".to_string(),
+                    color: Color::LightYellow,
+                },
+            ],
+            linked_tasks: vec![LinkedTask {
+                badge: Some('✓'),
+                color: Color::Green,
+                name: "water plants".to_string(),
+            }],
+        };
+        let rendered: Vec<String> = build_today_preview(&entry)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.trim_start().starts_with("linked:")),
+            "expected a linked: field, got {rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l == "  - sleep: 7.5"),
+            "expected a '  - sleep: 7.5' line, got {rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l == "  - sitting: 3-15 14:30"),
+            "expected a '  - sitting: 3-15 14:30' line, got {rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l == "  - ✓ water plants"),
+            "expected a '  - ✓ water plants' line, got {rendered:?}"
         );
     }
 

@@ -49,6 +49,15 @@ pub fn format_datetime(ts: Epoch) -> String {
         .unwrap_or_else(|| "--".to_string())
 }
 
+/// Human-friendly datetime for preview field lines (`prev:`, `next:`,
+/// `last:`, ...). Currently defers to [`format_datetime`]; a future
+/// humanization (e.g. relative phrasing like "today 14:30") goes here
+/// without touching the field renderers. The right-aligned dark-gray date
+/// line keeps [`format_datetime`].
+pub fn format_human_datetime(ts: Epoch) -> String {
+    format_datetime(ts)
+}
+
 /// Short datetime form for per-entry annotations (e.g. the text-tracker
 /// `> value [timestamp]` lines); M-D HH:MM (hour/minute zero-padded)
 pub fn format_datetime_short(ts: Epoch) -> String {
@@ -92,6 +101,12 @@ mod tests {
         // Hour/minute are zero-padded (9:05 renders as 09:05, not 9:5).
         let ts = parse::parse_datetime("2024-03-15 09:05", crate::date::DATE_DIALECT).unwrap();
         assert_eq!(format_datetime_short(ts), "3-15 09:05");
+    }
+
+    #[test]
+    fn test_format_human_datetime_defers_to_format_datetime() {
+        let ts = parse::parse_datetime("2024-03-15 14:30", crate::date::DATE_DIALECT).unwrap();
+        assert_eq!(format_human_datetime(ts), format_datetime(ts));
     }
 
     #[test]

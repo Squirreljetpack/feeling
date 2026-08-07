@@ -58,6 +58,7 @@ pub(crate) enum Modal {
     ResetConfirm(ResetConfirmation),
     AvailabilityConfirm(AvailabilityConfirmation),
     EditTracker(EditTrackerModal),
+    UpdateTracker(UpdateTrackerModal),
 }
 
 /// Modal state for editing a Number/Float tracker payload in place.
@@ -68,6 +69,21 @@ pub(crate) struct EditTrackerModal {
     pub(crate) tracker_type: String,
     /// Payload kind: Number (i64) or Float (f64). Text trackers don't use
     /// this modal — they open the external editor.
+    pub(crate) kind: crate::config::TrackerKind,
+    pub(crate) input: String,
+    pub(crate) error: Option<String>,
+}
+
+/// Modal state for the Enter-key tracker update (an "Update:" prompt
+/// modeled on the task count modal): kind-filtered input, validated with
+/// the shared tracker-value parser before applying. Null trackers never
+/// open this modal — they re-log in place.
+pub(crate) struct UpdateTrackerModal {
+    /// tracker row id.
+    pub(crate) tracker_id: i64,
+    /// Tracker type name from config (e.g. "sleep") — for error messages.
+    pub(crate) tracker_type: String,
+    /// Payload kind: Text, Number, or Float.
     pub(crate) kind: crate::config::TrackerKind,
     pub(crate) input: String,
     pub(crate) error: Option<String>,
@@ -189,6 +205,17 @@ impl TodayApp {
     }
 
     async fn mark_selected_complete(&mut self) {
+        // Tracker rows: Enter re-logs null trackers in place (time → now,
+        // count incremented in count mode) or opens the "Update:" prompt
+        // modal for value-bearing kinds.
+        if let Some(entry) = self.entries.get(self.selected) {
+            if let EntryKind::Tracker(kind) = entry.kind {
+                let tracker_id = entry.id;
+                let label = entry.label.clone();
+                self.tracker_enter_action(kind, tracker_id, &label).await;
+                return;
+            }
+        }
         // Resolve the row from the selected entry first: recurring entries
         // carry their window-scoped row (authoritative for the D10 check and
         // the enter-action state machine — `refresh()` does not refetch
@@ -218,6 +245,50 @@ impl TodayApp {
         };
         let task = task.clone();
         self.run_enter_action(task).await;
+    }
+
+    /// Enter on a tracker row: null trackers re-log in place (time → now,
+    /// and in count mode — either `min`/`max` bound missing — the count
+    /// increments too, mirroring the CLI); value-bearing kinds open the
+    /// "Update:" prompt modal with an empty input.
+    async fn tracker_enter_action(
+        &mut self,
+        kind: crate::config::TrackerKind,
+        tracker_id: Option<i64>,
+        label: &str,
+    ) {
+        let Some(tracker_id) = tracker_id else {
+            return;
+        };
+        if kind == crate::config::TrackerKind::Null {
+            let increment = match label.split_once(':') {
+                Some((name, _)) => self
+                    .config
+                    .tracker
+                    .get(name.trim())
+                    .is_some_and(|t| t.min.is_none() || t.max.is_none()),
+                None => false,
+            };
+            let _ = crate::db::relog_null_tracker(
+                &self.pool,
+                tracker_id,
+                crate::date::now(),
+                increment,
+            )
+            .await;
+            self.refresh().await;
+            return;
+        }
+        self.modal = Some(Modal::UpdateTracker(UpdateTrackerModal {
+            tracker_id,
+            tracker_type: label
+                .split_once(':')
+                .map(|(n, _)| n.trim().to_string())
+                .unwrap_or_default(),
+            kind,
+            input: String::new(),
+            error: None,
+        }));
     }
 
     /// Run the Enter-action state machine for a task: modal-less toggle
@@ -438,6 +509,44 @@ impl TodayApp {
             return true;
         }
 
+        // Tracker update prompt (Enter): kind-filtered input, validated
+        // with the shared parser on Accept.
+        if matches!(self.modal, Some(Modal::UpdateTracker(_))) {
+            match action {
+                Action::Accept => self.submit_update_tracker().await,
+                Action::Quit => {
+                    self.modal = None;
+                }
+                Action::Delete(_) => {
+                    if let Some(Modal::UpdateTracker(m)) = self.modal.as_mut() {
+                        m.input.pop();
+                        m.error = None;
+                    }
+                }
+                Action::Input(c) => {
+                    if let Some(Modal::UpdateTracker(m)) = self.modal.as_mut() {
+                        let allowed = match m.kind {
+                            crate::config::TrackerKind::Number => {
+                                c.is_ascii_digit() || *c == '-'
+                            }
+                            crate::config::TrackerKind::Float => {
+                                c.is_ascii_digit() || *c == '-' || *c == '.'
+                            }
+                            // Text payloads accept any character.
+                            crate::config::TrackerKind::Text => true,
+                            crate::config::TrackerKind::Null => false,
+                        };
+                        if allowed {
+                            m.input.push(*c);
+                            m.error = None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return true;
+        }
+
         let Some(Modal::Complete(modal)) = self.modal.as_mut() else {
             return false;
         };
@@ -496,6 +605,39 @@ impl TodayApp {
         self.modal = None;
         self.update_tracker_score(tracker_id, kind, &input).await;
         self.refresh().await;
+    }
+
+    /// Validate the Update prompt's input with the shared tracker-value
+    /// parser (the same rules as the CLI) and apply it. Invalid input keeps
+    /// the modal open with the parser's error.
+    async fn submit_update_tracker(&mut self) {
+        let Some(Modal::UpdateTracker(m)) = self.modal.as_ref() else {
+            return;
+        };
+        let tracker_id = m.tracker_id;
+        let tracker_type = m.tracker_type.clone();
+        let kind = m.kind;
+        let input = m.input.trim().to_string();
+        // Empty input mirrors the CLI's "requires a value" rule.
+        let parsed = if input.is_empty() {
+            Err(anyhow::anyhow!("requires a value"))
+        } else {
+            crate::tracker::parse_tracker_value(&tracker_type, kind, &input)
+        };
+        match parsed {
+            Ok(_) => {
+                self.modal = None;
+                self.update_tracker_score(tracker_id, kind, &input).await;
+                self.refresh().await;
+            }
+            Err(e) => {
+                let m = self.modal.as_mut().expect("modal");
+                let Modal::UpdateTracker(m) = m else {
+                    unreachable!()
+                };
+                m.error = Some(format!("{e:#}"));
+            }
+        }
     }
 
     async fn submit_complete_modal(&mut self) {
@@ -845,6 +987,10 @@ fn render_today_preview(f: &mut Frame, app: &TodayApp, area: Rect) {
 /// in sync.
 const COUNT_LABEL: &str = "Count: ";
 
+/// Label prefix for the tracker Update prompt (Enter on a tracker row),
+/// sized like [`COUNT_LABEL`] — keep the cursor math in sync.
+const UPDATE_LABEL: &str = "Update: ";
+
 fn render_today_modal(f: &mut Frame, app: &TodayApp) {
     let modal = app.modal.as_ref().expect("modal must be open");
     let area = f.area();
@@ -862,6 +1008,19 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
                 Span::styled(input_display, Style::default().fg(Color::White)),
             ])];
 
+            if let Some(err) = &modal.error {
+                lines.push(Line::from(Span::styled(
+                    format!(" ✗ {}", err),
+                    Style::default().fg(Color::LightRed),
+                )));
+            }
+            (Some("Update".to_string()), lines, None)
+        }
+        Modal::UpdateTracker(modal) => {
+            let mut lines = vec![Line::from(vec![
+                Span::styled(UPDATE_LABEL, Style::default().fg(Color::Yellow)),
+                Span::styled(modal.input.clone(), Style::default().fg(Color::White)),
+            ])];
             if let Some(err) = &modal.error {
                 lines.push(Line::from(Span::styled(
                     format!(" ✗ {}", err),
@@ -1001,6 +1160,17 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
                 Padding::ZERO,
             )
         }
+        Modal::UpdateTracker(modal) => {
+            // Sized to the "Update: " line plus the typed input, like the
+            // count modal; the error line, if any, keeps its row but may
+            // clip.
+            let content_width = UPDATE_LABEL.len() + modal.input.len() + 1;
+            (
+                (content_width as u16 + 2).min(area.width),
+                (lines.len() as u16 + 2).min(area.height),
+                Padding::ZERO,
+            )
+        }
         _ => (
             (area.width / 2).clamp(40, area.width.saturating_sub(2)),
             7,
@@ -1034,12 +1204,17 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
     let paragraph = Paragraph::new(Text::from(lines)).block(block);
     f.render_widget(paragraph, popup);
 
-    // Park the cursor right after "Count: " + the typed input (inner row 1),
-    // so the next keystroke lands at the end of what's displayed. When the
-    // input is empty the placeholder "1" is shown and the cursor sits at it.
+    // Park the cursor right after the prompt label + the typed input (inner
+    // row 1), so the next keystroke lands at the end of what's displayed.
     if let Modal::Complete(modal) = modal {
         f.set_cursor_position((
             popup.x + 1 + COUNT_LABEL.len() as u16 + modal.input.len() as u16,
+            popup.y + 1,
+        ));
+    }
+    if let Modal::UpdateTracker(modal) = modal {
+        f.set_cursor_position((
+            popup.x + 1 + UPDATE_LABEL.len() as u16 + modal.input.len() as u16,
             popup.y + 1,
         ));
     }

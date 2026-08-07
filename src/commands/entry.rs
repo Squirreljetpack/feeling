@@ -6,6 +6,7 @@ use crate::config::{Config, TrackerInterval, TrackerKind};
 use crate::date;
 use crate::db::{EntryObject, NullUpsert, TrackerObject, TrackerValue};
 use crate::editor::open_editor_for_body;
+use crate::tracker::parse_tracker_value;
 use crate::types::Entry;
 
 pub(super) async fn record_entry(
@@ -168,49 +169,6 @@ pub(super) async fn record_entry(
     crate::output::display_entry(&entry_obj, opts)?;
 
     Ok(())
-}
-
-/// Interpret a raw CLI value for a tracker according to its configured kind.
-/// Denies unknown tracker types; parses Number/Float values (with a clear
-/// error when the argument cannot be parsed) and enforces min/max for both;
-/// Text accepts the value as-is (min/max ignored).
-///
-/// Values are parsed number-first, then as a humantime duration (e.g.
-/// `6.5`, `1h`, `45s` — see [`crate::date::parse_num_or_duration`], the
-/// same parser `min`/`max` config bounds use); `number` trackers additionally
-/// require the parsed value to be a whole number.
-fn parse_tracker_value(tracker_type: &str, kind: TrackerKind, raw: &str) -> Result<TrackerValue> {
-    match kind {
-        TrackerKind::Text => Ok(TrackerValue::Text(raw.to_string())),
-        TrackerKind::Number => {
-            let f = crate::date::parse_num_or_duration(raw).map_err(|_| {
-                anyhow::anyhow!(
-                    "Cannot parse '{}' as an integer for tracker '{}'",
-                    raw,
-                    tracker_type
-                )
-            })?;
-            if f.fract() != 0.0 || !(i64::MIN as f64..=i64::MAX as f64).contains(&f) {
-                anyhow::bail!(
-                    "Value '{}' for tracker '{}' is not a whole number (kind = number)",
-                    raw,
-                    tracker_type
-                );
-            }
-            Ok(TrackerValue::Number(f as i64))
-        }
-        TrackerKind::Float => {
-            let f = crate::date::parse_num_or_duration(raw).map_err(|_| {
-                anyhow::anyhow!(
-                    "Cannot parse '{}' as a number for tracker '{}'",
-                    raw,
-                    tracker_type
-                )
-            })?;
-            Ok(TrackerValue::Float(f))
-        }
-        TrackerKind::Null => unreachable!("null trackers are handled in record_entry"),
-    }
 }
 
 /// The `[start, end)` replacement slot containing `time_epoch` for a

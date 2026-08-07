@@ -192,7 +192,7 @@ impl TaskRow {
     }
 
     pub fn end_datetime(&self) -> Option<String> {
-        self.end_time.map(crate::date::format_datetime)
+        self.end_time.map(crate::date::format_human_datetime)
     }
 }
 

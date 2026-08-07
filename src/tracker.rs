@@ -7,6 +7,7 @@ use crate::badge::completion_badge;
 use crate::cli::{CliOpts, TrackerItem, TrackerPeriod};
 use crate::config::{Config, TrackerKind};
 use crate::date;
+use crate::db::TrackerValue;
 
 /// Read a tracker score as f64. The `score` column is stored as
 /// BLOB but SQLite's dynamic typing means values can be INTEGER, REAL, or
@@ -14,6 +15,51 @@ use crate::date;
 /// every storage type decodes as a String; parse that.
 pub(crate) fn score_f64(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
+}
+
+/// Interpret a raw tracker value according to its configured kind, shared
+/// by the CLI entry path and the today view's Update modal. Values are
+/// parsed number-first, then as a humantime duration (e.g. `6.5`, `1h`,
+/// `45s` — see [`crate::date::parse_num_or_duration`], the same parser
+/// `min`/`max` config bounds use); `number` trackers additionally require
+/// the parsed value to be a whole number. Text accepts the value as-is
+/// (min/max ignored). Null trackers never reach this parser.
+pub(crate) fn parse_tracker_value(
+    tracker_type: &str,
+    kind: TrackerKind,
+    raw: &str,
+) -> Result<TrackerValue> {
+    match kind {
+        TrackerKind::Text => Ok(TrackerValue::Text(raw.to_string())),
+        TrackerKind::Number => {
+            let f = crate::date::parse_num_or_duration(raw).map_err(|_| {
+                anyhow::anyhow!(
+                    "Cannot parse '{}' as an integer for tracker '{}'",
+                    raw,
+                    tracker_type
+                )
+            })?;
+            if f.fract() != 0.0 || !(i64::MIN as f64..=i64::MAX as f64).contains(&f) {
+                anyhow::bail!(
+                    "Value '{}' for tracker '{}' is not a whole number (kind = number)",
+                    raw,
+                    tracker_type
+                );
+            }
+            Ok(TrackerValue::Number(f as i64))
+        }
+        TrackerKind::Float => {
+            let f = crate::date::parse_num_or_duration(raw).map_err(|_| {
+                anyhow::anyhow!(
+                    "Cannot parse '{}' as a number for tracker '{}'",
+                    raw,
+                    tracker_type
+                )
+            })?;
+            Ok(TrackerValue::Float(f))
+        }
+        TrackerKind::Null => unreachable!("null trackers are handled by the caller"),
+    }
 }
 
 /// Effective endpoints for dot binning (grid semantics). Configured

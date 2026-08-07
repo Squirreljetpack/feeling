@@ -1230,6 +1230,273 @@ async fn test_today_view_with_data() {
     assert!(output.contains('\t'), "output: {output:?}");
 }
 
+/// A mood entry with an attached tracker value and a linked task carries
+/// both in `fetch_today_entries` (the data behind the preview's `linked:`
+/// section).
+#[tokio::test]
+async fn test_today_view_linked_trackers_and_tasks() {
+    use feeling::config::TrackerSetting;
+    use feeling::today::EntryKind;
+    use feeling::types::{TodayHorizon, ViewVariant};
+
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    config.tracker.insert(
+        "sleep".to_string(),
+        TrackerSetting {
+            interval: None,
+            min: None,
+            max: Some(10.0),
+            kind: TrackerKind::Float,
+            colors: None,
+        },
+    );
+
+    // A task with a short id to link to, via the CLI path.
+    let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    execute_command(
+        parse_from(vec![
+            "!".to_string(),
+            "water plants".to_string(),
+            format!("@{today_str}"),
+        ])
+        .unwrap(),
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    let short_id: i64 = sqlx::query_scalar("SELECT short_id FROM todos WHERE name = ?")
+        .bind("water plants")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Mood with an attached tracker value and a task link (`-<short id>`).
+    execute_command(
+        parse_from(vec![
+            "good".to_string(),
+            "-sleep".to_string(),
+            "8".to_string(),
+            format!("-{short_id}"),
+        ])
+        .unwrap(),
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    // fetch_today_entries needs the embedder built (init_with) — the CLI
+    // path does this before dispatching, so the direct call must too.
+    config
+        .moods
+        .init_with(&pool, feeling::embedding::global_embedder())
+        .await
+        .unwrap();
+
+    let mut color_cache = std::collections::HashMap::new();
+    let entries = feeling::today::fetch_today_entries(
+        &pool,
+        &config,
+        TodayHorizon::Today,
+        None,
+        ViewVariant::All,
+        &mut color_cache,
+    )
+    .await
+    .unwrap();
+    let mood = entries
+        .iter()
+        .find(|e| e.kind == EntryKind::Mood)
+        .expect("expected a mood entry");
+    assert_eq!(mood.linked_trackers.len(), 1);
+    assert_eq!(mood.linked_trackers[0].name, "sleep");
+    assert_eq!(mood.linked_trackers[0].payload, "8");
+    assert_eq!(mood.linked_tasks.len(), 1);
+    assert_eq!(mood.linked_tasks[0].name, "water plants");
+    assert_eq!(mood.linked_tasks[0].badge, Some('○')); // not done yet
+}
+
+/// Null tracker labels, relog semantics, and `prev:` in the today view:
+/// count-mode null trackers (either bound missing) show the count, both
+/// bounds set shows the entry moment; `relog_null_tracker` moves the time
+/// and increments the count; `tracker_prev` carries the previous entry of
+/// the same kind.
+#[tokio::test]
+async fn test_today_view_null_labels_relog_and_prev() {
+    use feeling::config::TrackerSetting;
+    use feeling::today::EntryKind;
+    use feeling::types::{TodayHorizon, ViewVariant};
+
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+
+    // Count-mode null tracker: interval + a single bound.
+    config.tracker.insert(
+        "water".to_string(),
+        TrackerSetting {
+            interval: Some(day_interval()),
+            min: Some(0.0),
+            max: None,
+            kind: TrackerKind::Null,
+            colors: None,
+        },
+    );
+    // Time-marker null tracker: interval + both bounds.
+    config.tracker.insert(
+        "sit".to_string(),
+        TrackerSetting {
+            interval: Some(day_interval()),
+            min: Some(0.0),
+            max: Some(86400.0),
+            kind: TrackerKind::Null,
+            colors: None,
+        },
+    );
+    // Plain float tracker (no interval) for the prev: checks.
+    config.tracker.insert(
+        "sleep".to_string(),
+        TrackerSetting {
+            interval: None,
+            min: None,
+            max: Some(10.0),
+            kind: TrackerKind::Float,
+            colors: None,
+        },
+    );
+
+    // Log twice in the same day slot: the count-mode null upsert
+    // increments the slot's entry.
+    for _ in 0..2 {
+        execute_command(
+            parse_from(vec!["-water".to_string()]).unwrap(),
+            &pool,
+            &config,
+            &CliOpts::default(),
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
+    }
+    execute_command(
+        parse_from(vec!["-sit".to_string()]).unwrap(),
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    execute_command(
+        parse_from(vec!["-sleep".to_string(), "6.5".to_string()]).unwrap(),
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    execute_command(
+        parse_from(vec!["-sleep".to_string(), "8".to_string()]).unwrap(),
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    // fetch_today_entries needs the embedder built (init_with) — the CLI
+    // path does this before dispatching, so the direct call must too.
+    config
+        .moods
+        .init_with(&pool, feeling::embedding::global_embedder())
+        .await
+        .unwrap();
+
+    let mut color_cache = std::collections::HashMap::new();
+    let entries = feeling::today::fetch_today_entries(
+        &pool,
+        &config,
+        TodayHorizon::Today,
+        None,
+        ViewVariant::All,
+        &mut color_cache,
+    )
+    .await
+    .unwrap();
+
+    // Count-mode null: the label carries the count, not the time.
+    let water = entries
+        .iter()
+        .find(|e| e.label.starts_with("water:"))
+        .expect("expected the water entry");
+    assert_eq!(water.label, "water: 2");
+
+    // Time-marker null: the label carries the entry moment.
+    let sit = entries
+        .iter()
+        .find(|e| e.label.starts_with("sit:"))
+        .expect("expected the sit entry");
+    assert_eq!(
+        sit.label,
+        format!("sit: {}", feeling::date::format_datetime_short(sit.time))
+    );
+
+    // prev: the later sleep entry points at the earlier one (row id is the
+    // tiebreaker for same-second entries); the first has no previous entry.
+    let sleeps: Vec<_> = entries
+        .iter()
+        .filter(|e| e.label.starts_with("sleep:"))
+        .collect();
+    assert_eq!(sleeps.len(), 2);
+    let (first, second) = if sleeps[0].id < sleeps[1].id {
+        (&sleeps[0], &sleeps[1])
+    } else {
+        (&sleeps[1], &sleeps[0])
+    };
+    assert!(first.time <= second.time);
+    assert_eq!(first.tracker_prev, None);
+    assert_eq!(second.tracker_prev, Some(first.time));
+
+    // Re-log the water entry: time moves to the new moment, count
+    // increments (count mode).
+    let water_id = water.id.expect("tracker entry id");
+    let t0 = water.time;
+    feeling::db::relog_null_tracker(&pool, water_id, t0 + 1000, true)
+        .await
+        .unwrap();
+
+    let mut color_cache = std::collections::HashMap::new();
+    let entries = feeling::today::fetch_today_entries(
+        &pool,
+        &config,
+        TodayHorizon::Today,
+        None,
+        ViewVariant::All,
+        &mut color_cache,
+    )
+    .await
+    .unwrap();
+    let water = entries
+        .iter()
+        .find(|e| e.label.starts_with("water:"))
+        .expect("expected the water entry");
+    assert_eq!(water.label, "water: 3");
+    assert_eq!(water.time, t0 + 1000);
+}
+
 /// `feeling @<date>` anchors the today view to an arbitrary day.
 #[tokio::test]
 async fn test_today_view_with_date() {

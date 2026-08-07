@@ -356,7 +356,7 @@ pub(super) async fn edit_config() -> Result<()> {
     if created {
         cba::ibog!(
             "config";
-            "Created file at {}.",
+            "Created file at {}",
             path.display()
         );
     }
@@ -392,7 +392,7 @@ pub(super) async fn edit_moods(config: &Config) -> Result<()> {
     if created {
         cba::ibog!(
             "moods";
-            "Created file at {}.",
+            "Created file at {}",
             path.display()
         );
     }

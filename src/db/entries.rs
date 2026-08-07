@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
 
 use super::models::{
-    CompletionRow, EntryObject, FeelingRow, RecurringTaskMeta, TrackerEntryRow,
+    CompletionRow, EntryObject, FeelingRow, RecurringTaskMeta, TaskRow, TrackerEntryRow,
     TrackerScoreKindRow, TrackerValue,
 };
+use super::views::attach_full_completions;
 use crate::config::TrackerKind;
 
 /// Insert a mood entry and its linked tracker values in one transaction.
@@ -259,18 +260,31 @@ pub async fn fetch_tracker_entries(
         .collect())
 }
 
-/// The most recent entry time per tracker type (unscoped), for the today
-/// view's preview `last:` field. Trackers without entries are absent.
-pub async fn fetch_tracker_last_times(
+/// For each tracker entry in `[start, end]`, the time of the previous
+/// entry of the same type, keyed by entry id — the today-view preview's
+/// `prev:` field. "Previous" is by time, with the row id as tiebreaker
+/// (same-second entries: the one inserted first wins). Entries without an
+/// earlier entry map to `None`.
+pub async fn fetch_tracker_prev_times(
     pool: &SqlitePool,
-) -> Result<std::collections::HashMap<String, i64>> {
-    let rows = sqlx::query("SELECT type, MAX(time) AS last FROM tracker GROUP BY type")
-        .fetch_all(pool)
-        .await
-        .context("Failed to fetch tracker last times")?;
+    start: i64,
+    end: i64,
+) -> Result<std::collections::HashMap<i64, Option<i64>>> {
+    let rows = sqlx::query(
+        "SELECT t1.id, \
+         (SELECT MAX(t2.time) FROM tracker t2 \
+          WHERE t2.type = t1.type \
+            AND (t2.time < t1.time OR (t2.time = t1.time AND t2.id < t1.id))) AS prev \
+         FROM tracker t1 WHERE t1.time >= ? AND t1.time <= ?",
+    )
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch tracker prev times")?;
     Ok(rows
         .iter()
-        .map(|r| (r.get::<String, _>("type"), r.get::<i64, _>("last")))
+        .map(|r| (r.get::<i64, _>("id"), r.get::<Option<i64>, _>("prev")))
         .collect())
 }
 
@@ -402,6 +416,109 @@ pub async fn fetch_linked_moods(pool: &SqlitePool, task_id: i64) -> Result<Vec<F
             score: r.get("score"),
         })
         .collect())
+}
+
+/// Tracker entries attached to feelings (the `tracker.feeling` column),
+/// grouped by feeling id, oldest first within each group. Feelings without
+/// attached tracker rows are absent from the map; an empty input returns an
+/// empty map.
+pub async fn fetch_feeling_trackers(
+    pool: &SqlitePool,
+    feeling_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<TrackerEntryRow>>> {
+    let mut map = std::collections::HashMap::new();
+    if feeling_ids.is_empty() {
+        return Ok(map);
+    }
+    let sql = format!(
+        "SELECT id, type, CAST(score AS TEXT) AS score, time, feeling FROM tracker \
+         WHERE feeling IN ({}) ORDER BY time ASC",
+        feeling_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+    );
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+    for id in feeling_ids {
+        q = q.bind(id);
+    }
+    let rows = q
+        .fetch_all(pool)
+        .await
+        .context("Failed to fetch tracker rows linked to feelings")?;
+    for row in rows {
+        let entry = TrackerEntryRow {
+            id: row.get("id"),
+            tracker_type: row.get("type"),
+            score: row.get("score"),
+            time: row.get("time"),
+        };
+        map.entry(row.get::<i64, _>("feeling"))
+            .or_insert_with(Vec::new)
+            .push(entry);
+    }
+    Ok(map)
+}
+
+/// Tasks linked to feelings via `task_moods`, grouped by feeling id,
+/// ordered by name. Completions/last_time follow the today-view convention
+/// (full completion scoping via [`attach_full_completions`]). An empty
+/// input returns an empty map.
+pub async fn fetch_feeling_tasks(
+    pool: &SqlitePool,
+    feeling_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<TaskRow>>> {
+    let mut map = std::collections::HashMap::new();
+    if feeling_ids.is_empty() {
+        return Ok(map);
+    }
+    let sql = format!(
+        "SELECT t.*, tm.feeling_id, NULL AS completions, NULL AS last_time \
+         FROM todos t JOIN task_moods tm ON tm.todo_id = t.id \
+         WHERE tm.feeling_id IN ({}) ORDER BY t.name ASC",
+        feeling_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+    );
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+    for id in feeling_ids {
+        q = q.bind(id);
+    }
+    let rows = q
+        .fetch_all(pool)
+        .await
+        .context("Failed to fetch tasks linked to feelings")?;
+    // Reconstruct a TaskRow per link row (the query carries the extra
+    // `feeling_id` column, which query_as::<TaskRow> would drop), then
+    // attach the completion aggregates to the unique tasks.
+    let mut links: Vec<(i64, i64)> = Vec::new();
+    let mut tasks: Vec<TaskRow> = Vec::new();
+    for row in rows {
+        links.push((row.get("feeling_id"), row.get("id")));
+        tasks.push(TaskRow {
+            id: row.get("id"),
+            short_id: row.get("short_id"),
+            name: row.get("name"),
+            body: row.get("body"),
+            priority: row.get("priority"),
+            start_time: row.get("start_time"),
+            available_duration_secs: row.get("available_duration_secs"),
+            interval_secs: row.get("interval_secs"),
+            target_count: row.get("target_count"),
+            optional: row.get("optional"),
+            end_time: row.get("end_time"),
+            parent: row.get("parent"),
+            completions: None,
+            last_time: None,
+        });
+    }
+    let by_id: std::collections::HashMap<i64, TaskRow> =
+        attach_full_completions(pool, tasks, crate::date::now())
+            .await?
+            .into_iter()
+            .map(|t| (t.id, t))
+            .collect();
+    for (feeling_id, task_id) in links {
+        if let Some(task) = by_id.get(&task_id) {
+            map.entry(feeling_id).or_insert_with(Vec::new).push(task.clone());
+        }
+    }
+    Ok(map)
 }
 
 /// Delete a tracker entry row.
@@ -536,6 +653,29 @@ pub async fn update_tracker_score(
         .execute(pool)
         .await
         .context("Failed to update tracker score")?;
+    Ok(res.rows_affected())
+}
+
+/// Re-log a null tracker entry in place: move its time to `now`; in count
+/// mode (either `min`/`max` bound missing) also increment the score by 1 —
+/// mirroring the CLI's null-tracker upsert. Returns affected rows.
+pub async fn relog_null_tracker(
+    pool: &SqlitePool,
+    id: i64,
+    now: i64,
+    increment: bool,
+) -> Result<u64> {
+    let sql = if increment {
+        "UPDATE tracker SET time = ?, score = score + 1 WHERE id = ?"
+    } else {
+        "UPDATE tracker SET time = ? WHERE id = ?"
+    };
+    let res = sqlx::query(sql)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to re-log null tracker entry")?;
     Ok(res.rows_affected())
 }
 

@@ -43,6 +43,27 @@ impl EntryKind {
     }
 }
 
+/// A tracker entry attached to a feeling row (the `tracker.feeling`
+/// column), pre-rendered for the preview's `linked:` section: the tracker
+/// name (in the same color the tracker's badge would use for this value)
+/// plus the value payload.
+#[derive(Debug, Clone)]
+pub struct LinkedTracker {
+    pub name: String,
+    pub payload: String,
+    pub color: RatColor,
+}
+
+/// A task linked to a feeling via `task_moods`, pre-rendered for the
+/// preview's `linked:` section: the badge glyph with its color plus the
+/// task name.
+#[derive(Debug, Clone)]
+pub struct LinkedTask {
+    pub badge: Option<char>,
+    pub color: RatColor,
+    pub name: String,
+}
+
 /// Data for a single today-view entry.
 #[derive(Debug, Clone)]
 
@@ -76,9 +97,15 @@ pub struct TodayEntry {
     /// Tracker entries with a configured interval: the (anchor, span) pair,
     /// so the preview can show the next interval start like recurring tasks.
     pub tracker_interval: Option<(Epoch, jiff::Span)>,
-    /// Tracker entries: the most recent entry time of this tracker overall
-    /// (unscoped — the preview's `last:` field).
-    pub tracker_last: Option<Epoch>,
+    /// Tracker entries: the time of the previous entry of this kind
+    /// (strictly earlier; the preview's `prev:` field). `None` when no
+    /// earlier entry exists.
+    pub tracker_prev: Option<Epoch>,
+    /// Mood entries only: trackers attached to the feeling row
+    /// (`tracker.feeling`) and tasks linked via `task_moods`, rendered as
+    /// the preview's `linked:` section. Empty for every other entry kind.
+    pub linked_trackers: Vec<LinkedTracker>,
+    pub linked_tasks: Vec<LinkedTask>,
 }
 
 /// Today-view time cell for a timestamp: "HH:MM" when it falls on the
@@ -140,6 +167,47 @@ pub(crate) fn today_sort(a: &TodayEntry, b: &TodayEntry) -> std::cmp::Ordering {
     }
 }
 
+/// The color of a tracker entry's badge for the given decoded score: Null
+/// trackers with an interval use the time-of-day coloring; numeric trackers
+/// bin the score over the configured palette; text trackers use the
+/// single-color palette override (validated to exactly 1 entry in
+/// Config::init) or neutral gray. Shared by the main tracker rows and the
+/// linked-tracker lines in mood previews.
+fn tracker_entry_color(
+    tracker: &crate::config::TrackerSetting,
+    task_colors: &crate::config::ColorBins,
+    time: i64,
+    score: Option<f64>,
+) -> RatColor {
+    let colors = tracker.colors.as_ref().unwrap_or(task_colors);
+    match tracker.kind {
+        TrackerKind::Null => RatColor::from_crossterm(crate::badge::null_tracker_color(
+            colors,
+            tracker,
+            time,
+            score.unwrap_or(0.0),
+        )),
+        // Text entries have no score; a single-color palette
+        // override (validated to exactly 1 entry in Config::init)
+        // colors their badge, otherwise neutral gray.
+        TrackerKind::Text => tracker
+            .colors
+            .as_ref()
+            .and_then(|c| c.first())
+            .map(|c| RatColor::from_crossterm(*c))
+            .unwrap_or(RatColor::DarkGray),
+        _ => match score {
+            Some(s) => RatColor::from_crossterm(crate::badge::tracker_color(
+                colors,
+                s,
+                tracker.min,
+                tracker.max,
+            )),
+            None => RatColor::DarkGray,
+        },
+    }
+}
+
 /// Fetch all today-view entries within the given horizon.
 ///
 /// All variants share the same task base — tasks active at any point
@@ -175,6 +243,12 @@ pub async fn fetch_today_entries(
         let feelings =
             crate::db::fetch_feelings_between(pool, day_start_epoch, horizon_end).await?;
 
+        // Tracker entries and tasks attached to these feelings (the mood
+        // preview's `linked:` section).
+        let feeling_ids: Vec<i64> = feelings.iter().map(|f| f.id).collect();
+        let linked_trackers = crate::db::fetch_feeling_trackers(pool, &feeling_ids).await?;
+        let linked_tasks = crate::db::fetch_feeling_tasks(pool, &feeling_ids).await?;
+
         for f in feelings {
             // Journal-only entries (empty mood) use the configured journal
             // badge, or none at all; mood entries always get the filled dot.
@@ -199,6 +273,56 @@ pub async fn fetch_today_entries(
                     RatColor::Rgb(rgb.r, rgb.g, rgb.b)
                 })
                 .unwrap_or(RatColor::DarkGray);
+            // Trackers attached to this feeling: name in the tracker's own
+            // color, payload per kind (text/number/float values; null
+            // trackers carry none). Trackers no longer in the config can't
+            // be resolved — skipped (unlike the main tracker rows, which
+            // error).
+            let mut l_trackers = Vec::new();
+            if let Some(rows) = linked_trackers.get(&id) {
+                for row in rows {
+                    let Some(tracker) = config.tracker.get(&row.tracker_type) else {
+                        continue;
+                    };
+                    let (payload, score) = match tracker.kind {
+                        TrackerKind::Text => (row.score.clone(), None),
+                        TrackerKind::Number | TrackerKind::Float => {
+                            let score = crate::tracker::score_f64(&row.score);
+                            (score.to_string(), Some(score))
+                        }
+                        TrackerKind::Null => {
+                            let score = crate::tracker::score_f64(&row.score);
+                            // Count mode (either bound missing) shows the
+                            // count; with both bounds the entry is a time
+                            // marker and shows the moment.
+                            let payload = if tracker.min.is_none() || tracker.max.is_none() {
+                                score.to_string()
+                            } else {
+                                date::format_datetime_short(row.time)
+                            };
+                            (payload, Some(score))
+                        }
+                    };
+                    l_trackers.push(LinkedTracker {
+                        name: row.tracker_type.clone(),
+                        payload,
+                        color: tracker_entry_color(tracker, &config.tasks.colors, row.time, score),
+                    });
+                }
+            }
+            // Tasks linked via `task_moods`: badge + color like the today
+            // view's own task rows.
+            let mut l_tasks = Vec::new();
+            if let Some(tasks) = linked_tasks.get(&id) {
+                for task in tasks {
+                    let (badge, color) = crate::badge::task_badge(task, config, false);
+                    l_tasks.push(LinkedTask {
+                        badge: Some(badge),
+                        color: RatColor::from_crossterm(color),
+                        name: task.name.clone(),
+                    });
+                }
+            }
             entries.push(TodayEntry {
                 id: Some(id),
                 time,
@@ -216,15 +340,18 @@ pub async fn fetch_today_entries(
                 color,
                 recurring_window: None,
                 tracker_interval: None,
-                tracker_last: None,
+                tracker_prev: None,
+                linked_trackers: l_trackers,
+                linked_tasks: l_tasks,
             });
         }
 
         // 2. Tracker entries within the horizon.
         let trackers =
             crate::db::fetch_tracker_entries_today(pool, day_start_epoch, horizon_end).await?;
-        // Unscoped last entry time per tracker (the preview `last:` field).
-        let tracker_lasts = crate::db::fetch_tracker_last_times(pool).await?;
+        // Previous entry time per tracker entry (the preview `prev:` field).
+        let tracker_prevs =
+            crate::db::fetch_tracker_prev_times(pool, day_start_epoch, horizon_end).await?;
 
         for row in trackers {
             let tracker_id = row.id;
@@ -248,45 +375,24 @@ pub async fn fetch_today_entries(
                         Some(score),
                     )
                 }
-                // Null payloads carry no value: the label is the tracker
-                // name alone (the time column shows the moment). The score
-                // still holds the count in count mode.
+                // Null payloads carry no value: count mode (either bound
+                // missing) shows the count, with both bounds the entry is a
+                // time marker and shows the moment (`sleep: 3-15 14:30`).
                 TrackerKind::Null => {
                     let score = crate::tracker::score_f64(&row.score);
-                    (tracker_type.clone(), Some('◆'), Some(score))
+                    let payload = if tracker.min.is_none() || tracker.max.is_none() {
+                        score.to_string()
+                    } else {
+                        date::format_datetime_short(time)
+                    };
+                    (format!("{}: {}", tracker_type, payload), Some('◆'), Some(score))
                 }
             };
             // Color: Null trackers with an interval and both bounds use the
             // time-of-day coloring; otherwise the configured min/max bin the
             // score like any numeric tracker. Null trackers without an
             // interval are unsupported → Reset.
-            let colors = tracker.colors.as_ref().unwrap_or(&config.tasks.colors);
-            let color = match tracker.kind {
-                TrackerKind::Null => RatColor::from_crossterm(crate::badge::null_tracker_color(
-                    colors,
-                    tracker,
-                    time,
-                    score.unwrap_or(0.0),
-                )),
-                // Text entries have no score; a single-color palette
-                // override (validated to exactly 1 entry in Config::init)
-                // colors their badge, otherwise neutral gray.
-                TrackerKind::Text => tracker
-                    .colors
-                    .as_ref()
-                    .and_then(|c| c.first())
-                    .map(|c| RatColor::from_crossterm(*c))
-                    .unwrap_or(RatColor::DarkGray),
-                _ => match score {
-                    Some(s) => RatColor::from_crossterm(crate::badge::tracker_color(
-                        colors,
-                        s,
-                        tracker.min,
-                        tracker.max,
-                    )),
-                    None => RatColor::DarkGray,
-                },
-            };
+            let color = tracker_entry_color(tracker, &config.tasks.colors, time, score);
             entries.push(TodayEntry {
                 id: Some(tracker_id),
                 time,
@@ -300,7 +406,9 @@ pub async fn fetch_today_entries(
                 color,
                 recurring_window: None,
                 tracker_interval: tracker.interval.map(|iv| (iv.anchor, iv.span)),
-                tracker_last: tracker_lasts.get(&tracker_type).copied(),
+                tracker_prev: tracker_prevs.get(&tracker_id).copied().flatten(),
+                linked_trackers: Vec::new(),
+                linked_tasks: Vec::new(),
             });
         }
     } // show != ShowVariant::B
@@ -343,7 +451,9 @@ pub async fn fetch_today_entries(
             color: RatColor::from_crossterm(color),
             recurring_window: None,
             tracker_interval: None,
-            tracker_last: None,
+            tracker_prev: None,
+            linked_trackers: Vec::new(),
+            linked_tasks: Vec::new(),
         });
     }
 
@@ -377,7 +487,9 @@ pub async fn fetch_today_entries(
             color: RatColor::from_crossterm(color),
             recurring_window: None,
             tracker_interval: None,
-            tracker_last: None,
+            tracker_prev: None,
+            linked_trackers: Vec::new(),
+            linked_tasks: Vec::new(),
         });
     }
 
@@ -420,7 +532,9 @@ pub async fn fetch_today_entries(
             color: RatColor::from_crossterm(color),
             recurring_window: Some(w.clone()),
             tracker_interval: None,
-            tracker_last: None,
+            tracker_prev: None,
+            linked_trackers: Vec::new(),
+            linked_tasks: Vec::new(),
         });
     }
 
@@ -460,7 +574,9 @@ pub async fn fetch_today_entries(
                 color: RatColor::from_crossterm(color),
                 recurring_window: None,
                 tracker_interval: None,
-                tracker_last: None,
+                tracker_prev: None,
+                linked_trackers: Vec::new(),
+                linked_tasks: Vec::new(),
             };
             match entries.iter_mut().find(|e| e.task_id == Some(task.id)) {
                 Some(existing) => *existing = entry,
@@ -821,7 +937,9 @@ mod tests {
             color: RatColor::DarkGray,
             recurring_window: None,
             tracker_interval: None,
-            tracker_last: None,
+            tracker_prev: None,
+            linked_trackers: Vec::new(),
+            linked_tasks: Vec::new(),
         };
         let mut entries = [
             entry(200, "20:00", 1),

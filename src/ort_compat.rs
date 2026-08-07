@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 //! Link-time compatibility shims for the prebuilt ONNX Runtime.
 //!
 //! The prebuilt `onnxruntime` static library shipped with the `ort` crate's
@@ -23,7 +24,7 @@ extern "C" {
 }
 
 #[no_mangle]
-pub extern "C" fn __isoc23_strtol(
+pub unsafe extern "C" fn __isoc23_strtol(
     s: *const c_char,
     endptr: *mut *mut c_char,
     base: c_int,
@@ -32,7 +33,7 @@ pub extern "C" fn __isoc23_strtol(
 }
 
 #[no_mangle]
-pub extern "C" fn __isoc23_strtoll(
+pub unsafe extern "C" fn __isoc23_strtoll(
     s: *const c_char,
     endptr: *mut *mut c_char,
     base: c_int,
@@ -41,7 +42,7 @@ pub extern "C" fn __isoc23_strtoll(
 }
 
 #[no_mangle]
-pub extern "C" fn __isoc23_strtoull(
+pub unsafe extern "C" fn __isoc23_strtoull(
     s: *const c_char,
     endptr: *mut *mut c_char,
     base: c_int,
