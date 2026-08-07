@@ -1151,6 +1151,7 @@ mod tests {
             Command::Entry(Entry {
                 feeling: "ok".to_string(),
                 trackers: vec![],
+                task_links: vec![],
                 body: String::new(),
                 open_editor: false,
             })
@@ -1232,9 +1233,12 @@ mod tests {
         assert!(
             matches!(cli.cmd, Command::Entry(e) if e.trackers == vec![("q5".to_string(), String::new())])
         );
-        // A purely numeric trailing -<name> stays a parse error: numeric
-        // tracker names are reserved (task short-id links).
-        assert!(parse_cli(args(&["-5"])).is_err());
+        // A purely numeric -<name> is a task short-id link (single token).
+        let cli = parse_cli(args(&["-5"])).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Command::Entry(e) if e.task_links == vec![5] && e.trackers.is_empty()
+        ));
     }
 
     #[test]

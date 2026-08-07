@@ -45,6 +45,9 @@ pub struct TodayApp {
     pub(crate) modal: Option<Modal>,
     pub(crate) selected_task: Option<crate::db::TaskRow>,
     pub(crate) color_cache: std::collections::HashMap<String, oklab::Oklab>,
+    /// The selected task's linked mood entries (for the preview `moods:`
+    /// field), refreshed with the selection.
+    linked_moods: Vec<crate::db::FeelingRow>,
 }
 
 /// Modal state for the today view. Common payloads live in `ui::modal`; the
@@ -106,6 +109,7 @@ impl TodayApp {
             modal: None,
             selected_task: None,
             color_cache,
+            linked_moods: Vec::new(),
         };
         app.apply_sort();
         app.fetch_selected_task().await;
@@ -161,6 +165,7 @@ impl TodayApp {
 
     async fn fetch_selected_task(&mut self) {
         self.selected_task = None;
+        self.linked_moods = Vec::new();
         let entry = match self.entries.get(self.selected) {
             Some(e) if e.kind.is_task() => e,
             _ => return,
@@ -177,6 +182,10 @@ impl TodayApp {
                 .ok()
                 .flatten(),
         };
+        // The preview `moods:` field shows the task's linked mood entries.
+        self.linked_moods = crate::db::fetch_linked_moods(&self.pool, task_id)
+            .await
+            .unwrap_or_default();
     }
 
     async fn mark_selected_complete(&mut self) {
@@ -804,7 +813,13 @@ fn render_today_entry_list(f: &mut Frame, app: &TodayApp, area: Rect) {
 
 fn render_today_preview(f: &mut Frame, app: &TodayApp, area: Rect) {
     let paragraph = if let Some(task) = &app.selected_task {
-        let lines = build_preview(task, true, &app.config.preview);
+        let lines = build_preview(
+            task,
+            true,
+            &app.config.preview,
+            &app.linked_moods,
+            app.config.moods.color_axes.as_ref(),
+        );
         Paragraph::new(Text::from(lines))
             .block(Block::bordered().title("Preview"))
             .style(Style::default())

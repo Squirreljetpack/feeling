@@ -1450,14 +1450,17 @@ async fn test_today_view_backfills_feeling_score() {
         .await
         .unwrap();
 
-    // A directly-inserted row (no score) exercises the backfill path.
+    // A directly-inserted row (no score) exercises the no-backfill path:
+    // rendering must NOT write the score anymore (`mood_color_cached` is
+    // sync and backfill-free; `:db backfill` persists it).
     sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('dull', '', ?)")
         .bind(feeling::date::now())
         .execute(&pool)
         .await
         .unwrap();
 
-    // A fresh render pass (new color cache) runs the pipeline and backfills.
+    // A fresh render pass (new color cache) runs the pipeline but leaves
+    // the database untouched.
     let mut out = Vec::new();
     feeling::today::write_today_view(
         &pool,
@@ -1482,8 +1485,8 @@ async fn test_today_view_backfills_feeling_score() {
     );
     assert_eq!(scores[1], Some(0.5), "pre-seeded score must be unchanged");
     assert!(
-        scores[2].is_some(),
-        "directly-inserted row must be backfilled with a score"
+        scores[2].is_none(),
+        "directly-inserted row must NOT be backfilled by rendering"
     );
 }
 
@@ -1628,6 +1631,104 @@ async fn run_view(pool: &SqlitePool, config: &Config, args: &[&str]) -> String {
         .await
         .unwrap();
     String::from_utf8(out).unwrap()
+}
+
+/// Task↔mood links: `feeling <mood> -<short id>` records a link between
+/// the new feeling entry and the task (no completion). The task preview
+/// then shows the linked moods.
+#[tokio::test]
+async fn test_task_mood_links() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    // Create a oneshot task (short id 1) and a recurring one (short id 2).
+    let cmd = parse_from(vec!["!".to_string(), "link me".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO todos (name, body, priority, start_time, interval_secs, target_count, optional, short_id) \
+         VALUES ('recur link', '', 5, ?, ?, 0, 0, 2)",
+    )
+    .bind(feeling::date::now())
+    .bind(feeling::date::span_to_db(&jiff::Span::new().days(1)))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A mood entry linked to both tasks; links are single tokens.
+    let cmd = parse_from(vec![
+        "felt".to_string(),
+        "good".to_string(),
+        "-1".to_string(),
+        "-2".to_string(),
+    ])
+    .unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'felt good'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let links: Vec<(i64, i64)> = sqlx::query_as("SELECT todo_id, feeling_id FROM task_moods")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(links.len(), 2, "both links recorded");
+    assert!(links.contains(&(1, feeling_id)));
+    assert!(links.contains(&(2, feeling_id)));
+
+    // A link with an unknown short id errors and records nothing.
+    let cmd = parse_from(vec!["ok".to_string(), "-99".to_string()]).unwrap();
+    let result = execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
+    assert!(result.is_err(), "unknown short id must error");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM task_moods")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2, "failed link must not add rows");
+
+    // Links without a feeling entry are rejected.
+    let cmd = parse_from(vec!["-1".to_string()]).unwrap();
+    let result = execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
+    assert!(result.is_err());
+
+    // The task preview data source lists the linked moods.
+    let moods = feeling::db::fetch_linked_moods(&pool, 1).await.unwrap();
+    assert_eq!(moods.len(), 1);
+    assert_eq!(moods[0].mood, "felt good");
 }
 
 /// Null tracker semantics: a valueless `-<name>` logs a Null tracker.

@@ -184,6 +184,20 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS task_moods (
+            todo_id INTEGER NOT NULL,
+            feeling_id INTEGER NOT NULL,
+            PRIMARY KEY (todo_id, feeling_id),
+            FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE,
+            FOREIGN KEY (feeling_id) REFERENCES feeling(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Add indexes for common queries
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_feeling_time ON feeling(time)")
         .execute(pool)

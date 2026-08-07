@@ -184,11 +184,10 @@ pub async fn fetch_today_entries(
                 Some('●')
             };
 
-            // Resolve this entry's embedding → color (cached per mood; legacy
-            // rows without a stored embedding are re-embedded + backfilled).
-            let oklab = axes
-                .mood_color_cached(pool, embedder, &f, color_cache)
-                .await;
+            // Resolve this entry's embedding → color (cached per mood;
+            // legacy rows without a stored embedding are re-embedded on the
+            // fly — no backfill; `:db backfill` persists those).
+            let oklab = axes.mood_color_cached(embedder, &f, color_cache);
 
             let id = f.id;
             let mood = f.mood;

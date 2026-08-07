@@ -357,6 +357,52 @@ pub async fn fetch_completions_between(
         .collect())
 }
 
+/// Link a feeling entry to tasks (by stable row id) in one transaction.
+/// Duplicate links are ignored (`INSERT OR IGNORE`).
+pub async fn link_feeling_to_tasks(
+    pool: &SqlitePool,
+    feeling_id: i64,
+    task_ids: &[i64],
+) -> Result<()> {
+    let mut tx = pool.begin().await.context("Failed to begin transaction")?;
+    for task_id in task_ids {
+        sqlx::query("INSERT OR IGNORE INTO task_moods (todo_id, feeling_id) VALUES (?, ?)")
+            .bind(task_id)
+            .bind(feeling_id)
+            .execute(&mut *tx)
+            .await
+            .context("Failed to insert task-mood link")?;
+    }
+    tx.commit().await.context("Failed to commit transaction")?;
+    Ok(())
+}
+
+/// The feeling entries linked to a task, oldest first (the task preview's
+/// `moods:` field).
+pub async fn fetch_linked_moods(pool: &SqlitePool, task_id: i64) -> Result<Vec<FeelingRow>> {
+    let rows = sqlx::query(
+        "SELECT f.id, f.mood, f.body, f.time, f.embedding, f.score FROM feeling f \
+         JOIN task_moods tm ON tm.feeling_id = f.id \
+         WHERE tm.todo_id = ? ORDER BY f.time ASC",
+    )
+    .bind(task_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch linked moods")?;
+
+    Ok(rows
+        .iter()
+        .map(|r| FeelingRow {
+            id: r.get("id"),
+            mood: r.get("mood"),
+            body: r.get("body"),
+            time: r.get("time"),
+            embedding: r.get("embedding"),
+            score: r.get("score"),
+        })
+        .collect())
+}
+
 /// Delete a tracker entry row.
 pub async fn delete_tracker_entry(pool: &SqlitePool, id: i64) -> Result<u64> {
     let result = sqlx::query("DELETE FROM tracker WHERE id = ?")

@@ -49,6 +49,8 @@ pub fn build_preview(
     task: &crate::db::TaskRow,
     today: bool,
     preview: &crate::config::PreviewConfig,
+    linked_moods: &[crate::db::FeelingRow],
+    axes: Option<&crate::color::ColorAxes>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
@@ -183,6 +185,36 @@ pub fn build_preview(
         // The optional flag is only shown when the task is skippable.
         if task.optional != 0 {
             lines.push(field_line("optional", "Yes".to_string()));
+        }
+    }
+
+    // Linked moods (`feeling good -5` recorded the link): a `moods:` field
+    // with one `  - {badge} {mood text}` line per linked feeling. The badge
+    // color comes from the sync mood-color pipeline (process-wide cache;
+    // see `color::global_mood_color_cache`).
+    if !linked_moods.is_empty() {
+        lines.push(field_line("moods", String::new()));
+        let embedder = crate::embedding::global_embedder();
+        let mut cache = crate::color::global_mood_color_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for feeling in linked_moods {
+            // Journal-only rows (empty mood) have no badge to show.
+            if feeling.mood.is_empty() {
+                continue;
+            }
+            let color = axes
+                .and_then(|axes| axes.mood_color_cached(embedder, feeling, &mut cache))
+                .map(|oklab| {
+                    let rgb = oklab.to_srgb();
+                    Color::Rgb(rgb.r, rgb.g, rgb.b)
+                })
+                .unwrap_or(Color::DarkGray);
+            lines.push(Line::from(vec![
+                Span::raw("  - "),
+                Span::styled("●", Style::default().fg(color)),
+                Span::raw(format!(" {}", feeling.mood)),
+            ]));
         }
     }
 
@@ -365,7 +397,7 @@ mod tests {
     #[test]
     fn test_build_preview_today_recurring_last_from_end_time() {
         let task = recurring_row();
-        let lines = build_preview(&task, true, &preview_config(true));
+        let lines = build_preview(&task, true, &preview_config(true), &[], None);
         let fields = fields(&lines);
         // `last` reads the unscoped completion carried in `end_time`, and
         // the `ends` field is skipped (end_time is not the expiry here).
@@ -381,7 +413,7 @@ mod tests {
     #[test]
     fn test_build_preview_not_today_recurring_last_from_last_time() {
         let task = recurring_row();
-        let lines = build_preview(&task, false, &preview_config(true));
+        let lines = build_preview(&task, false, &preview_config(true), &[], None);
         let fields = fields(&lines);
         assert!(
             fields
@@ -398,12 +430,49 @@ mod tests {
     fn test_build_preview_done_shows_last() {
         let mut task = recurring_row();
         task.completions = Some(1); // target 0 -> done
-        let fields = fields(&build_preview(&task, true, &preview_config(true)));
+        let fields = fields(&build_preview(
+            &task,
+            true,
+            &preview_config(true),
+            &[],
+            None,
+        ));
         assert!(
             fields
                 .iter()
                 .any(|f| f == &format!("last: {}", date::format_datetime(1_700_500_000))),
             "expected last: on a done row, got {fields:?}"
+        );
+    }
+
+    /// A task with linked moods shows a `moods:` field with one
+    /// `  - ● mood` line per linked feeling (empty-mood journal rows are
+    /// skipped).
+    #[test]
+    fn test_build_preview_linked_moods() {
+        let task = recurring_row();
+        let feeling = crate::db::FeelingRow {
+            id: 1,
+            mood: "good".to_string(),
+            body: String::new(),
+            time: 1_700_000_000,
+            embedding: None,
+            score: None,
+        };
+        let lines = build_preview(&task, true, &preview_config(true), &[feeling], None);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.trim_start().starts_with("moods:")),
+            "expected a moods: field, got {rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l == "  - ● good"),
+            "expected a '  - ● good' line, got {rendered:?}"
         );
     }
 }

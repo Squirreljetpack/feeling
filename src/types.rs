@@ -101,8 +101,11 @@ impl TodayHorizon {
 pub struct Entry {
     pub feeling: String,
     // Raw tracker values ("-type value"): interpreted per the tracker's
-    // declared kind (text/number/float) at write time in handle_entry.
+    // declared kind (text/number/float/null) at write time in handle_entry.
     pub trackers: Vec<(String, String)>,
+    /// Task short ids from `-<id>` tokens: resolved to row ids and linked
+    /// to the mood entry at write time (a plain link, not a completion).
+    pub task_links: Vec<i64>,
     /// Body text accumulated from words following `..`. Empty if `..` was
     /// absent, or if `..` was the last token (in which case the editor
     /// opens in the handler — see `open_editor`).

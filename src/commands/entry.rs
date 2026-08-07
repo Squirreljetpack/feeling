@@ -16,6 +16,7 @@ pub(super) async fn record_entry(
 ) -> Result<()> {
     let feeling = entry.feeling;
     let trackers = entry.trackers;
+    let task_links = entry.task_links;
     let body = entry.body;
     let open_editor = entry.open_editor;
 
@@ -144,6 +145,25 @@ pub(super) async fn record_entry(
 
     let feeling_id = crate::db::create_entry(pool, &entry_obj).await?;
     log::debug!("Inserted feeling with id={:?}", feeling_id);
+
+    // Task links: `-<short id>` tokens resolved to row ids and recorded in
+    // the link table — a plain link, not a completion. They need a feeling
+    // row to attach to, so a tracker-only entry cannot carry links.
+    if !task_links.is_empty() {
+        let Some(feeling_id) = feeling_id else {
+            anyhow::bail!("Task links (-<id>) require a mood or journal entry to attach to");
+        };
+        let mut resolved = Vec::with_capacity(task_links.len());
+        for short_id in task_links {
+            let Some((task_id, _name)) =
+                crate::db::fetch_task_id_by_short_id(pool, short_id).await?
+            else {
+                anyhow::bail!("No task with short id {} exists", short_id);
+            };
+            resolved.push(task_id);
+        }
+        crate::db::link_feeling_to_tasks(pool, feeling_id, &resolved).await?;
+    }
 
     crate::output::display_entry(&entry_obj, opts)?;
 

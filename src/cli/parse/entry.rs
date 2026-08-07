@@ -21,6 +21,7 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
     let mut has_dotdot = false;
     let mut feeling_parts: Vec<String> = Vec::new();
     let mut trackers: Vec<(String, String)> = Vec::new();
+    let mut task_links: Vec<i64> = Vec::new();
     let mut body_parts: Vec<String> = Vec::new();
     // Set once a `-tracker value` pair is seen after the mood started; from
     // then on a bare word is rejected (only tracker pairs / `..` / EOL).
@@ -44,20 +45,28 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
                 // Tracker entry: -type value (e.g., -sleep 8, -accomplishment "fixed 2 bugs").
                 // A trailing -type with no value parses as a valueless tracker
                 // (Null trackers — `-sleep` with no value); the handler
-                // rejects empty values for text/number/float trackers. Purely
-                // numeric names stay errors at parse time (they are reserved
-                // for `-<short-id>` task links, see TODO).
+                // rejects empty values for text/number/float trackers. A
+                // purely numeric -<id> is a task short-id link: a single
+                // token (resolved to a row id at write time).
                 let tracker_type = s[1..].to_string();
                 let numeric =
                     !tracker_type.is_empty() && tracker_type.chars().all(|c| c.is_ascii_digit());
-                if i + 1 < args.len() {
+                if numeric {
+                    // Task link; like a tracker pair, a link after the mood
+                    // starts the end-of-line tracker/link run.
+                    if !feeling_parts.is_empty() {
+                        after_mood_tracker = true;
+                    }
+                    task_links.push(tracker_type.parse().map_err(|_| {
+                        anyhow::anyhow!("Invalid task short id '{}'", tracker_type)
+                    })?);
+                    i += 1;
+                } else if i + 1 < args.len() {
                     if !feeling_parts.is_empty() {
                         after_mood_tracker = true;
                     }
                     trackers.push((tracker_type, args[i + 1].clone()));
                     i += 2;
-                } else if numeric {
-                    anyhow::bail!("Tracker '{}' requires a value", tracker_type);
                 } else {
                     if !feeling_parts.is_empty() {
                         after_mood_tracker = true;
@@ -104,6 +113,7 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
     Ok(Command::Entry(Entry {
         feeling,
         trackers,
+        task_links,
         body,
         open_editor,
     }))

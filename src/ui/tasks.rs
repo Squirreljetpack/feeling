@@ -42,6 +42,9 @@ pub struct TasksApp {
     should_quit: bool,
     pub(crate) sort_by_due: bool,
     pub(crate) modal: Option<Modal>,
+    /// The selected task's linked mood entries (for the preview `moods:`
+    /// field), refreshed on selection change.
+    linked_moods: Vec<crate::db::FeelingRow>,
 }
 
 /// Modal state for the task view. Common payloads live in `ui::modal`; the
@@ -76,8 +79,10 @@ impl TasksApp {
             should_quit: false,
             sort_by_due,
             modal: None,
+            linked_moods: Vec::new(),
         };
         app.apply_sort();
+        app.refresh_linked_moods().await;
         app
     }
 
@@ -92,6 +97,17 @@ impl TasksApp {
         .unwrap_or_default();
         self.apply_sort();
         self.selected = self.selected.min(self.tasks.len().saturating_sub(1));
+        self.refresh_linked_moods().await;
+    }
+
+    /// Fetch the selected task's linked moods for the preview `moods:` field.
+    async fn refresh_linked_moods(&mut self) {
+        self.linked_moods = match self.tasks.get(self.selected) {
+            Some(task) => crate::db::fetch_linked_moods(&self.pool, task.id)
+                .await
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
     }
 
     /// Re-sort the current task list according to the selected sort mode.
@@ -472,11 +488,13 @@ impl Render for TasksApp {
         match action {
             Action::Up => {
                 self.selected = self.selected.saturating_sub(1);
+                self.refresh_linked_moods().await;
             }
             Action::Down => {
                 if !self.tasks.is_empty() {
                     self.selected = (self.selected + 1).min(self.tasks.len() - 1);
                 }
+                self.refresh_linked_moods().await;
             }
             Action::CycleMode => self.next_mode().await,
             Action::CycleShow => self.next_show().await,
@@ -646,7 +664,13 @@ fn render_app_preview(f: &mut Frame, app: &TasksApp, area: Rect) {
     }
 
     let task = &app.tasks[app.selected];
-    let lines = build_preview(task, false, &app.config.preview);
+    let lines = build_preview(
+        task,
+        false,
+        &app.config.preview,
+        &app.linked_moods,
+        app.config.moods.color_axes.as_ref(),
+    );
     let paragraph = Paragraph::new(Text::from(lines))
         .block(Block::bordered().title("Preview"))
         .style(Style::default())

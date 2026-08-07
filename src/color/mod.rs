@@ -19,10 +19,10 @@ pub use blend::{average_oklab, blend_weights, lerp_oklab};
 pub use nnls::{nnls, nnls_core};
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::Result;
 use oklab::Oklab;
-use sqlx::SqlitePool;
 
 use crate::color::conversion::rgb_to_oklab;
 use crate::config::{ColorAxesSettings, MoodEndpoint};
@@ -318,24 +318,17 @@ impl ColorAxes {
         gated_saliency(saliency, self.emotional_saliency_gate.to_float())
     }
 
-    /// Resolve a feeling row to its final Oklab color within a single render
-    /// run, caching the color per mood so repeated moods run the pipeline
-    /// once.
+    /// Resolve a feeling row to its final Oklab color, caching the color
+    /// per mood so repeated moods run the pipeline once.
     ///
-    /// Uses the row's persisted (prefix-anchored) embedding BLOB when
-    /// available; rows without one (legacy) have the mood embedded on the
-    /// fly (with `self.prefix_string`) and are backfilled via
-    /// [`crate::db::update_feeling_embedding`]. The cached saliency score
-    /// (`feeling.score`) is passed as the regression override when present
-    /// (skips the ONNX saliency pass); rows without one are backfilled via
-    /// [`crate::db::update_feeling_score`].
-    ///
-    ///
+    /// Sync and backfill-free: rows without a stored embedding are embedded
+    /// on the fly (no DB write), and rows without a cached saliency score
+    /// fall back to predicting it inline. Persisting those values is the
+    /// job of `:db backfill` (see `commands::maintenance`).
     ///
     /// Returns `None` for empty moods or when embedding fails.
-    pub async fn mood_color_cached(
+    pub fn mood_color_cached(
         &self,
-        pool: &SqlitePool,
         embedder: &Embedder,
         feeling: &FeelingRow,
         cache: &mut HashMap<String, Oklab>,
@@ -354,28 +347,26 @@ impl ColorAxes {
         {
             Some(emb) => emb,
             None => match embedder.embed(mood, &self.prefix_string) {
-                Ok(emb) => {
-                    let blob_bytes = crate::embedding::embedding_to_blob(&emb);
-                    let _ =
-                        crate::db::update_feeling_embedding(pool, feeling.id, &blob_bytes).await;
-                    emb
-                }
+                Ok(emb) => emb,
                 Err(_) => return None,
             },
         };
-        // The cached score (when present) skips the saliency ONNX pass;
-        // when absent, backfill what the regression just computed
-        // (log-and-continue, mirroring the embedding backfill above).
+        // The cached score (when present) skips the saliency ONNX pass.
         let reg = self.regression_weights(&embedding, embedder, feeling.score.ok_or(mood.as_str()));
-        if let Some(reg) = &reg {
-            if feeling.score.is_none() {
-                let _ = crate::db::update_feeling_score(pool, feeling.id, reg.saliency).await;
-            }
-        }
         let oklab = self.weights_to_color(reg.as_ref());
         cache.insert(mood.to_string(), oklab);
         Some(oklab)
     }
+}
+
+/// Process-wide mood-color cache for render paths that have no per-run
+/// cache of their own (e.g. the sync task preview). See
+/// [`ColorAxes::mood_color_cached`].
+pub static GLOBAL_MOOD_COLOR_CACHE: OnceLock<Mutex<HashMap<String, Oklab>>> = OnceLock::new();
+
+/// The process-wide [`GLOBAL_MOOD_COLOR_CACHE`] (lazily initialized).
+pub fn global_mood_color_cache() -> &'static Mutex<HashMap<String, Oklab>> {
+    GLOBAL_MOOD_COLOR_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Effective saliency after the emotional gate: `Seff = 1 + P*(S - 1)` for gate
