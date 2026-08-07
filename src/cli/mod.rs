@@ -82,9 +82,11 @@ pub enum Command {
     /// defaults first; when `source` is unset the handler warns that it
     /// must be configured.
     Moods,
-    /// `feeling :prune` — handlers delete completed oneshot tasks and
-    /// recurring tasks whose `end_time` has passed.
-    Prune,
+    /// `feeling :db prune` — delete completed oneshot tasks and recurring
+    /// tasks whose `end_time` has passed.
+    Db {
+        sub: DbSubcommand,
+    },
     /// `feeling :color <feeling>` — embed a mood string (with `"feeling "`
     /// prefix) and print the projected Oklab / sRGB color plus intermediate
     /// pipeline values (raw scores, blend factors, per-axis colors).
@@ -96,6 +98,17 @@ pub enum Command {
     Clear {
         date: Option<String>,
     },
+}
+
+/// Subcommands of `feeling :db`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbSubcommand {
+    /// `:db prune` — delete completed oneshot tasks and expired recurring
+    /// tasks (the former `:prune` command).
+    Prune,
+    /// `:db backfill` — compute and persist missing mood embeddings and
+    /// saliency scores (rendering no longer backfills them inline).
+    Backfill,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -3986,7 +3986,65 @@ async fn test_reset_reassigns_short_id_to_completed_task() {
     );
 }
 
-// ---- :prune command ----
+/// `:db backfill` persists embeddings and scores for rows that render no
+/// longer backfills inline (mood_color_cached is sync/no-backfill).
+#[tokio::test]
+async fn test_db_backfill_persists_scores_and_embeddings() {
+    let pool = test_pool().await.unwrap();
+    let config = Config::default();
+
+    // A CLI-created mood carries its score already; insert two rows without
+    // score/embedding directly.
+    let cmd = parse_from(vec!["bright".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    let now = feeling::date::now();
+    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('dull', '', ?)")
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('', 'journal only', ?)")
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cmd = parse_from(vec![":db".to_string(), "backfill".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let rows: Vec<(String, Option<f32>, Option<Vec<u8>>)> =
+        sqlx::query_as("SELECT mood, score, embedding FROM feeling ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 3);
+    // The directly-inserted mood row now has a score and an embedding.
+    assert!(rows[1].1.is_some(), "score backfilled: {rows:?}");
+    assert!(rows[1].2.is_some(), "embedding backfilled");
+    // Journal-only rows stay untouched (no embedding, no score).
+    assert!(rows[2].1.is_none(), "journal row must keep score None");
+    assert!(rows[2].2.is_none(), "journal row must keep embedding None");
+}
+
+// ---- :db prune command ----
 
 /// Helper: count completions for a given task id (using its post-reassign id).
 async fn completion_count(pool: &SqlitePool, name: &str) -> i64 {
@@ -4002,7 +4060,7 @@ async fn completion_count(pool: &SqlitePool, name: &str) -> i64 {
         .unwrap()
 }
 
-/// `:prune` deletes completed oneshot tasks and their cascaded completions.
+/// `:db prune` deletes completed oneshot tasks and their cascaded completions.
 #[tokio::test]
 async fn test_prune_deletes_completed_task_and_cascades_completions() {
     let pool = test_pool().await.unwrap();
@@ -4043,9 +4101,9 @@ async fn test_prune_deletes_completed_task_and_cascades_completions() {
         "pre-prune short id should be cleared: {short_id:?}"
     );
 
-    // :prune should drop the row and the cascaded completion (via ON DELETE
+    // :db prune should drop the row and the cascaded completion (via ON DELETE
     // CASCADE on todo_completions in db.rs).
-    let cmd = parse_from(vec![":prune".to_string()]).unwrap();
+    let cmd = parse_from(vec![":db".to_string(), "prune".to_string()]).unwrap();
     execute_command(
         cmd,
         &pool,
@@ -4076,7 +4134,7 @@ async fn test_prune_deletes_completed_task_and_cascades_completions() {
     );
 }
 
-/// `:prune` deletes recurring tasks whose end_time is in the past, leaving
+/// `:db prune` deletes recurring tasks whose end_time is in the past, leaving
 /// open-ended and not-yet-expired recurrings alone.
 #[tokio::test]
 async fn test_prune_deletes_expired_recurring_task() {
@@ -4112,7 +4170,7 @@ async fn test_prune_deletes_expired_recurring_task() {
     .await
     .unwrap();
 
-    let cmd = parse_from(vec![":prune".to_string()]).unwrap();
+    let cmd = parse_from(vec![":db".to_string(), "prune".to_string()]).unwrap();
     execute_command(
         cmd,
         &pool,
@@ -4165,7 +4223,7 @@ async fn test_prune_clears_embedding_cache() {
     assert_eq!(cache_before, 2);
 
     // Run :prune
-    let cmd = parse_from(vec![":prune".to_string()]).unwrap();
+    let cmd = parse_from(vec![":db".to_string(), "prune".to_string()]).unwrap();
     execute_command(
         cmd,
         &pool,

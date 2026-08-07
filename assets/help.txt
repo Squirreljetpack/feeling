@@ -45,7 +45,8 @@ Other:
   feeling :embed                                      embed stdin lines (one vector/line)
   feeling :color <feeling>                            projected mood color diagnostic
   feeling :clear [@date]                              clear all mood entries from a day
-  feeling :prune                                      delete completed and expired tasks
+  feeling :db prune                                   delete completed and expired tasks
+  feeling :db backfill                                compute and persist missing mood embeddings
 
 Flags:
   feeling -q | -v <command>                           quiet / verbose; flags go first

@@ -55,9 +55,9 @@ pub(super) async fn clear_moods(
     Ok(())
 }
 
-/// `feeling :prune` — deletes completed oneshot tasks (their `short_id` was
-/// cleared on completion, so they are no longer addressable) and recurring
-/// tasks whose `end_time` has passed.
+/// `feeling :db prune` — deletes completed oneshot tasks (their `short_id`
+/// was cleared on completion, so they are no longer addressable) and
+/// recurring tasks whose `end_time` has passed.
 ///
 /// Both categories are collected in a single SQL `RETURNING` statement so
 /// the per-row log lines below happen against the rows actually deleted,
@@ -65,7 +65,7 @@ pub(super) async fn clear_moods(
 /// writer. Foreign-key cascades (see `db.rs`: `todo_completions.todo_id`
 /// has `ON DELETE CASCADE`) drop the matching completion rows
 /// automatically.
-pub(super) async fn prune_tasks(pool: &SqlitePool, _config: &Config) -> Result<()> {
+pub(super) async fn db_prune(pool: &SqlitePool, _config: &Config) -> Result<()> {
     let now = date::now();
     let pruned = crate::db::prune_tasks(pool, now).await?;
 
@@ -93,6 +93,65 @@ pub(super) async fn prune_tasks(pool: &SqlitePool, _config: &Config) -> Result<(
         cba::ibog!("prune"; "pruned {} task(s)", pruned.len());
     }
 
+    Ok(())
+}
+
+/// `feeling :db backfill` — compute and persist the mood embeddings and
+/// saliency scores that rendering no longer writes inline (see
+/// `color::ColorAxes::mood_color_cached`). Journal-only rows (empty mood)
+/// never embed and are skipped, matching the old inline backfill behavior.
+pub(super) async fn db_backfill(pool: &SqlitePool) -> Result<()> {
+    let rows = crate::db::fetch_feelings_between(pool, i64::MIN, i64::MAX).await?;
+    let embedder = crate::embedding::global_embedder();
+    let mut backfilled = 0usize;
+    let mut failed = 0usize;
+
+    for feeling in rows {
+        if feeling.mood.is_empty() {
+            continue;
+        }
+        // Embed (skipping rows that already carry a stored embedding)…
+        let embedding = match &feeling.embedding {
+            Some(blob) => crate::embedding::blob_to_embedding(blob),
+            None => embedder.embed(&feeling.mood, "").ok(),
+        };
+        let Some(embedding) = embedding else {
+            failed += 1;
+            continue;
+        };
+        // …and persist the embedding and the saliency score.
+        let mut changed = false;
+        if feeling.embedding.is_none() {
+            let blob = crate::embedding::embedding_to_blob(&embedding);
+            if crate::db::update_feeling_embedding(pool, feeling.id, &blob)
+                .await
+                .is_ok()
+            {
+                changed = true;
+            }
+        }
+        if feeling.score.is_none() {
+            let score = crate::color::predict_saliency(embedder, &feeling.mood);
+            if crate::db::update_feeling_score(pool, feeling.id, score)
+                .await
+                .is_ok()
+            {
+                changed = true;
+            }
+        }
+        if changed {
+            backfilled += 1;
+        }
+    }
+
+    if backfilled == 0 {
+        cba::ibog!("db"; "backfill: nothing to backfill");
+    } else {
+        cba::ibog!("db"; "backfilled {} feeling row(s)", backfilled);
+    }
+    if failed > 0 {
+        cba::ebog!("db"; "backfill failed for {} row(s)", failed);
+    }
     Ok(())
 }
 

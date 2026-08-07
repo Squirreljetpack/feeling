@@ -32,11 +32,30 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
         return Ok(Command::Moods);
     }
 
-    if first == ":prune" {
-        if args.len() != 1 {
-            anyhow::bail!("Usage: feeling :prune");
-        }
-        return Ok(Command::Prune);
+    if first == ":db" {
+        return match args.get(1).map(String::as_str) {
+            Some("prune") => {
+                if args.len() != 2 {
+                    anyhow::bail!("Usage: feeling :db prune");
+                }
+                Ok(Command::Db {
+                    sub: crate::cli::DbSubcommand::Prune,
+                })
+            }
+            Some("backfill") => {
+                if args.len() != 2 {
+                    anyhow::bail!("Usage: feeling :db backfill");
+                }
+                Ok(Command::Db {
+                    sub: crate::cli::DbSubcommand::Backfill,
+                })
+            }
+            Some(other) => anyhow::bail!(
+                "Unknown :db subcommand '{}' (expected prune or backfill)",
+                other
+            ),
+            None => anyhow::bail!("Usage: feeling :db prune | :db backfill"),
+        };
     }
 
     if first == ":color" {

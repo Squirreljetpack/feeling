@@ -111,7 +111,10 @@ pub async fn execute_command<W: Write>(
 
         Command::Moods => maintenance::edit_moods(config).await,
 
-        Command::Prune => maintenance::prune_tasks(pool, config).await,
+        Command::Db { sub } => match sub {
+            crate::cli::DbSubcommand::Prune => maintenance::db_prune(pool, config).await,
+            crate::cli::DbSubcommand::Backfill => maintenance::db_backfill(pool).await,
+        },
 
         Command::Color { mood } => {
             let mut config = config.clone();

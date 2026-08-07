@@ -104,7 +104,7 @@ pub fn parse_from(args: Vec<String>) -> anyhow::Result<Command> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{TrackerItem, TrackerPeriod, UpdateTarget};
+    use super::super::{DbSubcommand, TrackerItem, TrackerPeriod, UpdateTarget};
     use super::*;
     use crate::types::{Entry, Task, TaskKind, ViewMode};
 
@@ -1380,15 +1380,36 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_prune() {
-        let cmd = parse_from(args(&[":prune"])).unwrap();
-        assert_eq!(cmd, Command::Prune);
+    fn test_parse_db_prune() {
+        let cmd = parse_from(args(&[":db", "prune"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Db {
+                sub: DbSubcommand::Prune
+            }
+        );
     }
 
     #[test]
-    fn test_parse_prune_rejects_extra_args() {
-        let result = parse_from(args(&[":prune", "extra"]));
-        assert!(result.is_err());
+    fn test_parse_db_backfill() {
+        let cmd = parse_from(args(&[":db", "backfill"])).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Db {
+                sub: DbSubcommand::Backfill
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_db_rejects_bad_forms() {
+        // The old :prune spelling is gone.
+        assert!(parse_from(args(&[":prune"])).is_err());
+        // Bare :db and unknown subcommands error with usage hints.
+        assert!(parse_from(args(&[":db"])).is_err());
+        assert!(parse_from(args(&[":db", "wat"])).is_err());
+        assert!(parse_from(args(&[":db", "prune", "extra"])).is_err());
+        assert!(parse_from(args(&[":db", "backfill", "extra"])).is_err());
     }
 
     #[test]
