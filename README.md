@@ -63,6 +63,7 @@ Other:
   feeling :clear [@date]                              clear all mood entries from a day
   feeling :db prune                                   delete completed and expired tasks
   feeling :db backfill                                compute and persist missing mood embeddings
+  feeling :db doctor                                  check tracker entries vs kinds; prune mismatches
 
 Flags:
   feeling -q | -v <command>                           quiet / verbose; flags go first
@@ -93,6 +94,7 @@ npm install -g @squirreljetpack/feeling
 Run `feeling :config` to open the configuration file in your `$VISUAL` or `$EDITOR`.
 
 The default locations are in order:
+
 - `~/.config/matchmaker/config.toml` (If the folder exists already).
 - `{PLATFORM_SPECIFIC_CONFIG_DIRECTORY}/matchmaker` (Generally the same as above when on linux)
 

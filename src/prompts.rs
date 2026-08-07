@@ -302,6 +302,17 @@ pub fn prompt_clear_confirm(count: i64, date: &str) -> Result<bool> {
         .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))
 }
 
+/// Confirm pruning kind-mismatched tracker entries (`:db doctor`). Default
+/// is `false`: the deletion is destructive and covers whole tracker types.
+pub fn prompt_db_doctor_confirm(count: i64) -> Result<bool> {
+    use cliclack::confirm;
+
+    confirm(format!("Prune {count} mismatched tracker entry/entries?"))
+        .initial_value(false)
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))
+}
+
 /// Confirm deleting an invalid database file so it can be recreated fresh.
 /// Interactive callers only — non-interactive runs never reach this. The
 /// default is `false`: deleting the db destroys all stored data.

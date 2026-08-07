@@ -1559,6 +1559,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jiff-english"
+version = "0.2.3"
+dependencies = [
+ "jiff",
+ "scanlex",
+]
+
+[[package]]
 name = "jiff-static"
 version = "0.2.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"

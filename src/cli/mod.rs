@@ -109,6 +109,10 @@ pub enum DbSubcommand {
     /// `:db backfill` — compute and persist missing mood embeddings and
     /// saliency scores (rendering no longer backfills them inline).
     Backfill,
+    /// `:db doctor` — check every tracker entry's storage class against the
+    /// tracker's current configured kind and prune the mismatches (orphaned
+    /// tracker types included), after an interactive confirm.
+    Doctor,
 }
 
 #[derive(Debug, Clone, PartialEq)]

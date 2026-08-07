@@ -46,7 +46,7 @@ src/
     entry.rs    mood/tracker entry writes
     task.rs     oneshot, recurring, and scheduled creation
     update.rs   task completion updates
-    maintenance.rs  clear, :db prune/:db backfill, config/moods editing
+    maintenance.rs  clear, :db prune/:db backfill/:db doctor, config/moods editing
     diagnostics.rs  :embed and :color utilities
 
   config/       serde configuration sections
@@ -312,6 +312,7 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `:config` | `Config` — opens the live config in `$VISUAL`/`$EDITOR` |
 | `:db prune` | `Db { Prune }` — prunes expired/completed tasks, clears the embedding cache |
 | `:db backfill` | `Db { Backfill }` — computes and persists missing feeling embeddings + saliency scores |
+| `:db doctor` | `Db { Doctor }` — prunes tracker entries whose storage class no longer matches the configured kind (orphaned types and stale nonzero markers included; interactive confirm) |
 | `:color <mood>` | `Color` — full mood-color pipeline diagnostic |
 | `:clear [@date]` | `Clear` — deletes that day's mood entries (interactive confirm) |
 
@@ -388,7 +389,13 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
 - **Db** → `:db prune` prunes expired/completed tasks and clears the
   **entire** `embedding_cache` (it is a cache — rows are lazily re-embedded);
   `:db backfill` computes and persists missing feeling embeddings and
-  saliency scores (rendering no longer backfills them inline).
+  saliency scores (rendering no longer backfills them inline). `:db doctor`
+  groups tracker entries by `typeof(score)` and prunes the buckets that no
+  longer match the tracker's configured kind (each kind fixes a storage
+  class: text/number/float/null → TEXT/INTEGER/REAL/INTEGER), including
+  orphaned tracker types and nonzero scores on time-marker null trackers;
+  deletion happens only after an interactive confirm (non-interactive runs
+  report the breakdown without deleting).
 - **Clear** → `:clear [@date]` deletes that day's mood entries (and linked
   tracker entries), with an interactive confirm showing the computed date.
 - **Color** → `:color <mood>` runs the whole pipeline once and prints every

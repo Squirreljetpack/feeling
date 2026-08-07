@@ -220,6 +220,23 @@ pub struct TrackerEntryRow {
     pub time: i64,
 }
 
+/// One `GROUP BY type, typeof(score)` bucket over the `tracker` table, for
+/// `:db doctor`: the storage-class distribution of a tracker type's entries
+/// plus how many of the integer entries are nonzero (time-marker null
+/// trackers must carry score 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackerScoreKindRow {
+    pub tracker_type: String,
+    /// SQLite storage class of the bucket: `integer`, `real`, or `text`
+    /// (the column CHECK constrains `typeof(score)` to these three).
+    pub storage: String,
+    /// Entries in this bucket.
+    pub count: i64,
+    /// Of `count`, how many have `score != 0` (only meaningful for integer
+    /// buckets).
+    pub nonzero: i64,
+}
+
 /// Recurring-task metadata used by the completion-dots tracker.
 #[derive(Debug, Clone)]
 pub struct RecurringTaskMeta {

@@ -290,6 +290,12 @@ mod tests {
         assert_eq!(interval_index(&anchor, &t, span).unwrap(), -9);
     }
 
+    /// Slot boundaries are the local midnight of the containing day, not
+    /// uniform `anchor + k * 86_400` offsets: the Mar 1 → Mar 11 2026 window
+    /// crosses the 2026-03-08 spring-forward in DST zones (e.g.
+    /// America/Toronto), where the uniform expectation is off by the offset
+    /// change. Guard that premise with `assert!`, then assert the
+    /// calendar-correct boundary.
     #[test]
     fn test_interval_slot_unix_secs() {
         let anchor = Date::new(2026, 3, 1)
@@ -301,8 +307,21 @@ mod tests {
             .as_second();
         let t = anchor + 10 * 86_400 + 1000;
         let (start, end) = interval_slot_unix_secs(anchor, Span::new().days(1), t).unwrap();
-        assert_eq!(start, anchor + 10 * 86_400);
-        assert_eq!(end, anchor + 11 * 86_400);
+        // DST guard: the naive uniform slot `anchor + 10 * 86_400` is only
+        // valid while the offset is constant; across the 2026-03-08
+        // transition it shifts by the offset change, which must be a whole
+        // number of hours for any zone transitioning on that date.
+        let uniform = anchor + 10 * 86_400;
+        let expected_start = z(Date::new(2026, 3, 11).unwrap()).timestamp().as_second();
+        assert!(
+            (expected_start - uniform) % 3600 == 0,
+            "system zone's offset change across Mar 1-11 2026 is not a whole hour \
+             (calendar midnight {expected_start} vs uniform slot {uniform})"
+        );
+        assert_eq!(start, expected_start);
+        // No offset change between the 10th and 11th local midnights, so the
+        // slot end is exactly one day of seconds after the start.
+        assert_eq!(end, expected_start + 86_400);
         // Before the anchor: slots still tile from the anchor backward.
         let (start, end) =
             interval_slot_unix_secs(anchor, Span::new().days(1), anchor - 100).unwrap();
@@ -310,6 +329,10 @@ mod tests {
         assert_eq!(end, anchor);
     }
 
+    /// Same DST guard as `test_interval_slot_unix_secs`: the interval start
+    /// is the local midnight of the day containing `t` (Mar 11), which in
+    /// DST zones sits one offset change away from the naive uniform
+    /// expectation.
     #[test]
     fn test_interval_start_unix_secs() {
         let anchor = Date::new(2026, 3, 1)
@@ -321,7 +344,17 @@ mod tests {
             .as_second();
         let t = anchor + 10 * 86_400 + 1000;
         let start = interval_start_unix_secs(anchor, Span::new().days(1), t).unwrap();
-        assert_eq!(start, anchor + 10 * 86_400);
+        // DST guard: the uniform slot is only valid while the offset is
+        // constant; any change across the 2026-03-08 transition must be a
+        // whole number of hours.
+        let uniform = anchor + 10 * 86_400;
+        let expected = z(Date::new(2026, 3, 11).unwrap()).timestamp().as_second();
+        assert!(
+            (expected - uniform) % 3600 == 0,
+            "system zone's offset change across Mar 1-11 2026 is not a whole hour \
+             (calendar midnight {expected} vs uniform slot {uniform})"
+        );
+        assert_eq!(start, expected);
         // Before anchor → None.
         assert!(interval_start_unix_secs(anchor, Span::new().days(1), anchor - 1).is_none());
     }

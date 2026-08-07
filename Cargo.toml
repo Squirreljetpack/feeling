@@ -1,6 +1,6 @@
 [workspace]
-members = [".", "crates/feeling-dynamic"]
-default-members = ["."]
+members = [".", "crates/feeling-dynamic", "crates/jiff-english"]
+default-members = [".", "crates/jiff-english"]
 
 [workspace.package]
 version = "0.2.3"

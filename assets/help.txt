@@ -47,6 +47,7 @@ Other:
   feeling :clear [@date]                              clear all mood entries from a day
   feeling :db prune                                   delete completed and expired tasks
   feeling :db backfill                                compute and persist missing mood embeddings
+  feeling :db doctor                                  check tracker entries vs kinds; prune mismatches
 
 Flags:
   feeling -q | -v <command>                           quiet / verbose; flags go first

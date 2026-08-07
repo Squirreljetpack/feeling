@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
 
 use super::models::{
-    CompletionRow, EntryObject, FeelingRow, RecurringTaskMeta, TrackerEntryRow, TrackerValue,
+    CompletionRow, EntryObject, FeelingRow, RecurringTaskMeta, TrackerEntryRow,
+    TrackerScoreKindRow, TrackerValue,
 };
 use crate::config::TrackerKind;
 
@@ -411,6 +412,96 @@ pub async fn delete_tracker_entry(pool: &SqlitePool, id: i64) -> Result<u64> {
         .await
         .context("Failed to delete tracker row")?;
     Ok(result.rows_affected())
+}
+
+/// One deletion rule for `:db doctor`, computed from the tracker's current
+/// configured kind. Rules are applied in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackerPruneRule {
+    /// Keep only entries whose SQLite storage class equals `keep`; delete
+    /// the rest. `keep` is `text` for kind text, `integer` for number/null,
+    /// `real` for float — the storage class every writer binds for that
+    /// kind (`create_entry`, `update_tracker_score`).
+    Storage {
+        tracker_type: String,
+        keep: &'static str,
+    },
+    /// Delete every entry with `score != 0` (any storage class). Time-marker
+    /// null trackers — `null` with both min and max set — always write
+    /// score 0, so nonzero rows are stale count-mode leftovers.
+    NonzeroScore { tracker_type: String },
+    /// Delete every entry of a type with no `[tracker.<type>]` section in
+    /// the config (renamed/removed tracker; the today view errors on such
+    /// rows).
+    All { tracker_type: String },
+}
+
+/// Storage-class distribution of tracker entries, grouped by type and
+/// `typeof(score)`, for `:db doctor`. `nonzero` counts `score != 0` rows
+/// within the bucket (COALESCE'd; only meaningful for integer buckets).
+pub async fn fetch_tracker_score_kinds(pool: &SqlitePool) -> Result<Vec<TrackerScoreKindRow>> {
+    let rows = sqlx::query(
+        "SELECT type, typeof(score) AS storage, COUNT(*) AS count, \
+         COALESCE(SUM(CASE WHEN score != 0 THEN 1 ELSE 0 END), 0) AS nonzero \
+         FROM tracker GROUP BY type, typeof(score) ORDER BY type, storage",
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch tracker score kinds")?;
+
+    Ok(rows
+        .iter()
+        .map(|r| TrackerScoreKindRow {
+            tracker_type: r.get("type"),
+            storage: r.get("storage"),
+            count: r.get("count"),
+            nonzero: r.get("nonzero"),
+        })
+        .collect())
+}
+
+/// Apply `:db doctor` prune rules in one transaction; returns the total
+/// number of rows deleted. `NonzeroScore` and `All` may overlap a `Storage`
+/// rule's rows, but each rule deletes only rows still present, so the
+/// per-rule `rows_affected` counts are disjoint.
+pub async fn prune_tracker_rules(pool: &SqlitePool, rules: &[TrackerPruneRule]) -> Result<u64> {
+    let mut tx = pool.begin().await.context("Failed to begin transaction")?;
+    let mut deleted = 0u64;
+    for rule in rules {
+        let res = match rule {
+            TrackerPruneRule::Storage { tracker_type, keep } => {
+                sqlx::query("DELETE FROM tracker WHERE type = ? AND typeof(score) != ?")
+                    .bind(tracker_type)
+                    .bind(keep)
+                    .execute(&mut *tx)
+                    .await
+                    .with_context(|| {
+                        format!("Failed to prune mismatched entries for tracker '{tracker_type}'")
+                    })?
+            }
+            TrackerPruneRule::NonzeroScore { tracker_type } => {
+                sqlx::query("DELETE FROM tracker WHERE type = ? AND score != 0")
+                    .bind(tracker_type)
+                    .execute(&mut *tx)
+                    .await
+                    .with_context(|| {
+                        format!("Failed to prune nonzero entries for tracker '{tracker_type}'")
+                    })?
+            }
+            TrackerPruneRule::All { tracker_type } => {
+                sqlx::query("DELETE FROM tracker WHERE type = ?")
+                    .bind(tracker_type)
+                    .execute(&mut *tx)
+                    .await
+                    .with_context(|| {
+                        format!("Failed to prune orphan entries for tracker '{tracker_type}'")
+                    })?
+            }
+        };
+        deleted += res.rows_affected();
+    }
+    tx.commit().await.context("Failed to commit transaction")?;
+    Ok(deleted)
 }
 
 /// Update a feeling's body. Returns the number of affected rows.

@@ -6,6 +6,10 @@
   preview shows a `moods:` field with colored badges
 - `:db` command replaces `:prune` — `:db prune` (old behavior) and
   `:db backfill` (persist missing mood embeddings/scores)
+- `:db doctor` — checks tracker entries against their configured kinds and
+  prunes entries whose storage class no longer matches (orphaned tracker
+  types and stale nonzero time-marker entries included), after an
+  interactive confirm
 - Tracker intervals are calendar-aware (`interval = ["2020-01-01 00:00", "1 day"]`)
 - New `null` tracker kind: valueless timestamp markers with time-of-day
   coloring (e.g. sleep start) or per-interval counting

@@ -5051,3 +5051,209 @@ async fn test_clear_command() {
         .unwrap();
     assert_eq!(count_after, 0);
 }
+
+/// `:db doctor` parse: exactly `:db doctor`; extra args, a bare `:db`, and
+/// unknown subcommands are usage errors.
+#[test]
+fn test_db_doctor_parse() {
+    let cmd = parse_from(vec![":db".to_string(), "doctor".to_string()]).unwrap();
+    assert!(matches!(
+        cmd,
+        feeling::cli::Command::Db {
+            sub: feeling::cli::DbSubcommand::Doctor
+        }
+    ));
+    assert!(parse_from(vec![
+        ":db".to_string(),
+        "doctor".to_string(),
+        "extra".to_string()
+    ])
+    .is_err());
+    assert!(parse_from(vec![":db".to_string()]).is_err());
+    assert!(parse_from(vec![":db".to_string(), "bogus".to_string()]).is_err());
+}
+
+/// `:db doctor` non-interactive safety: mismatched entries are surfaced but
+/// never deleted without the interactive confirm.
+#[tokio::test]
+async fn test_db_doctor_noninteractive_reports_only() {
+    let pool = test_pool().await.unwrap();
+    // sleep is float in the config: real entries match, integer and text
+    // entries mismatch. "old" has no config section (orphan).
+    let mut config = Config::default();
+    config.tracker.insert(
+        "sleep".to_string(),
+        feeling::config::TrackerSetting {
+            interval: None,
+            min: None,
+            max: None,
+            kind: TrackerKind::Float,
+            colors: None,
+        },
+    );
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('sleep', ?, 100)")
+        .bind(3.5f64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('sleep', ?, 100)")
+        .bind(3i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('sleep', ?, 100)")
+        .bind("deep")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('old', ?, 100)")
+        .bind(1i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cmd = parse_from(vec![":db".to_string(), "doctor".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 4, "non-interactive :db doctor must not delete");
+}
+
+/// `:db doctor` db layer: fetch_tracker_score_kinds groups entries by type
+/// and storage class (with nonzero counts); prune_tracker_rules deletes
+/// exactly the mismatched rows across all rule kinds.
+#[tokio::test]
+async fn test_db_doctor_buckets_and_prune() {
+    let pool = test_pool().await.unwrap();
+    // sleep: null with both min/max set — time-marker mode, so only integer
+    // score-0 entries match. water: number — integers only.
+    let mut config = Config::default();
+    config.tracker.insert(
+        "sleep".to_string(),
+        feeling::config::TrackerSetting {
+            interval: None,
+            min: Some(82800.0),
+            max: Some(7200.0),
+            kind: TrackerKind::Null,
+            colors: None,
+        },
+    );
+    config.tracker.insert(
+        "water".to_string(),
+        feeling::config::TrackerSetting {
+            interval: None,
+            min: None,
+            max: None,
+            kind: TrackerKind::Number,
+            colors: None,
+        },
+    );
+    // sleep: 2 zero integers (keep) + 1 nonzero integer (stale count-mode
+    // leftover) + 1 text (mismatch); water: 2 integers (keep) + 1 real
+    // (mismatch); "old": orphan.
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('sleep', ?, 100)")
+        .bind(0i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('sleep', ?, 100)")
+        .bind(0i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('sleep', ?, 100)")
+        .bind(2i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('sleep', ?, 100)")
+        .bind("deep")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('water', ?, 100)")
+        .bind(5i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('water', ?, 100)")
+        .bind(4i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('water', ?, 100)")
+        .bind(3.5f64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time) VALUES ('old', ?, 100)")
+        .bind(1i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let kinds = feeling::db::fetch_tracker_score_kinds(&pool).await.unwrap();
+    let buckets: Vec<(String, String, i64, i64)> = kinds
+        .iter()
+        .map(|r| {
+            (
+                r.tracker_type.clone(),
+                r.storage.clone(),
+                r.count,
+                r.nonzero,
+            )
+        })
+        .collect();
+    assert_eq!(
+        buckets,
+        vec![
+            ("old".to_string(), "integer".to_string(), 1, 1),
+            ("sleep".to_string(), "integer".to_string(), 3, 1),
+            ("sleep".to_string(), "text".to_string(), 1, 1),
+            ("water".to_string(), "integer".to_string(), 2, 2),
+            ("water".to_string(), "real".to_string(), 1, 1),
+        ]
+    );
+
+    // The rules plan_tracker_prunes would derive from this config: sleep
+    // (marker-mode null) = keep integers + drop nonzero; water = keep
+    // integers; old = orphan, drop everything.
+    let rules = vec![
+        feeling::db::TrackerPruneRule::Storage {
+            tracker_type: "sleep".to_string(),
+            keep: "integer",
+        },
+        feeling::db::TrackerPruneRule::NonzeroScore {
+            tracker_type: "sleep".to_string(),
+        },
+        feeling::db::TrackerPruneRule::Storage {
+            tracker_type: "water".to_string(),
+            keep: "integer",
+        },
+        feeling::db::TrackerPruneRule::All {
+            tracker_type: "old".to_string(),
+        },
+    ];
+    let deleted = feeling::db::prune_tracker_rules(&pool, &rules)
+        .await
+        .unwrap();
+    assert_eq!(deleted, 4, "1 nonzero + 1 text + 1 real + 1 orphan");
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 4, "2 sleep zero-integers + 2 water integers");
+}

@@ -1,0 +1,12 @@
+[package]
+name = "jiff-english"
+description = "Parses informal English dates on jiff, in the spirit of the Linux `date` command; a port of chrono-english with eod/end/start time specifiers and hence/later"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license = "MIT"
+
+[dependencies]
+jiff = "0.2"
+scanlex = "0.1"

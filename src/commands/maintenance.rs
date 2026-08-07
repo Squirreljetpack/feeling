@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use cba::{ebog, ibog};
 use sqlx::SqlitePool;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::config::{Config, DEFAULT_CONFIG, DEFAULT_MOODS};
+use crate::config::{Config, TrackerKind, TrackerSetting, DEFAULT_CONFIG, DEFAULT_MOODS};
 use crate::date;
+use crate::db::{TrackerPruneRule, TrackerScoreKindRow};
 use crate::editor::open_editor_at;
 use crate::paths::default_config_path;
 
@@ -155,6 +157,181 @@ pub(super) async fn db_backfill(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
+/// One `:db doctor` report line: entries to prune for a single tracker
+/// type, with the per-storage-class breakdown ("how many of each kind").
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct TrackerPruneLine {
+    pub tracker_type: String,
+    /// Human-readable reason: `kind <name>` (with a time-marker note for
+    /// marker-mode null) or the orphan note.
+    pub reason: String,
+    /// Pruned count per storage class, e.g. `[("real", 2), ("text", 1)]`;
+    /// the marker-mode integer bucket is labelled `integer ≠ 0`. Empty for
+    /// orphan types (everything is pruned).
+    pub per_storage: Vec<(String, i64)>,
+    /// Total entries this line prunes.
+    pub total: i64,
+}
+
+/// The full `:db doctor` plan: report lines plus the equivalent prune rules.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct TrackerPrunePlan {
+    pub lines: Vec<TrackerPruneLine>,
+    pub rules: Vec<TrackerPruneRule>,
+}
+
+fn kind_label(kind: TrackerKind) -> &'static str {
+    match kind {
+        TrackerKind::Text => "text",
+        TrackerKind::Number => "number",
+        TrackerKind::Float => "float",
+        TrackerKind::Null => "null",
+    }
+}
+
+/// Classify tracker entries into prune lines/rules for `:db doctor`.
+///
+/// Each configured kind fixes the storage class every writer binds (`text`
+/// → TEXT, `number` → INTEGER, `float` → REAL, `null` → INTEGER — see
+/// `create_entry` and `update_tracker_score`), so an entry whose
+/// `typeof(score)` differs no longer matches the tracker's current kind,
+/// e.g. after the tracker's `kind` changed in the config. A `null` tracker
+/// with both min and max set is a time-marker: it always writes score 0, so
+/// nonzero rows are stale count-mode leftovers and are pruned too. Types
+/// with no `[tracker.<type>]` section (renamed/removed trackers) are
+/// orphans: everything is pruned (the today view hard-errors on such rows).
+fn plan_tracker_prunes(
+    rows: &[TrackerScoreKindRow],
+    trackers: &HashMap<String, TrackerSetting>,
+) -> TrackerPrunePlan {
+    let mut by_type: BTreeMap<&str, Vec<&TrackerScoreKindRow>> = BTreeMap::new();
+    for row in rows {
+        by_type
+            .entry(row.tracker_type.as_str())
+            .or_default()
+            .push(row);
+    }
+
+    let mut lines = Vec::new();
+    let mut rules = Vec::new();
+    for (tracker_type, group) in by_type {
+        let Some(setting) = trackers.get(tracker_type) else {
+            let total = group.iter().map(|r| r.count).sum();
+            lines.push(TrackerPruneLine {
+                tracker_type: tracker_type.to_string(),
+                reason: format!("no [tracker.{tracker_type}] section in config"),
+                per_storage: Vec::new(),
+                total,
+            });
+            rules.push(TrackerPruneRule::All {
+                tracker_type: tracker_type.to_string(),
+            });
+            continue;
+        };
+
+        let keep = match setting.kind {
+            TrackerKind::Text => "text",
+            TrackerKind::Number => "integer",
+            TrackerKind::Float => "real",
+            TrackerKind::Null => "integer",
+        };
+        let marker_mode =
+            setting.kind == TrackerKind::Null && setting.min.is_some() && setting.max.is_some();
+
+        let mut per_storage = Vec::new();
+        let mut total = 0i64;
+        let mut nonzero = false;
+        for row in group {
+            if row.storage != keep {
+                per_storage.push((row.storage.clone(), row.count));
+                total += row.count;
+            } else if marker_mode && row.nonzero > 0 {
+                per_storage.push(("integer ≠ 0".to_string(), row.nonzero));
+                total += row.nonzero;
+                nonzero = true;
+            }
+        }
+        if total == 0 {
+            continue;
+        }
+
+        rules.push(TrackerPruneRule::Storage {
+            tracker_type: tracker_type.to_string(),
+            keep,
+        });
+        if nonzero {
+            rules.push(TrackerPruneRule::NonzeroScore {
+                tracker_type: tracker_type.to_string(),
+            });
+        }
+
+        let reason = if marker_mode {
+            "kind null, time-marker mode (min+max set)".to_string()
+        } else {
+            format!("kind {}", kind_label(setting.kind))
+        };
+        lines.push(TrackerPruneLine {
+            tracker_type: tracker_type.to_string(),
+            reason,
+            per_storage,
+            total,
+        });
+    }
+    TrackerPrunePlan { lines, rules }
+}
+
+/// `feeling :db doctor` — check every tracker entry's storage class against
+/// the tracker's current configured kind and prune the mismatches, after an
+/// interactive confirm. Non-interactive runs only surface the breakdown
+/// (deletion requires the confirm).
+pub(super) async fn db_doctor(pool: &SqlitePool, config: &Config, tui: bool) -> Result<()> {
+    let rows = crate::db::fetch_tracker_score_kinds(pool).await?;
+    let plan = plan_tracker_prunes(&rows, &config.tracker);
+
+    if plan.lines.is_empty() {
+        cba::ibog!("doctor"; "all tracker entries match their configured kinds");
+        return Ok(());
+    }
+
+    let total: i64 = plan.lines.iter().map(|l| l.total).sum();
+    for line in &plan.lines {
+        let breakdown = line
+            .per_storage
+            .iter()
+            .map(|(storage, n)| format!("{n} {storage}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let detail = if breakdown.is_empty() {
+            String::new()
+        } else {
+            format!(" ({breakdown})")
+        };
+        cba::ibog!(
+            "doctor";
+            "{}: {} entry/entries — {}{}",
+            line.tracker_type,
+            line.total,
+            line.reason,
+            detail
+        );
+    }
+    cba::ibog!("doctor"; "total: {total} entry/entries to prune");
+
+    if !tui {
+        cba::wbog!("doctor"; ":db doctor must be run interactively to confirm and delete");
+        return Ok(());
+    }
+
+    if !crate::prompts::prompt_db_doctor_confirm(total)? {
+        cliclack::outro("Cancelled.")?;
+        return Ok(());
+    }
+
+    let deleted = crate::db::prune_tracker_rules(pool, &plan.rules).await?;
+    cliclack::outro(format!("Pruned {deleted} tracker entry/entries"))?;
+    Ok(())
+}
+
 /// `feeling :config` — open the active config in $VISUAL/$EDITOR.
 ///
 /// If the on-disk config doesn't exist yet (common on first run with the
@@ -226,4 +403,210 @@ pub(super) async fn edit_moods(config: &Config) -> Result<()> {
 /// task editing is future work (see TODO.md).
 pub(super) async fn edit_tasks() -> Result<()> {
     anyhow::bail!("Task editing is not yet implemented");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TrackerSetting;
+
+    fn row(tracker_type: &str, storage: &str, count: i64, nonzero: i64) -> TrackerScoreKindRow {
+        TrackerScoreKindRow {
+            tracker_type: tracker_type.to_string(),
+            storage: storage.to_string(),
+            count,
+            nonzero,
+        }
+    }
+
+    fn make_trackers(entries: &[(&str, TrackerSetting)]) -> HashMap<String, TrackerSetting> {
+        entries
+            .iter()
+            .map(|(name, setting)| (name.to_string(), setting.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn plan_prunes_storage_mismatches_per_kind() {
+        // sleep is float (real kept, text pruned); runs is number (integer
+        // kept, real pruned). BTreeMap orders lines by type name.
+        let rows = vec![
+            row("runs", "integer", 3, 0),
+            row("runs", "real", 2, 0),
+            row("sleep", "real", 2, 0),
+            row("sleep", "text", 1, 0),
+        ];
+        let trackers = make_trackers(&[
+            ("sleep", TrackerSetting::new(TrackerKind::Float)),
+            ("runs", TrackerSetting::new(TrackerKind::Number)),
+        ]);
+        let plan = plan_tracker_prunes(&rows, &trackers);
+        assert_eq!(
+            plan.lines,
+            vec![
+                TrackerPruneLine {
+                    tracker_type: "runs".to_string(),
+                    reason: "kind number".to_string(),
+                    per_storage: vec![("real".to_string(), 2)],
+                    total: 2,
+                },
+                TrackerPruneLine {
+                    tracker_type: "sleep".to_string(),
+                    reason: "kind float".to_string(),
+                    per_storage: vec![("text".to_string(), 1)],
+                    total: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            plan.rules,
+            vec![
+                TrackerPruneRule::Storage {
+                    tracker_type: "runs".to_string(),
+                    keep: "integer",
+                },
+                TrackerPruneRule::Storage {
+                    tracker_type: "sleep".to_string(),
+                    keep: "real",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_text_kind_keeps_only_text() {
+        let rows = vec![
+            row("affirmation", "text", 2, 0),
+            row("affirmation", "integer", 1, 0),
+        ];
+        let trackers = make_trackers(&[("affirmation", TrackerSetting::new(TrackerKind::Text))]);
+        let plan = plan_tracker_prunes(&rows, &trackers);
+        assert_eq!(plan.lines[0].reason, "kind text");
+        assert_eq!(plan.lines[0].per_storage, vec![("integer".to_string(), 1)]);
+        assert_eq!(plan.lines[0].total, 1);
+        assert_eq!(
+            plan.rules,
+            vec![TrackerPruneRule::Storage {
+                tracker_type: "affirmation".to_string(),
+                keep: "text",
+            }]
+        );
+    }
+
+    #[test]
+    fn plan_null_tracker_modes() {
+        // Count mode (no bounds): nonzero integers are the count and are
+        // kept; text entries are pruned.
+        let rows = vec![row("pills", "integer", 3, 3), row("pills", "text", 1, 0)];
+        let trackers = make_trackers(&[("pills", TrackerSetting::new(TrackerKind::Null))]);
+        let plan = plan_tracker_prunes(&rows, &trackers);
+        assert_eq!(
+            plan.lines,
+            vec![TrackerPruneLine {
+                tracker_type: "pills".to_string(),
+                reason: "kind null".to_string(),
+                per_storage: vec![("text".to_string(), 1)],
+                total: 1,
+            }]
+        );
+        assert_eq!(
+            plan.rules,
+            vec![TrackerPruneRule::Storage {
+                tracker_type: "pills".to_string(),
+                keep: "integer",
+            }]
+        );
+
+        // Time-marker mode (both bounds): nonzero integers are stale count
+        // leftovers and are pruned too.
+        let rows = vec![
+            row("sleep", "integer", 5, 3),
+            row("sleep", "real", 1, 0),
+            row("sleep", "text", 1, 0),
+        ];
+        let trackers = make_trackers(&[(
+            "sleep",
+            TrackerSetting::new(TrackerKind::Null)
+                .with_min(82800.0)
+                .with_max(7200.0),
+        )]);
+        let plan = plan_tracker_prunes(&rows, &trackers);
+        assert_eq!(
+            plan.lines,
+            vec![TrackerPruneLine {
+                tracker_type: "sleep".to_string(),
+                reason: "kind null, time-marker mode (min+max set)".to_string(),
+                per_storage: vec![
+                    ("integer ≠ 0".to_string(), 3),
+                    ("real".to_string(), 1),
+                    ("text".to_string(), 1),
+                ],
+                total: 5,
+            }]
+        );
+        assert_eq!(
+            plan.rules,
+            vec![
+                TrackerPruneRule::Storage {
+                    tracker_type: "sleep".to_string(),
+                    keep: "integer",
+                },
+                TrackerPruneRule::NonzeroScore {
+                    tracker_type: "sleep".to_string(),
+                },
+            ]
+        );
+
+        // Marker mode with a clean integer bucket: no NonzeroScore rule.
+        let rows = vec![row("sleep", "integer", 5, 0), row("sleep", "text", 1, 0)];
+        let plan = plan_tracker_prunes(&rows, &trackers);
+        assert_eq!(plan.lines[0].total, 1);
+        assert_eq!(
+            plan.rules,
+            vec![TrackerPruneRule::Storage {
+                tracker_type: "sleep".to_string(),
+                keep: "integer",
+            }]
+        );
+    }
+
+    #[test]
+    fn plan_orphan_types_prune_everything() {
+        let rows = vec![row("oldname", "real", 2, 0), row("oldname", "text", 1, 0)];
+        let trackers = HashMap::new();
+        let plan = plan_tracker_prunes(&rows, &trackers);
+        assert_eq!(
+            plan.lines,
+            vec![TrackerPruneLine {
+                tracker_type: "oldname".to_string(),
+                reason: "no [tracker.oldname] section in config".to_string(),
+                per_storage: Vec::new(),
+                total: 3,
+            }]
+        );
+        assert_eq!(
+            plan.rules,
+            vec![TrackerPruneRule::All {
+                tracker_type: "oldname".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn plan_skips_clean_trackers_and_empty_input() {
+        // sleep float with only real entries and pills null count-mode with
+        // only integer entries (nonzero is the count — fine).
+        let rows = vec![row("sleep", "real", 2, 0), row("pills", "integer", 3, 3)];
+        let trackers = make_trackers(&[
+            ("sleep", TrackerSetting::new(TrackerKind::Float)),
+            ("pills", TrackerSetting::new(TrackerKind::Null)),
+        ]);
+        let plan = plan_tracker_prunes(&rows, &trackers);
+        assert!(plan.lines.is_empty());
+        assert!(plan.rules.is_empty());
+
+        let plan = plan_tracker_prunes(&[], &trackers);
+        assert!(plan.lines.is_empty());
+        assert!(plan.rules.is_empty());
+    }
 }

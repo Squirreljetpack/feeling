@@ -114,6 +114,7 @@ pub async fn execute_command<W: Write>(
         Command::Db { sub } => match sub {
             crate::cli::DbSubcommand::Prune => maintenance::db_prune(pool, config).await,
             crate::cli::DbSubcommand::Backfill => maintenance::db_backfill(pool).await,
+            crate::cli::DbSubcommand::Doctor => maintenance::db_doctor(pool, config, tui).await,
         },
 
         Command::Color { mood } => {

@@ -50,11 +50,19 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
                     sub: crate::cli::DbSubcommand::Backfill,
                 })
             }
+            Some("doctor") => {
+                if args.len() != 2 {
+                    anyhow::bail!("Usage: feeling :db doctor");
+                }
+                Ok(Command::Db {
+                    sub: crate::cli::DbSubcommand::Doctor,
+                })
+            }
             Some(other) => anyhow::bail!(
-                "Unknown :db subcommand '{}' (expected prune or backfill)",
+                "Unknown :db subcommand '{}' (expected prune, backfill, or doctor)",
                 other
             ),
-            None => anyhow::bail!("Usage: feeling :db prune | :db backfill"),
+            None => anyhow::bail!("Usage: feeling :db prune | :db backfill | :db doctor"),
         };
     }
 
