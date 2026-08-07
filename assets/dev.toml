@@ -50,31 +50,31 @@ persist_pending_seconds = 300
 
 [tracker]
 # populatable as: [tracker.<name>]
-# interval = "1 day"
-# kind = "float"      # text | number | float
+# interval = ["2020-01-01 00:00", "1 day"]   # anchor datetime + calendar span
+# kind = "float"      # text | number | float | null
 # min = 0
 # max = 10
 
 [tracker.sleep]
-interval = "1 day"
+interval = ["2020-01-01 00:00", "1 day"]
 kind = "float"
 min = 0
 max = 10
 
 [tracker.run_times]
-interval = "1 week"
+interval = ["2020-01-01 00:00", "1 week"]
 kind = "float"
 min = 100
 max = 0
 
 # Interval trackers without min/max — binning falls back to last color
 [tracker.water]
-interval = "1 day"
+interval = ["2020-01-01 00:00", "1 day"]
 kind = "float"
 
 # Interval text tracker — entries stored as strings, no numeric binning
 [tracker.notes]
-interval = "1 week"
+interval = ["2020-01-01 00:00", "1 week"]
 kind = "text"
 
 # Non-interval number tracker with only min (no max — bins from min upward).
@@ -88,7 +88,7 @@ kind = "text"
 # Tracker with values spanning below min, in range, and above max
 # to exercise the full color binning palette.
 [tracker.temperature]
-interval = "1 day"
+interval = ["2020-01-01 00:00", "1 day"]
 kind = "number"
 min = 10
 max = 30

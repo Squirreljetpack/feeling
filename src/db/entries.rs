@@ -47,6 +47,80 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
     };
 
     for tracker in &entry.trackers {
+        // Null trackers: update the slot's existing entry in place (time
+        // moves to the new entry's; the score is incremented in count mode
+        // and left unchanged when both min/max are set), or insert when the
+        // slot is empty.
+        if let Some(nu) = &tracker.null_upsert {
+            let (slot_start, slot_end) = nu.slot;
+            let existing: Option<i64> = sqlx::query(
+                "SELECT id FROM tracker \
+                 WHERE type = ? AND time >= ? AND time < ? ORDER BY time DESC LIMIT 1",
+            )
+            .bind(&tracker.tracker_type)
+            .bind(slot_start)
+            .bind(slot_end)
+            .fetch_optional(&mut *tx)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to find existing entry for tracker '{}' in slot {}..{}",
+                    tracker.tracker_type, slot_start, slot_end
+                )
+            })?
+            .map(|r| r.get("id"));
+            match existing {
+                Some(id) => {
+                    if nu.increment {
+                        // Count mode: score + 1, time moves to now.
+                        sqlx::query("UPDATE tracker SET score = score + 1, time = ? WHERE id = ?")
+                            .bind(entry.time)
+                            .bind(id)
+                            .execute(&mut *tx)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to increment tracker '{}' entry {}",
+                                    tracker.tracker_type, id
+                                )
+                            })?;
+                    } else {
+                        // Time-marker mode: just move the entry to now.
+                        sqlx::query("UPDATE tracker SET time = ? WHERE id = ?")
+                            .bind(entry.time)
+                            .bind(id)
+                            .execute(&mut *tx)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to update tracker '{}' entry {}",
+                                    tracker.tracker_type, id
+                                )
+                            })?;
+                    }
+                }
+                None => {
+                    let mut q = sqlx::query(
+                        "INSERT INTO tracker (type, score, time, feeling) VALUES (?, ?, ?, ?)",
+                    )
+                    .bind(&tracker.tracker_type);
+                    q = match &tracker.value {
+                        TrackerValue::Text(s) => q.bind(s),
+                        TrackerValue::Number(n) => q.bind(n),
+                        TrackerValue::Float(f) => q.bind(f),
+                    };
+                    q.bind(entry.time)
+                        .bind(feeling_id)
+                        .execute(&mut *tx)
+                        .await
+                        .with_context(|| {
+                            format!("Failed to insert tracker '{}'", tracker.tracker_type)
+                        })?;
+                }
+            }
+            continue;
+        }
+
         if let Some((slot_start, slot_end)) = tracker.replace_slot {
             sqlx::query("DELETE FROM tracker WHERE type = ? AND time >= ? AND time < ?")
                 .bind(&tracker.tracker_type)
@@ -184,6 +258,21 @@ pub async fn fetch_tracker_entries(
         .collect())
 }
 
+/// The most recent entry time per tracker type (unscoped), for the today
+/// view's preview `last:` field. Trackers without entries are absent.
+pub async fn fetch_tracker_last_times(
+    pool: &SqlitePool,
+) -> Result<std::collections::HashMap<String, i64>> {
+    let rows = sqlx::query("SELECT type, MAX(time) AS last FROM tracker GROUP BY type")
+        .fetch_all(pool)
+        .await
+        .context("Failed to fetch tracker last times")?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get::<String, _>("type"), r.get::<i64, _>("last")))
+        .collect())
+}
+
 /// All tracker entries in `[start, end]`, oldest first (today view).
 pub async fn fetch_tracker_entries_today(
     pool: &SqlitePool,
@@ -302,6 +391,8 @@ pub async fn update_tracker_score(
         TrackerKind::Text => q.bind(value),
         TrackerKind::Number => q.bind(value.parse::<i64>().unwrap_or(0)),
         TrackerKind::Float => q.bind(value.parse::<f64>().unwrap_or(0.0)),
+        // Null trackers never go through the edit modal.
+        TrackerKind::Null => q.bind(0),
     };
     let res = q
         .bind(id)

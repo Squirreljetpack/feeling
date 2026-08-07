@@ -617,26 +617,21 @@ fn tracker_value(config: &Config, name: &str, raw: &str) -> Result<TrackerValue>
                 format!("Cannot parse '{raw}' as a number for tracker '{name}'")
             })?)
         }
+        // Null trackers don't take values; the seed script never seeds them.
+        TrackerKind::Null => anyhow::bail!("Null tracker '{name}' cannot be seeded with a value"),
     })
 }
 
 /// Interval slot whose previous entry gets replaced on insert, for
-/// Text/Float trackers with an interval. Mirrors
-/// `handlers::interval_slot`: a uniform epoch-aligned grid
-/// `[(t/interval)*interval, +interval)` — correct for any interval length
-/// (including sub-day). Known flaw: the grid's phase is UTC midnight, so a
-/// "1 day" slot drifts by the local UTC offset (calendar-aware intervals
-/// are the roadmap fix).
+/// Text/Float trackers with an interval. Mirrors the calendar slot math in
+/// `commands::entry`: `[anchor + span*k, anchor + span*(k+1))`.
 fn replace_slot(config: &Config, name: &str, time: i64) -> Option<(i64, i64)> {
     config
         .tracker
         .get(name)
         .filter(|t| matches!(t.kind, TrackerKind::Text | TrackerKind::Float))
         .and_then(|t| t.interval)
-        .map(|interval_secs| {
-            let slot_start = (time / interval_secs) * interval_secs;
-            (slot_start, slot_start + interval_secs)
-        })
+        .and_then(|iv| crate::date::interval_slot_unix_secs(iv.anchor, iv.span, time))
 }
 
 /// Insert one mood/tracker entry with `embedding: None`. The grid and today
@@ -656,6 +651,7 @@ async fn seed_entry(
                 tracker_type: name.to_string(),
                 value: tracker_value(config, name, raw)?,
                 replace_slot: replace_slot(config, name, time),
+                null_upsert: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;

@@ -12,7 +12,6 @@
 //! - [`format`] — epoch/duration formatting
 //! - [`span`] — jiff `Span` ↔ database packing and interval math
 
-pub mod deserialize;
 pub mod format;
 pub mod parse;
 pub mod parse_duration;

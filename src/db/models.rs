@@ -77,7 +77,23 @@ pub struct EntryObject {
 pub struct TrackerObject {
     pub tracker_type: String,
     pub value: TrackerValue,
+    /// `[start, end)` interval slot whose previous entry is deleted before
+    /// the insert (Text/Float interval trackers).
     pub replace_slot: Option<(i64, i64)>,
+    /// Null interval trackers: instead of delete+insert, the slot's entry
+    /// is updated in place (time moved to the new entry's; score incremented
+    /// in count mode, left unchanged otherwise).
+    pub null_upsert: Option<NullUpsert>,
+}
+
+/// Update-in-place semantics for a Null tracker entry.
+#[derive(Debug, Clone)]
+pub struct NullUpsert {
+    /// The `[start, end)` interval slot whose entry is updated.
+    pub slot: (i64, i64),
+    /// Count mode (`min` or `max` missing): increment the existing entry's
+    /// score by 1. When false (both bounds set) the score stays unchanged.
+    pub increment: bool,
 }
 
 /// Typed payload of a tracker entry, determined by its configured kind.

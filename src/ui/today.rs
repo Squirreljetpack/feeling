@@ -465,6 +465,8 @@ impl TodayApp {
             crate::config::TrackerKind::Number => input.parse::<i64>().is_ok(),
             crate::config::TrackerKind::Float => input.parse::<f64>().is_ok(),
             crate::config::TrackerKind::Text => true,
+            // Null trackers never open the edit modal.
+            crate::config::TrackerKind::Null => false,
         };
         if !valid {
             let m = self.modal.as_mut().expect("modal");
@@ -477,6 +479,7 @@ impl TodayApp {
                     crate::config::TrackerKind::Number => "number",
                     crate::config::TrackerKind::Float => "float",
                     crate::config::TrackerKind::Text => "text",
+                    crate::config::TrackerKind::Null => "unsupported",
                 }
             ));
             return;
@@ -565,6 +568,8 @@ impl TodayApp {
                             error: None,
                         }));
                     }
+                    // Null payloads are not editable.
+                    crate::config::TrackerKind::Null => {}
                 }
             }
             // Mood body edit.
@@ -855,6 +860,7 @@ fn render_today_modal(f: &mut Frame, app: &TodayApp) {
                 crate::config::TrackerKind::Number => "number",
                 crate::config::TrackerKind::Float => "float",
                 crate::config::TrackerKind::Text => "text",
+                crate::config::TrackerKind::Null => "null",
             };
             let mut lines = vec![
                 Line::from(Span::styled(

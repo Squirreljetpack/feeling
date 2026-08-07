@@ -113,6 +113,32 @@ checkpoint command for this session.
 - `Timestamp::as_second()` is the epoch-seconds accessor; `Zoned - Zoned`
   yields a seconds-only `Span` (`total(Unit::Second)` OK there).
 
+### Stage 2 ✅ (commit `stage 2: tracker intervals + null tracker kind`)
+
+- `TrackerSetting.interval` is now `Option<TrackerInterval>` = (anchor
+  epoch, calendar Span), TOML `["2020-01-01 00:00", "1 day"]`; old string
+  form rejected; bundled dev.toml/config.toml updated. `date::deserialize`
+  module deleted (was only used by the old interval format).
+- `TrackerKind::Null` added; valueless trailing `-<name>` parses (numeric
+  names still error — reserved for task links in stage 3); handler rejects
+  empty values for text/number/float.
+- Null write semantics: count mode (a bound missing) increments the slot
+  entry's score (insert 1); both-bounds mode inserts 0 and re-log moves
+  the entry's time without touching the score. No interval → error.
+- Replace slots are calendar-based (`interval_slot_unix_secs`); grid
+  slotting via `interval_index` from the tracker anchor.
+- Null coloring: `badge::null_tracker_color` implements the NOTES
+  interpretation (red = `[min, mid)` circular, blue = `[mid, min)`, solid
+  first/last palette colors); single-bound/no-interval falls back to
+  numeric score binning; grid for interval-less Null is skipped with
+  `bog::error`.
+- Today view: Null label = tracker name only; `TodayEntry` carries
+  `tracker_interval` + `tracker_last`; `build_today_preview` shows
+  `next:`/`last:` for interval trackers like recurring tasks.
+- `interval_index` generalized to t before the anchor (negative indices).
+- Tests: null semantics integration test, TrackerInterval serde roundtrip,
+  null_tracker_color unit tests. 179 lib + 89 integration pass.
+
 ## Misc observations
 
 - Baseline: `cargo check` clean except the pre-existing `IoStream::Stdout`

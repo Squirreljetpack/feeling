@@ -1207,9 +1207,14 @@ mod tests {
 
     #[test]
     fn test_parse_cli_flags_initial_position_only() {
-        // Once a non-flag token appears, -q is entry text — a tracker named
-        // 'q' that requires a value → parse error.
-        assert!(parse_cli(args(&["ok", "-q"])).is_err());
+        // Once a non-flag token appears, -q is entry text: a trailing
+        // -<name> with no value parses as a valueless tracker (Null
+        // trackers; the handler rejects it for text/number/float kinds).
+        let cli = parse_cli(args(&["ok", "-q"])).unwrap();
+        assert_eq!(cli.opts.qv, [0, 0]);
+        assert!(
+            matches!(cli.cmd, Command::Entry(e) if e.trackers == vec![("q".to_string(), String::new())])
+        );
 
         // A combined -qv token is a flag now, not entry text.
         let cli = parse_cli(args(&["-qv", "ok"])).unwrap();
@@ -1222,8 +1227,14 @@ mod tests {
         assert!(matches!(cli.cmd, Command::Update { .. }));
 
         // Tokens with non-flag characters stop the flag run (-q5 is entry
-        // text: a tracker named 'q5' needing a value → parse error alone).
-        assert!(parse_cli(args(&["-q5"])).is_err());
+        // text: a valueless tracker reference, like any trailing -<name>).
+        let cli = parse_cli(args(&["-q5"])).unwrap();
+        assert!(
+            matches!(cli.cmd, Command::Entry(e) if e.trackers == vec![("q5".to_string(), String::new())])
+        );
+        // A purely numeric trailing -<name> stays a parse error: numeric
+        // tracker names are reserved (task short-id links).
+        assert!(parse_cli(args(&["-5"])).is_err());
     }
 
     #[test]
@@ -1332,9 +1343,12 @@ mod tests {
         let cli = parse_cli(args(&["-q", "-h"])).unwrap();
         assert_eq!(cli.opts.qv, [1, 0]);
         assert_eq!(cli.cmd, Command::Help);
-        // After a non-flag token, -h is entry text (a tracker needing a
-        // value), not help.
-        assert!(parse_cli(args(&["ok", "-h"])).is_err());
+        // After a non-flag token, -h is entry text (a valueless tracker
+        // reference), not help.
+        let cli = parse_cli(args(&["ok", "-h"])).unwrap();
+        assert!(
+            matches!(cli.cmd, Command::Entry(e) if e.trackers == vec![("h".to_string(), String::new())])
+        );
     }
 
     #[test]

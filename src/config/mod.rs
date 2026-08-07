@@ -113,9 +113,13 @@ impl Config {
                     setting.colors = None;
                 }
             }
-            // A non-positive interval would divide by zero when computing
-            // the tracker's replacement slot, so clear it and warn.
-            if setting.interval.is_some_and(|i| i <= 0) {
+            // A zero interval span would break the calendar slot math, so
+            // clear it and warn (parse_span already rejects non-positive
+            // input, so this only guards hand-constructed values).
+            if setting
+                .interval
+                .is_some_and(|iv| crate::date::span_to_db(&iv.span) == 0)
+            {
                 ebog!(
                     "config";
                     "Ignoring zero interval setting on Tracker '{name}'"
@@ -186,23 +190,28 @@ mod tests {
     }
 
     #[test]
-    fn test_init_clears_non_positive_intervals() {
+    fn test_init_clears_zero_intervals() {
         let mut config = Config::default();
-        for (name, interval) in [("zero", 0), ("negative", -3600)] {
-            config.tracker.insert(
-                name.to_string(),
-                TrackerSetting::new(TrackerKind::Float).with_interval(interval),
-            );
-        }
+        let zero = TrackerInterval {
+            anchor: 0,
+            span: jiff::Span::new(),
+        };
+        config.tracker.insert(
+            "zero".to_string(),
+            TrackerSetting::new(TrackerKind::Float).with_interval(zero),
+        );
+        let good = TrackerInterval {
+            anchor: 0,
+            span: jiff::Span::new().days(1),
+        };
         config.tracker.insert(
             "good".to_string(),
-            TrackerSetting::new(TrackerKind::Float).with_interval(86_400),
+            TrackerSetting::new(TrackerKind::Float).with_interval(good),
         );
         config.init();
 
         assert_eq!(config.tracker["zero"].interval, None);
-        assert_eq!(config.tracker["negative"].interval, None);
-        assert_eq!(config.tracker["good"].interval, Some(86_400));
+        assert_eq!(config.tracker["good"].interval, Some(good));
     }
 
     #[test]
@@ -384,6 +393,49 @@ mod tests {
 
         // Unknown keys in the moods file are rejected.
         assert!(toml::from_str::<MoodsFile>("bogus = 1\n").is_err());
+    }
+
+    #[test]
+    fn test_tracker_interval_serde() {
+        // The interval deserializes from ["<anchor datetime>", "<span>"].
+        let cfg: Config = toml::from_str(
+            r#"
+            [tracker.sleep]
+            interval = ["2020-01-01 00:00", "1 day"]
+            kind = "null"
+            "#,
+        )
+        .expect("interval array parses");
+        let iv = cfg.tracker["sleep"].interval.expect("interval set");
+        assert_eq!(
+            iv.anchor,
+            crate::date::parse_datetime("2020-01-01 00:00", crate::date::DATE_DIALECT).unwrap()
+        );
+        assert_eq!(iv.span.fieldwise(), jiff::Span::new().days(1).fieldwise());
+        assert_eq!(cfg.tracker["sleep"].kind, TrackerKind::Null);
+
+        // Old plain-string form is rejected with a clear message.
+        let err =
+            toml::from_str::<Config>("[tracker.sleep]\ninterval = \"1 day\"\nkind = \"float\"\n")
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("expected a sequence"),
+            "unexpected error: {err}"
+        );
+
+        // Serialization roundtrip.
+        let serialized = toml::to_string(&cfg).unwrap();
+        let reparsed: Config = toml::from_str(&serialized).expect("re-parses");
+        let iv2 = reparsed.tracker["sleep"]
+            .interval
+            .expect("interval survives");
+        assert_eq!(iv, iv2);
+
+        // A zero span is rejected at parse time.
+        assert!(toml::from_str::<Config>(
+            "[tracker.sleep]\ninterval = [\"2020-01-01 00:00\", \"0 days\"]\n"
+        )
+        .is_err());
     }
 
     #[test]

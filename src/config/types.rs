@@ -49,7 +49,9 @@ impl Default for ColorBins {
 ///
 /// `Text` stores a string (e.g. `-accomplishment "fixed 2 bugs"`), `Number` an
 /// integer, `Float` a decimal. min/max apply to `Number` and `Float`; they are
-/// ignored for `Text`.
+/// ignored for `Text`. `Null` stores no value — the entry is a timestamp
+/// marker (e.g. "sleep start"): with an interval, min/max are time-of-day
+/// offsets for coloring; without an interval it is unsupported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TrackerKind {
     #[default]
@@ -59,4 +61,6 @@ pub enum TrackerKind {
     Number,
     #[serde(rename = "float")]
     Float,
+    #[serde(rename = "null")]
+    Null,
 }

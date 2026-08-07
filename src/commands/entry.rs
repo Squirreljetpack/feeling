@@ -2,9 +2,9 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 
 use crate::cli::CliOpts;
-use crate::config::{Config, TrackerKind};
+use crate::config::{Config, TrackerInterval, TrackerKind};
 use crate::date;
-use crate::db::{EntryObject, TrackerObject, TrackerValue};
+use crate::db::{EntryObject, NullUpsert, TrackerObject, TrackerValue};
 use crate::editor::open_editor_for_body;
 use crate::types::Entry;
 
@@ -38,25 +38,80 @@ pub(super) async fn record_entry(
 
     // Parse and validate tracker values against their declared kind.
     // Raw strings are interpreted here (not in the parser) so the config's
-    // kind (text/number/float) determines how each value is stored. Text and
-    // float trackers with an interval keep one entry per interval slot (see
-    // `interval_slot`): re-logging the same tracker in the same slot replaces
-    // the previous entry (handled inside `sql::create_entry`). Number
-    // trackers always accumulate.
+    // kind (text/number/float/null) determines how each value is stored.
+    // Text/float trackers with an interval keep one entry per calendar
+    // interval slot (re-logging in the same slot replaces the previous
+    // entry, inside `create_entry`); number trackers always accumulate.
+    // Null trackers with an interval either move the slot's entry to now
+    // (both min/max set — the entry is a timestamp marker) or increment its
+    // count (count mode).
     let mut tracker_objects: Vec<TrackerObject> = Vec::with_capacity(trackers.len());
     for (tracker_type, raw) in &trackers {
-        let value = parse_tracker_value(config, tracker_type, raw)?;
-        let replace_slot = config
-            .tracker
-            .get(tracker_type)
-            .filter(|tracker| matches!(tracker.kind, TrackerKind::Text | TrackerKind::Float))
-            .and_then(|tracker| tracker.interval)
-            .map(|interval_secs| interval_slot(time_epoch, interval_secs));
-        tracker_objects.push(TrackerObject {
-            tracker_type: tracker_type.clone(),
-            value,
-            replace_slot,
-        });
+        let tracker = config.tracker.get(tracker_type).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown tracker type '{}' not found in config",
+                tracker_type
+            )
+        })?;
+        match tracker.kind {
+            TrackerKind::Null => {
+                // A trailing `-<name>` with no value; for Null trackers the
+                // entry is a timestamp marker. Without an interval the
+                // tracker is unsupported (no slot, no count semantics).
+                if !raw.is_empty() {
+                    anyhow::bail!(
+                        "Null tracker '{}' does not take a value (use '-{}' with no value)",
+                        tracker_type,
+                        tracker_type
+                    );
+                }
+                let Some(interval) = tracker.interval else {
+                    anyhow::bail!(
+                        "Null tracker '{}' requires an interval to log (see config)",
+                        tracker_type
+                    );
+                };
+                // Count mode when either bound is missing: the score counts
+                // the logs in the current slot. With both bounds the entry
+                // is a time marker (score stays 0, color from the time).
+                let count_mode = tracker.min.is_none() || tracker.max.is_none();
+                let slot = interval_slot(time_epoch, interval).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Could not compute the interval slot for tracker '{}'",
+                        tracker_type
+                    )
+                })?;
+                tracker_objects.push(TrackerObject {
+                    tracker_type: tracker_type.clone(),
+                    value: TrackerValue::Number(if count_mode { 1 } else { 0 }),
+                    replace_slot: None,
+                    null_upsert: Some(NullUpsert {
+                        slot,
+                        increment: count_mode,
+                    }),
+                });
+            }
+            _ => {
+                if raw.is_empty() {
+                    anyhow::bail!("Tracker '{}' requires a value", tracker_type);
+                }
+                let value = parse_tracker_value(tracker_type, tracker.kind, raw)?;
+                let replace_slot = if matches!(tracker.kind, TrackerKind::Text | TrackerKind::Float)
+                {
+                    tracker
+                        .interval
+                        .and_then(|iv| interval_slot(time_epoch, iv))
+                } else {
+                    None
+                };
+                tracker_objects.push(TrackerObject {
+                    tracker_type: tracker_type.clone(),
+                    value,
+                    replace_slot,
+                    null_upsert: None,
+                });
+            }
+        }
     }
 
     // Resolve the mood embedding and its saliency score before opening the
@@ -99,15 +154,8 @@ pub(super) async fn record_entry(
 /// Denies unknown tracker types; parses Number/Float values (with a clear
 /// error when the argument cannot be parsed) and enforces min/max for both;
 /// Text accepts the value as-is (min/max ignored).
-fn parse_tracker_value(config: &Config, tracker_type: &str, raw: &str) -> Result<TrackerValue> {
-    let tracker = config.tracker.get(tracker_type).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Unknown tracker type '{}' not found in config",
-            tracker_type
-        )
-    })?;
-
-    match tracker.kind {
+fn parse_tracker_value(tracker_type: &str, kind: TrackerKind, raw: &str) -> Result<TrackerValue> {
+    match kind {
         TrackerKind::Text => Ok(TrackerValue::Text(raw.to_string())),
         TrackerKind::Number => {
             let n: i64 = raw.parse().map_err(|_| {
@@ -129,51 +177,48 @@ fn parse_tracker_value(config: &Config, tracker_type: &str, raw: &str) -> Result
             })?;
             Ok(TrackerValue::Float(f))
         }
+        TrackerKind::Null => unreachable!("null trackers are handled in record_entry"),
     }
 }
 
-/// The `[start, end)` replacement slot for an interval-tracker entry: a
-/// uniform grid of the timeline, `[k*interval, (k+1)*interval)` aligned to
-/// the Unix epoch. Uniform tiling keeps **any** interval working — including
-/// sub-day ones like 30 minutes, where a calendar-day anchor would collapse
-/// every same-day entry into a single slot.
-///
-/// KNOWN FLAW (roadmap: calendar-aware intervals): the grid's phase is UTC
-/// midnight, so a "1 day" tracker's slots run local 20:00 → 20:00 on a
-/// UTC-4 machine, and a "1 week" slot is exactly 604800s (167/169h across
-/// a DST change). Replacing this pure-seconds grid with calendar-day/week
-/// slots is the roadmap item; do not re-introduce a local-midnight anchor
-/// here, it breaks sub-day intervals.
-fn interval_slot(time_epoch: i64, interval_secs: i64) -> (i64, i64) {
-    let slot_start = (time_epoch / interval_secs) * interval_secs;
-    (slot_start, slot_start + interval_secs)
+/// The `[start, end)` replacement slot containing `time_epoch` for a
+/// calendar interval (anchor + span): `[anchor + span*k, anchor + span*(k+1))`.
+/// Slots tile the timeline in both directions from the anchor.
+fn interval_slot(time_epoch: i64, interval: TrackerInterval) -> Option<(i64, i64)> {
+    crate::date::interval_slot_unix_secs(interval.anchor, interval.span, time_epoch)
 }
 
 #[cfg(test)]
 mod tests {
     use super::interval_slot;
+    use crate::config::TrackerInterval;
     use crate::date;
+    use jiff::Span;
 
-    /// The slot always contains the entry and has the requested length.
-    #[test]
-    fn interval_slot_contains_entry() {
-        let t = date::today_start() + 12 * 3600;
-        for interval in [1800i64, 86400, 604800] {
-            let (start, end) = interval_slot(t, interval);
-            assert!(t >= start && t < end, "{t} not in [{start}, {end})");
-            assert_eq!(end - start, interval);
+    fn day_interval() -> TrackerInterval {
+        TrackerInterval {
+            anchor: date::day_start(date::now()) - 30 * 86_400,
+            span: Span::new().days(1),
         }
     }
 
-    /// Uniform tiling: adjacent slots touch (no gaps/overlaps). This is the
-    /// property that keeps sub-day trackers (e.g. 30 min) working.
+    /// The slot always contains the entry and slots are adjacent.
     #[test]
-    fn interval_slot_tiles_uniformly() {
+    fn interval_slot_contains_entry() {
         let t = date::today_start() + 12 * 3600;
-        for interval in [1800i64, 86400] {
-            let a = interval_slot(t, interval);
-            let b = interval_slot(t + interval, interval);
-            assert_eq!(a.1, b.0, "slots must be adjacent for {interval}s");
+        for interval in [
+            day_interval(),
+            TrackerInterval {
+                anchor: date::today_start() - 86_400,
+                span: Span::new().minutes(30),
+            },
+        ] {
+            let (start, end) = interval_slot(t, interval).unwrap();
+            assert!(t >= start && t < end, "{t} not in [{start}, {end})");
+            // Adjacent slot: [end, end + span).
+            let (s2, e2) = interval_slot(end, interval).unwrap();
+            assert_eq!(s2, end, "slots must be adjacent");
+            assert!(e2 > end);
         }
     }
 
@@ -181,9 +226,14 @@ mod tests {
     /// crossing a boundary doesn't.
     #[test]
     fn interval_slot_sub_day() {
+        let anchor = date::today_start() - 86_400;
+        let interval = TrackerInterval {
+            anchor,
+            span: Span::new().minutes(30),
+        };
         let t = date::today_start() + 10 * 3600; // 10:00 local
-        let bucket = interval_slot(t, 1800);
-        assert_eq!(interval_slot(t + 600, 1800), bucket); // 10:10 — same bucket
-        assert_ne!(interval_slot(t + 1801, 1800), bucket); // 10:30:01 — next bucket
+        let bucket = interval_slot(t, interval).unwrap();
+        assert_eq!(interval_slot(t + 600, interval).unwrap(), bucket); // 10:10
+        assert_ne!(interval_slot(t + 1801, interval).unwrap(), bucket); // 10:30:01
     }
 }

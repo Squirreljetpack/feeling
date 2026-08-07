@@ -41,16 +41,29 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
         }
         match arg.as_str() {
             s if s.starts_with('-') && s != "-" => {
-                // Tracker entry: -type value (e.g., -sleep 8, -accomplishment "fixed 2 bugs")
+                // Tracker entry: -type value (e.g., -sleep 8, -accomplishment "fixed 2 bugs").
+                // A trailing -type with no value parses as a valueless tracker
+                // (Null trackers — `-sleep` with no value); the handler
+                // rejects empty values for text/number/float trackers. Purely
+                // numeric names stay errors at parse time (they are reserved
+                // for `-<short-id>` task links, see TODO).
                 let tracker_type = s[1..].to_string();
+                let numeric =
+                    !tracker_type.is_empty() && tracker_type.chars().all(|c| c.is_ascii_digit());
                 if i + 1 < args.len() {
                     if !feeling_parts.is_empty() {
                         after_mood_tracker = true;
                     }
                     trackers.push((tracker_type, args[i + 1].clone()));
                     i += 2;
-                } else {
+                } else if numeric {
                     anyhow::bail!("Tracker '{}' requires a value", tracker_type);
+                } else {
+                    if !feeling_parts.is_empty() {
+                        after_mood_tracker = true;
+                    }
+                    trackers.push((tracker_type, String::new()));
+                    i += 1;
                 }
             }
             _ if after_mood_tracker => {

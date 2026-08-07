@@ -5,7 +5,7 @@ use std::io::Write;
 
 use crate::cli::CliOpts;
 use crate::config::{Config, TrackerKind};
-use crate::date;
+use crate::date::{self, Epoch};
 use crate::db::TaskRow;
 use crate::task::pending_sort_time;
 use crate::types::{TaskKind, TodayHorizon, ViewVariant};
@@ -73,6 +73,12 @@ pub struct TodayEntry {
     /// other entry kind. Drives the D10 confirm (`now >= window_end` on a
     /// not-done window) and the selection preview.
     pub recurring_window: Option<crate::db::RecurringWindow>,
+    /// Tracker entries with a configured interval: the (anchor, span) pair,
+    /// so the preview can show the next interval start like recurring tasks.
+    pub tracker_interval: Option<(Epoch, jiff::Span)>,
+    /// Tracker entries: the most recent entry time of this tracker overall
+    /// (unscoped — the preview's `last:` field).
+    pub tracker_last: Option<Epoch>,
 }
 
 /// Today-view time cell for a timestamp: "HH:MM" when it falls on the
@@ -210,12 +216,16 @@ pub async fn fetch_today_entries(
                 badge,
                 color,
                 recurring_window: None,
+                tracker_interval: None,
+                tracker_last: None,
             });
         }
 
         // 2. Tracker entries within the horizon.
         let trackers =
             crate::db::fetch_tracker_entries_today(pool, day_start_epoch, horizon_end).await?;
+        // Unscoped last entry time per tracker (the preview `last:` field).
+        let tracker_lasts = crate::db::fetch_tracker_last_times(pool).await?;
 
         for row in trackers {
             let tracker_id = row.id;
@@ -239,19 +249,35 @@ pub async fn fetch_today_entries(
                         Some(score),
                     )
                 }
+                // Null payloads carry no value: the label is the tracker
+                // name alone (the time column shows the moment). The score
+                // still holds the count in count mode.
+                TrackerKind::Null => {
+                    let score = crate::tracker::score_f64(&row.score);
+                    (tracker_type.clone(), Some('◆'), Some(score))
+                }
             };
-            // Color from the tracker's configured min/max only — no data
-            // fallback here (unlike the grid). Interval trackers store at
-            // most one entry per interval, so each score is used as-is.
+            // Color: Null trackers with an interval and both bounds use the
+            // time-of-day coloring; otherwise the configured min/max bin the
+            // score like any numeric tracker. Null trackers without an
+            // interval are unsupported → Reset.
             let colors = tracker.colors.as_ref().unwrap_or(&config.tasks.colors);
-            let color = match score {
-                Some(s) => RatColor::from_crossterm(crate::badge::tracker_color(
+            let color = match tracker.kind {
+                TrackerKind::Null => RatColor::from_crossterm(crate::badge::null_tracker_color(
                     colors,
-                    s,
-                    tracker.min,
-                    tracker.max,
+                    tracker,
+                    time,
+                    score.unwrap_or(0.0),
                 )),
-                None => RatColor::DarkGray,
+                _ => match score {
+                    Some(s) => RatColor::from_crossterm(crate::badge::tracker_color(
+                        colors,
+                        s,
+                        tracker.min,
+                        tracker.max,
+                    )),
+                    None => RatColor::DarkGray,
+                },
             };
             entries.push(TodayEntry {
                 id: Some(tracker_id),
@@ -265,6 +291,8 @@ pub async fn fetch_today_entries(
                 badge,
                 color,
                 recurring_window: None,
+                tracker_interval: tracker.interval.map(|iv| (iv.anchor, iv.span)),
+                tracker_last: tracker_lasts.get(&tracker_type).copied(),
             });
         }
     } // show != ShowVariant::B
@@ -306,6 +334,8 @@ pub async fn fetch_today_entries(
             badge: Some(badge),
             color: RatColor::from_crossterm(color),
             recurring_window: None,
+            tracker_interval: None,
+            tracker_last: None,
         });
     }
 
@@ -338,6 +368,8 @@ pub async fn fetch_today_entries(
             badge: Some(badge),
             color: RatColor::from_crossterm(color),
             recurring_window: None,
+            tracker_interval: None,
+            tracker_last: None,
         });
     }
 
@@ -379,6 +411,8 @@ pub async fn fetch_today_entries(
             badge: Some(badge),
             color: RatColor::from_crossterm(color),
             recurring_window: Some(w.clone()),
+            tracker_interval: None,
+            tracker_last: None,
         });
     }
 
@@ -417,6 +451,8 @@ pub async fn fetch_today_entries(
                 badge: Some(badge),
                 color: RatColor::from_crossterm(color),
                 recurring_window: None,
+                tracker_interval: None,
+                tracker_last: None,
             };
             match entries.iter_mut().find(|e| e.task_id == Some(task.id)) {
                 Some(existing) => *existing = entry,
@@ -776,6 +812,8 @@ mod tests {
             badge: None,
             color: RatColor::DarkGray,
             recurring_window: None,
+            tracker_interval: None,
+            tracker_last: None,
         };
         let mut entries = [
             entry(200, "20:00", 1),

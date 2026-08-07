@@ -294,6 +294,22 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
     // Date after the name, right-aligned and dark gray.
     lines.push(date_line(entry.time));
 
+    // Interval trackers show when the next interval opens and the last
+    // (unscoped) entry — like recurring tasks.
+    if let (Some((anchor, span)), Some(last)) = (entry.tracker_interval, entry.tracker_last) {
+        if crate::date::span_rough_seconds(span) > 0.0 {
+            let now = date::now();
+            let next = if now <= anchor {
+                anchor
+            } else {
+                // Next interval start = end of the current interval.
+                crate::date::interval_end_unix_secs(anchor, span, now).unwrap_or(anchor)
+            };
+            lines.push(field_line("next", date::format_datetime(next)));
+            lines.push(field_line("last", date::format_datetime(last)));
+        }
+    }
+
     // Body: a blank line, then the text indented.
     if !entry.body.is_empty() {
         lines.push(Line::default());

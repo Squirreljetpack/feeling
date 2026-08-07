@@ -1,6 +1,61 @@
-use serde::{Deserialize, Serialize};
+use serde::{de, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::types::{ColorBins, TrackerKind};
+use crate::date::Epoch;
+
+/// A tracker's expected logging interval: a fixed local anchor time plus a
+/// calendar span. Interval slots are `[anchor + span*k, anchor + span*(k+1))`
+/// — calendar-based, so "1 day" respects DST and "1 month" real months.
+///
+/// TOML form: `interval = ["2026-03-01 00:00", "1 day"]`.
+#[derive(Debug, Clone, Copy)]
+pub struct TrackerInterval {
+    /// Anchor time (epoch seconds, local time zone) fixing the interval
+    /// phase; the slot grid runs `anchor + span*k`.
+    pub anchor: Epoch,
+    /// The interval length (calendar-aware).
+    pub span: jiff::Span,
+}
+
+impl PartialEq for TrackerInterval {
+    fn eq(&self, other: &Self) -> bool {
+        self.anchor == other.anchor && self.span.fieldwise() == other.span.fieldwise()
+    }
+}
+
+impl<'de> Deserialize<'de> for TrackerInterval {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let parts: Vec<String> = Vec::deserialize(deserializer)?;
+        if parts.len() != 2 {
+            return Err(de::Error::custom(format!(
+                "interval must be [\"<anchor datetime>\", \"<span>\"] (got {} elements)",
+                parts.len()
+            )));
+        }
+        let anchor = crate::date::parse_datetime(&parts[0], crate::date::DATE_DIALECT)
+            .map_err(de::Error::custom)?;
+        let span = crate::date::parse_span(&parts[1]).map_err(de::Error::custom)?;
+        if crate::date::span_to_db(&span) == 0 {
+            return Err(de::Error::custom("interval span must be non-zero"));
+        }
+        Ok(TrackerInterval { anchor, span })
+    }
+}
+
+impl Serialize for TrackerInterval {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(2))?;
+        seq.serialize_element(&crate::date::format_datetime(self.anchor))?;
+        seq.serialize_element(&crate::date::format_span(&self.span))?;
+        seq.end()
+    }
+}
 
 /// `[tracker.<name>]` section — a user-defined tracker. The table key is the
 /// tracker's name, used as `-<name> <value>` when logging an entry (e.g.
@@ -8,23 +63,23 @@ use super::types::{ColorBins, TrackerKind};
 #[derive(Debug, Clone, Deserialize, Default, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TrackerSetting {
-    /// How often the tracker is expected to be logged, e.g. `"1 day"` or
-    /// `"1 week"`. With an interval, re-logging the same tracker within the
-    /// same period replaces the previous entry; without one, every log adds
-    /// a new entry. Must be positive; a non-positive value is cleared to
-    /// `None` at `Config::init`.
-    #[serde(
-        default,
-        deserialize_with = "crate::date::deserialize::deserialize_duration"
-    )]
-    pub interval: Option<i64>,
-    /// What kind of value the tracker stores: `text`, `number`, or `float`.
+    /// How often the tracker is expected to be logged, e.g.
+    /// `["2026-03-01 00:00", "1 day"]`. With an interval, re-logging the
+    /// same tracker within the same period replaces the previous entry;
+    /// without one, every log adds a new entry.
+    #[serde(default)]
+    pub interval: Option<TrackerInterval>,
+    /// What kind of value the tracker stores: `text`, `number`, `float`, or
+    /// `null` (no value — the entry is a timestamp marker).
     pub kind: TrackerKind,
     /// Upper bound for the tracker's values, used to pick the entry's color
-    /// in tracker grids (`number`/`float` trackers only).
+    /// in tracker grids (`number`/`float` trackers only; for `null` trackers
+    /// with an interval it is a seconds-from-span-end time offset — see
+    /// `badge::null_tracker_color`).
     pub max: Option<f64>,
     /// Lower bound for the tracker's values, used to pick the entry's color
-    /// in tracker grids (`number`/`float` trackers only).
+    /// in tracker grids (`number`/`float` trackers only; for `null` trackers
+    /// with an interval it is a seconds-from-interval-start time offset).
     pub min: Option<f64>,
     /// Override color palette for this tracker's binning in grid/today views.
     /// When `Some`, takes precedence over `config.tasks.colors`.
@@ -45,8 +100,8 @@ impl TrackerSetting {
         }
     }
 
-    /// Set the expected logging interval, e.g. `86_400` for `"1 day"`.
-    pub fn with_interval(mut self, interval: i64) -> Self {
+    /// Set the expected logging interval (anchor + calendar span).
+    pub fn with_interval(mut self, interval: TrackerInterval) -> Self {
         self.interval = Some(interval);
         self
     }

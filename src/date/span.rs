@@ -135,24 +135,58 @@ pub fn current_interval_start_zoned(
 }
 
 /// The index of the interval containing `t`: the whole number of `span`s
-/// between `anchor` and the start of `t`'s interval. Both `anchor` and the
-/// returned boundary are exact interval boundaries, so the seconds-based
-/// estimate only needs a few correction steps.
+/// between `anchor` and `t`'s interval start. The boundaries
+/// `anchor + span*k` are exact, so the seconds-based estimate only needs a
+/// few correction steps. Unlike [`current_interval_start_zoned`], `t` may
+/// precede the anchor (negative indices).
 pub fn interval_index(anchor: &Zoned, t: &Zoned, span: Span) -> Result<i64, jiff::Error> {
-    let start = current_interval_start_zoned(anchor, t, span)?;
     let rough_span_secs = span_rough_seconds(span);
-    let elapsed = (start.timestamp() - anchor.timestamp())
+    if rough_span_secs <= 0.0 {
+        return Err(jiff::Error::from_args(format_args!(
+            "interval span must be non-zero"
+        )));
+    }
+    let elapsed = (t.timestamp() - anchor.timestamp())
         .total(Unit::Second)
         .unwrap_or(0.0);
     let mut k = (elapsed / rough_span_secs).floor() as i64;
     loop {
-        let bound = anchor.checked_add(span.checked_mul(k)?)?;
-        match bound.cmp(&start) {
-            std::cmp::Ordering::Equal => return Ok(k),
-            std::cmp::Ordering::Less => k += 1,
-            std::cmp::Ordering::Greater => k -= 1,
+        let Ok(span_k) = span.checked_mul(k) else {
+            return Err(jiff::Error::from_args(format_args!(
+                "interval index out of range"
+            )));
+        };
+        let Ok(bound_k) = anchor.checked_add(span_k) else {
+            return Err(jiff::Error::from_args(format_args!(
+                "interval index out of range"
+            )));
+        };
+        let Ok(bound_k1) = bound_k.checked_add(span) else {
+            return Err(jiff::Error::from_args(format_args!(
+                "interval index out of range"
+            )));
+        };
+        if bound_k <= *t && *t < bound_k1 {
+            return Ok(k);
+        }
+        if bound_k > *t {
+            k -= 1;
+        } else {
+            k += 1;
         }
     }
+}
+
+/// The `[start, end)` replacement slot containing `t` for an interval
+/// anchored at `anchor_unix` (`None` on conversion/overflow errors).
+pub fn interval_slot_unix_secs(anchor_unix: i64, span: Span, t_unix: i64) -> Option<(i64, i64)> {
+    let anchor = zoned_from_unix_secs(anchor_unix).ok()?;
+    let t = zoned_from_unix_secs(t_unix).ok()?;
+    let k = interval_index(&anchor, &t, span).ok()?;
+    let span_k = span.checked_mul(k).ok()?;
+    let start = anchor.checked_add(span_k).ok()?;
+    let end = start.checked_add(span).ok()?;
+    Some((start.timestamp().as_second(), end.timestamp().as_second()))
 }
 
 /// The start of the interval containing `t` as unix seconds
@@ -251,6 +285,29 @@ mod tests {
         assert_eq!(interval_index(&anchor, &anchor, span).unwrap(), 0);
         let t = z(Date::new(2026, 6, 1).unwrap());
         assert_eq!(interval_index(&anchor, &t, span).unwrap(), 92);
+        // Before the anchor → negative index.
+        let t = z(Date::new(2026, 2, 20).unwrap());
+        assert_eq!(interval_index(&anchor, &t, span).unwrap(), -9);
+    }
+
+    #[test]
+    fn test_interval_slot_unix_secs() {
+        let anchor = Date::new(2026, 3, 1)
+            .unwrap()
+            .at(0, 0, 0, 0)
+            .to_zoned(TimeZone::system())
+            .unwrap()
+            .timestamp()
+            .as_second();
+        let t = anchor + 10 * 86_400 + 1000;
+        let (start, end) = interval_slot_unix_secs(anchor, Span::new().days(1), t).unwrap();
+        assert_eq!(start, anchor + 10 * 86_400);
+        assert_eq!(end, anchor + 11 * 86_400);
+        // Before the anchor: slots still tile from the anchor backward.
+        let (start, end) =
+            interval_slot_unix_secs(anchor, Span::new().days(1), anchor - 100).unwrap();
+        assert_eq!(start, anchor - 86_400);
+        assert_eq!(end, anchor);
     }
 
     #[test]

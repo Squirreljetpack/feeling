@@ -16,7 +16,7 @@
 
 use crossterm::style::Color as CtColor;
 
-use crate::config::Config;
+use crate::config::{Config, TrackerSetting};
 use crate::db::TaskRow;
 
 /// Completion badge: (character, color) for a task's completion status.
@@ -105,6 +105,60 @@ pub(crate) fn tracker_color(
             }
         }
         _ => colors[(colors.len() - 1) / 2],
+    }
+}
+
+/// Color for a Null tracker entry.
+///
+/// With an interval and **both** min/max set, the entry is a time marker:
+/// min/max are seconds-from-interval-start/end offsets that split the
+/// interval into a "red" zone (everything except the tail just before `min`)
+/// and a "blue" zone. Per the TODO spec (see NOTES.md for the full
+/// interpretation of the ambiguous example):
+///
+/// - `max` is measured from the span end: effective `max' = interval_end - max`;
+/// - cycle-back point `mid = (min + max') / 2`;
+/// - blue (last palette color) for times in `[mid, min)` circular;
+/// - red (first palette color) everywhere else.
+///
+/// So a sleep tracker with `min = 23:00`, `max = 2h` on a midnight-anchored
+/// day colors 23:00→22:30 red and 22:30→23:00 blue: 1pm is red, and only the
+/// half-hour before 23:00 is blue.
+///
+/// With a single bound (or none — count mode), the score is binned like any
+/// numeric tracker. Without an interval the tracker is unsupported → Reset.
+pub(crate) fn null_tracker_color(
+    colors: &[CtColor],
+    tracker: &TrackerSetting,
+    time: i64,
+    score: f64,
+) -> CtColor {
+    let (Some(min), Some(max), Some(interval)) = (tracker.min, tracker.max, tracker.interval)
+    else {
+        // No interval → unsupported. Single-bound (or no-bound) → the score
+        // is a count; bin it like a numeric tracker.
+        return tracker_color(colors, score, tracker.min, tracker.max);
+    };
+    let Some((interval_start, interval_end)) =
+        crate::date::interval_slot_unix_secs(interval.anchor, interval.span, time)
+    else {
+        return tracker_color(colors, score, tracker.min, tracker.max);
+    };
+    let len = (interval_end - interval_start) as f64;
+    if len <= 0.0 {
+        return tracker_color(colors, score, tracker.min, tracker.max);
+    }
+    let max_prime = len - max;
+    let mid = (min.min(max_prime) + min.max(max_prime)) / 2.0;
+    // Circular position of `time` within the interval, measured from the
+    // interval start.
+    let pos = (time - interval_start) as f64;
+    // In the blue zone `[mid, min)` circular?
+    let blue = ((pos - mid).rem_euclid(len)) < ((min - mid).rem_euclid(len));
+    if blue {
+        *colors.last().unwrap_or(&CtColor::Reset)
+    } else {
+        *colors.first().unwrap_or(&CtColor::Reset)
     }
 }
 
@@ -473,6 +527,71 @@ mod tests {
         assert_eq!(
             tracker_color(&colors, 2.0, None, Some(8.0)),
             CtColor::DarkGreen
+        );
+    }
+
+    fn day_interval_tracker() -> crate::config::TrackerSetting {
+        crate::config::TrackerSetting {
+            interval: Some(crate::config::TrackerInterval {
+                anchor: 0,
+                span: jiff::Span::new().days(1),
+            }),
+            kind: crate::config::TrackerKind::Null,
+            min: Some(23.0 * 3600.0), // 23:00, seconds from interval start
+            max: Some(2.0 * 3600.0),  // 02:00, seconds from the span end
+            colors: None,
+        }
+    }
+
+    /// Null time-marker coloring: with min=23:00 and max=2h before the span
+    /// end, the blue zone is `[mid, min)` = 22:30→23:00 and everything else
+    /// is red (1pm is red; only the half-hour before 23:00 is blue).
+    #[test]
+    fn test_null_tracker_color_time_of_day() {
+        let colors = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
+        let tracker = day_interval_tracker();
+        // Midnight-anchored interval: t is seconds from the interval start.
+        let color_at = |secs: i64| null_tracker_color(&colors, &tracker, secs, 0.0);
+        // 13:00 → red zone.
+        assert_eq!(color_at(13 * 3600), CtColor::DarkRed);
+        // 22:15 → red (the formula's split leaves [22:00, 22:30) red).
+        assert_eq!(color_at(22 * 3600 + 15 * 60), CtColor::DarkRed);
+        // 22:45 → blue.
+        assert_eq!(color_at(22 * 3600 + 45 * 60), CtColor::DarkGreen);
+        // 23:30 → red (the wrap segment).
+        assert_eq!(color_at(23 * 3600 + 30 * 60), CtColor::DarkRed);
+        // 01:00 → red.
+        assert_eq!(color_at(3600), CtColor::DarkRed);
+    }
+
+    /// Null trackers without an interval (or with a single bound) fall back
+    /// to numeric score binning.
+    #[test]
+    fn test_null_tracker_color_fallbacks() {
+        let colors = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
+        // No interval → score binning (middle color when there is no
+        // usable range; both bounds still bin the score like a numeric
+        // tracker, though they are meaningless without an interval).
+        let mut tracker = day_interval_tracker();
+        tracker.interval = None;
+        tracker.min = None;
+        tracker.max = None;
+        assert_eq!(
+            null_tracker_color(&colors, &tracker, 0, 42.0),
+            CtColor::DarkYellow
+        );
+        // Single bound → binary score binning (count mode): below the
+        // bound the first color, at/above it the last.
+        let mut tracker = day_interval_tracker();
+        tracker.min = Some(5.0);
+        tracker.max = None;
+        assert_eq!(
+            null_tracker_color(&colors, &tracker, 0, 10.0),
+            CtColor::DarkGreen
+        );
+        assert_eq!(
+            null_tracker_color(&colors, &tracker, 0, 1.0),
+            CtColor::DarkRed
         );
     }
 

@@ -438,22 +438,44 @@ async fn display_tracker<W: Write>(
         return Ok(());
     }
 
-    // If the tracker defines an interval, render one dot per interval slot;
-    // otherwise one dot per entry (newer entry wins the slot).
+    // If the tracker defines an interval, render one dot per calendar
+    // interval slot (anchored at the tracker's configured anchor); otherwise
+    // one dot per entry (newer entry wins the slot). Null trackers without
+    // an interval are unsupported and skipped with an error.
     let colors = tracker.colors.as_ref().unwrap_or(&config.tasks.colors);
     if let Some(interval) = tracker.interval {
-        let interval_secs = interval;
-        let num_slots = ((end_epoch - start_epoch) / interval_secs + 1) as usize;
+        let (Ok(anchor_z), Ok(start_z), Ok(end_z)) = (
+            crate::date::zoned_from_unix_secs(interval.anchor),
+            crate::date::zoned_from_unix_secs(start_epoch),
+            crate::date::zoned_from_unix_secs(end_epoch),
+        ) else {
+            anyhow::bail!("Tracker '{}' has an invalid interval anchor.", tracker_type);
+        };
+        let start_idx =
+            crate::date::interval_index(&anchor_z, &start_z, interval.span).unwrap_or(0);
+        let end_idx =
+            crate::date::interval_index(&anchor_z, &end_z, interval.span).unwrap_or(start_idx);
+        let num_slots = (end_idx - start_idx + 1).max(0) as usize;
         let mut slot_sums: Vec<f64> = vec![0.0; num_slots];
         let mut slot_has_entry: Vec<bool> = vec![false; num_slots];
+        // Null time-marker entries: remember the entry time per slot so the
+        // color can be computed from the time-of-day position.
+        let mut slot_time: Vec<Option<i64>> = vec![None; num_slots];
 
         for entry in &entries {
             let score = score_f64(&entry.score);
             let time = entry.time;
-            let idx = ((time - start_epoch) / interval_secs) as usize;
+            let Ok(t_z) = crate::date::zoned_from_unix_secs(time) else {
+                continue;
+            };
+            let Ok(idx) = crate::date::interval_index(&anchor_z, &t_z, interval.span) else {
+                continue;
+            };
+            let idx = (idx - start_idx) as usize;
             if idx < num_slots {
                 slot_sums[idx] += score;
                 slot_has_entry[idx] = true;
+                slot_time[idx] = Some(time);
             }
         }
 
@@ -480,7 +502,16 @@ async fn display_tracker<W: Write>(
                     write!(out, "·")?;
                 }
             } else {
-                let color = crate::badge::tracker_color(colors, slot_sums[i], eff_min, eff_max);
+                let color = if tracker.kind == TrackerKind::Null {
+                    crate::badge::null_tracker_color(
+                        colors,
+                        tracker,
+                        slot_time[i].unwrap_or(0),
+                        slot_sums[i],
+                    )
+                } else {
+                    crate::badge::tracker_color(colors, slot_sums[i], eff_min, eff_max)
+                };
                 write!(out, "{}", "●".with(color))?;
             }
             if let Some(w) = wrap {
@@ -494,6 +525,13 @@ async fn display_tracker<W: Write>(
             }
         }
         writeln!(out)?;
+    } else if tracker.kind == TrackerKind::Null {
+        cba::ebog!(
+            "tracker";
+            "Null tracker '{}' has no interval: grid view is not supported (config an interval)",
+            tracker_type
+        );
+        return Ok(());
     } else {
         // One dot per entry
         let scores: Vec<f64> = entries.iter().map(|e| score_f64(&e.score)).collect();

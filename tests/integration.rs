@@ -45,6 +45,15 @@ async fn update_task(pool: &SqlitePool, todo_id: i64, time: i64, count: i32) {
         .unwrap();
 }
 
+/// A day-long tracker interval anchored at local midnight 2020-01-01.
+fn day_interval() -> feeling::config::TrackerInterval {
+    feeling::config::TrackerInterval {
+        anchor: feeling::date::parse_datetime("2020-01-01 00:00", feeling::date::DATE_DIALECT)
+            .unwrap(),
+        span: jiff::Span::new().days(1),
+    }
+}
+
 #[tokio::test]
 async fn test_create_feeling_entry() {
     let pool = test_pool().await.unwrap();
@@ -192,7 +201,7 @@ async fn test_tracker_interval_insert_strategies() {
     config.tracker.insert(
         "affirmation".to_string(),
         feeling::config::TrackerSetting {
-            interval: Some(86400),
+            interval: Some(day_interval()),
             min: None,
             max: None,
             kind: TrackerKind::Text,
@@ -203,7 +212,7 @@ async fn test_tracker_interval_insert_strategies() {
     config.tracker.insert(
         "sleep".to_string(),
         feeling::config::TrackerSetting {
-            interval: Some(86400),
+            interval: Some(day_interval()),
             min: None,
             max: None,
             kind: TrackerKind::Float,
@@ -214,7 +223,7 @@ async fn test_tracker_interval_insert_strategies() {
     config.tracker.insert(
         "runs".to_string(),
         feeling::config::TrackerSetting {
-            interval: Some(86400),
+            interval: Some(day_interval()),
             min: None,
             max: None,
             kind: TrackerKind::Number,
@@ -281,7 +290,10 @@ async fn test_tracker_interval_insert_strategies() {
     config.tracker.insert(
         "water".to_string(),
         feeling::config::TrackerSetting {
-            interval: Some(1),
+            interval: Some(feeling::config::TrackerInterval {
+                anchor: feeling::date::now(),
+                span: jiff::Span::new().seconds(1),
+            }),
             min: None,
             max: None,
             kind: TrackerKind::Float,
@@ -1616,6 +1628,149 @@ async fn run_view(pool: &SqlitePool, config: &Config, args: &[&str]) -> String {
         .await
         .unwrap();
     String::from_utf8(out).unwrap()
+}
+
+/// Null tracker semantics: a valueless `-<name>` logs a Null tracker.
+/// Count mode (no min/max): each log in the same interval slot increments
+/// the score. Time-marker mode (both min/max): re-logging moves the entry
+/// to now without touching the score. Without an interval: error.
+#[tokio::test]
+async fn test_null_tracker_semantics() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    let day_interval = feeling::config::TrackerInterval {
+        anchor: feeling::date::today_start() - 86_400,
+        span: jiff::Span::new().days(1),
+    };
+    // Count mode: no min/max.
+    config.tracker.insert(
+        "prouds".to_string(),
+        feeling::config::TrackerSetting {
+            interval: Some(day_interval),
+            min: None,
+            max: None,
+            kind: feeling::config::TrackerKind::Null,
+            colors: None,
+        },
+    );
+    // Time-marker mode: both bounds (23:00 / 2h before the span end).
+    config.tracker.insert(
+        "sleep_start".to_string(),
+        feeling::config::TrackerSetting {
+            interval: Some(day_interval),
+            min: Some(23.0 * 3600.0),
+            max: Some(2.0 * 3600.0),
+            kind: feeling::config::TrackerKind::Null,
+            colors: None,
+        },
+    );
+    // Without an interval: unsupported.
+    config.tracker.insert(
+        "unsupported".to_string(),
+        feeling::config::TrackerSetting {
+            interval: None,
+            min: None,
+            max: None,
+            kind: feeling::config::TrackerKind::Null,
+            colors: None,
+        },
+    );
+
+    // A valueless -<name> parses (no next token consumed).
+    let cmd = parse_from(vec!["-prouds".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    let cmd = parse_from(vec!["-prouds".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    let cmd = parse_from(vec!["-sleep_start".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let prouds_rows: Vec<(i64, String, i64)> = sqlx::query_as(
+        "SELECT id, CAST(score AS TEXT), time FROM tracker WHERE type = 'prouds' ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    // Count mode: one row per slot, score incremented to 2.
+    assert_eq!(prouds_rows.len(), 1, "count mode keeps one row per slot");
+    assert_eq!(prouds_rows[0].1, "2", "count mode increments the score");
+
+    // Re-log the time-marker: same slot → the row's time moves, score stays.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let cmd = parse_from(vec!["-sleep_start".to_string()]).unwrap();
+    execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    let sleep_rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT CAST(score AS TEXT), time FROM tracker WHERE type = 'sleep_start' ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(sleep_rows.len(), 1, "time-marker keeps one row per slot");
+    assert_eq!(sleep_rows[0].0, "0", "time-marker keeps score 0");
+
+    // Null without an interval errors.
+    let cmd = parse_from(vec!["-unsupported".to_string()]).unwrap();
+    let result = execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "null tracker without an interval must error"
+    );
+
+    // A valued -<name> for a Null tracker errors too.
+    let cmd = parse_from(vec!["-prouds".to_string(), "x".to_string()]).unwrap();
+    let result = execute_command(
+        cmd,
+        &pool,
+        &config,
+        &CliOpts::default(),
+        &mut Vec::new(),
+        false,
+    )
+    .await;
+    assert!(result.is_err(), "null tracker must not take a value");
 }
 
 /// `@done:O` shows ALL recurring tasks (one row per task, no completions
@@ -3187,7 +3342,7 @@ async fn test_tracker_grid_uses_colors_override() {
     config.tracker.insert(
         "run".to_string(),
         feeling::config::TrackerSetting {
-            interval: Some(86_400),
+            interval: Some(day_interval()),
             min: Some(0.0),
             max: Some(10.0),
             kind: TrackerKind::Number,
