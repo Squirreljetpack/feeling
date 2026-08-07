@@ -16,26 +16,38 @@ pub(crate) fn score_f64(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
 }
 
-/// Effective min/max for dot binning: configured endpoints win; a missing
-/// endpoint falls back to the data range. With only one endpoint configured,
-/// the derived one is clamped so the range collapses (min == max) instead of
-/// silently inverting.
+/// Effective endpoints for dot binning (grid semantics). Configured
+/// endpoints win; missing ones are derived from the nonzero data range.
+/// With a single bound configured, that bound becomes the bad-end threshold
+/// and the best observed score anchors the success end:
+/// - neither configured → `(data_min, data_max)` — linear binning against the observed range;
+/// - only `max` configured → `(cfg_max, data_min.min(cfg_max))` — inverted range: scores at/above `cfg_max` hit the first color, the best observed score anchors the last; collapses onto `cfg_max` when all data is at/above it;
+/// - only `min` configured → `(cfg_min, data_max.max(cfg_min))` — normal range: scores at/below `cfg_min` hit the first color, the best observed score anchors the last; collapses onto `cfg_min` when all data is at/below it;
+/// - both configured → used as-is `(cfg_min, cfg_max)`.
 fn effective_range(
     cfg_min: Option<f64>,
     cfg_max: Option<f64>,
     nonzero: &[f64],
 ) -> (Option<f64>, Option<f64>) {
-    let min = cfg_min.or_else(|| nonzero.iter().copied().reduce(f64::min));
-    let max = cfg_max.or_else(|| nonzero.iter().copied().reduce(f64::max));
-    let min = match (cfg_min, cfg_max) {
-        (None, Some(mx)) => min.map(|mn| mn.min(mx)),
-        _ => min,
-    };
-    let max = match (cfg_min, cfg_max) {
-        (Some(mn), None) => max.map(|mx| mx.max(mn)),
-        _ => max,
-    };
-    (min, max)
+    let data_min = nonzero.iter().copied().reduce(f64::min);
+    let data_max = nonzero.iter().copied().reduce(f64::max);
+
+    match (cfg_min, cfg_max) {
+        (Some(min), Some(max)) => (Some(min), Some(max)),
+        (Some(min), None) => {
+            // Floor-only: scores below cfg_min are bad; the best observed
+            // score anchors the success end.
+            let eff_max = data_max.map_or(min, |mx| mx.max(min));
+            (Some(min), Some(eff_max))
+        }
+        (None, Some(max)) => {
+            // Ceiling-only: scores above cfg_max are bad; the best observed
+            // score anchors the success end.
+            let eff_max = data_min.map_or(max, |mn| mn.min(max));
+            (Some(max), Some(eff_max))
+        }
+        (None, None) => (data_min, data_max),
+    }
 }
 
 /// Handle tracker view (`: [week|month|year] [ids]`): display
@@ -460,24 +472,7 @@ async fn display_tracker<W: Write>(
                     write!(out, "·")?;
                 }
             } else {
-                let color = match (eff_min, eff_max) {
-                    (Some(min), Some(max)) if (max - min).abs() > f64::EPSILON => {
-                        // Normal binning
-                        let t = if min < max {
-                            ((slot_sums[i] - min) / (max - min)).clamp(0.0, 1.0)
-                        } else {
-                            // Inverted range (min > max): lower score → success
-                            ((min - slot_sums[i]) / (min - max)).clamp(0.0, 1.0)
-                        };
-                        let idx = ((t * (colors.len() as f64 - 1.0)).round() as usize)
-                            .min(colors.len() - 1);
-                        colors[idx]
-                    }
-                    _ => {
-                        // Both missing or min==max: use last color
-                        *colors.last().unwrap()
-                    }
-                };
+                let color = crate::badge::tracker_color(colors, slot_sums[i], eff_min, eff_max);
                 write!(out, "{}", "●".with(color))?;
             }
             if let Some(w) = wrap {
@@ -504,58 +499,12 @@ async fn display_tracker<W: Write>(
         let (eff_min, eff_max) = effective_range(tracker.min, tracker.max, &nonzero_scores);
 
         for &score in &scores {
-            let color = match (eff_min, eff_max) {
-                (Some(min), Some(max)) if (max - min).abs() > f64::EPSILON => {
-                    // Normal binning
-                    let t = if min < max {
-                        ((score - min) / (max - min)).clamp(0.0, 1.0)
-                    } else {
-                        // Inverted range (min > max): lower score → success
-                        ((min - score) / (min - max)).clamp(0.0, 1.0)
-                    };
-                    let idx =
-                        ((t * (colors.len() as f64 - 1.0)).round() as usize).min(colors.len() - 1);
-                    colors[idx]
-                }
-                _ => {
-                    // Both missing or min==max: use last color
-                    *colors.last().unwrap()
-                }
-            };
+            let color = crate::badge::tracker_color(colors, score, eff_min, eff_max);
             write!(out, "{}", "●".with(color))?;
         }
         writeln!(out)?;
     }
     Ok(())
-}
-
-/// Map a tracker score to a color by binning it across the tracker's
-/// color override (if set) or the global task colors. Handles inverted ranges
-/// (max < min → smaller values get the success color).
-pub(crate) fn bin_score_color(
-    config: &Config,
-    tracker: &crate::config::TrackerSetting,
-    score: f64,
-) -> CtColor {
-    let colors = tracker.colors.as_ref().unwrap_or(&config.tasks.colors);
-
-    let (min, max) = (tracker.min, tracker.max);
-
-    let t = match (min, max) {
-        (Some(min), Some(max)) if (max - min).abs() > f64::EPSILON => {
-            if min < max {
-                // normal: higher score → success
-                ((score - min) / (max - min)).clamp(0.0, 1.0)
-            } else {
-                // Inverted range (min > max): lower score → success
-                ((min - score) / (min - max)).clamp(0.0, 1.0)
-            }
-        }
-        _ => 0.5,
-    };
-
-    let idx = ((t * (colors.len() as f64 - 1.0)).round() as usize).min(colors.len() - 1);
-    colors[idx]
 }
 
 async fn display_recurring_tracker<W: Write>(
@@ -655,5 +604,51 @@ mod tests {
         assert_eq!(grid_title("idea", TrackerPeriod::Month, 2), "idea (Month)");
         assert_eq!(grid_title("@run", TrackerPeriod::Year, 3), "@run (Year)");
         assert_eq!(grid_title("idea", TrackerPeriod::Month, 1), "idea");
+    }
+
+    #[test]
+    fn test_effective_range() {
+        let data = [1.0, 2.0, 7.0, 9.0];
+        // Neither configured → the data's own range.
+        assert_eq!(effective_range(None, None, &data), (Some(1.0), Some(9.0)));
+        // Both configured → as configured.
+        assert_eq!(
+            effective_range(Some(0.0), Some(10.0), &data),
+            (Some(0.0), Some(10.0))
+        );
+        // Only max: inverted range (cfg_max, best observed) — scores at/above
+        // cfg_max map to the first color, the best observed anchors the last.
+        assert_eq!(
+            effective_range(None, Some(8.0), &data),
+            (Some(8.0), Some(1.0))
+        );
+        // Data entirely at/above cfg_max → the range collapses onto cfg_max
+        // (degenerate → middle color at binning time).
+        assert_eq!(
+            effective_range(None, Some(0.5), &data),
+            (Some(0.5), Some(0.5))
+        );
+        // Only min: normal range (cfg_min, best observed) — scores at/below
+        // cfg_min map to the first color, the best observed anchors the last.
+        assert_eq!(
+            effective_range(Some(5.0), None, &data),
+            (Some(5.0), Some(9.0))
+        );
+        // Data entirely at/below cfg_min → the range collapses onto cfg_min.
+        assert_eq!(
+            effective_range(Some(12.0), None, &data),
+            (Some(12.0), Some(12.0))
+        );
+        // No data: a configured bound still yields the degenerate (bound, bound);
+        // with no bound at all → (None, None).
+        assert_eq!(effective_range(None, None, &[]), (None, None));
+        assert_eq!(
+            effective_range(None, Some(8.0), &[]),
+            (Some(8.0), Some(8.0))
+        );
+        assert_eq!(
+            effective_range(Some(2.0), None, &[]),
+            (Some(2.0), Some(2.0))
+        );
     }
 }

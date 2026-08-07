@@ -253,16 +253,8 @@ pub(super) async fn create_task_command(
                     }
                 }
             } else {
-                create_scheduled_task(
-                    pool,
-                    config,
-                    opts,
-                    name,
-                    start_epoch,
-                    duration_secs,
-                    body,
-                )
-                .await?;
+                create_scheduled_task(pool, config, opts, name, start_epoch, duration_secs, body)
+                    .await?;
             }
         }
     }

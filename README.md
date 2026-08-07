@@ -89,7 +89,11 @@ npm install -g @squirreljetpack/feeling
 
 ## Configuration
 
-Run `feeling :config` to open the configuration file in your `$VISUAL` or `$EDITOR`. If no configuration exists, default settings will be written to `~/.config/feeling/config.toml`.
+Run `feeling :config` to open the configuration file in your `$VISUAL` or `$EDITOR`.
+
+The default locations are in order:
+- `~/.config/matchmaker/config.toml` (If the folder exists already).
+- `{PLATFORM_SPECIFIC_CONFIG_DIRECTORY}/matchmaker` (Generally the same as above when on linux)
 
 ## FAQ
 

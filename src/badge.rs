@@ -11,7 +11,8 @@
 //!
 //! [`completion_badge`] / [`completion_badge_text`] are the tracker-grid /
 //! progress-text helpers (unchanged semantics): per-interval dot rows in the
-//! `:trackers`/mood grids and the "2/5" progress label.
+//! `:trackers`/mood grids and the "2/5" progress label. [`tracker_color`]
+//! colors numeric tracker score dots in both the today view and the grids.
 
 use crossterm::style::Color as CtColor;
 
@@ -55,6 +56,55 @@ pub fn completion_badge_text(count: i64, target_count: i32) -> String {
         format!("{} {}/{}", ch, count, target_count)
     } else {
         ch.to_string()
+    }
+}
+
+/// Tracker dot color: bin `score` onto the tracker palette given the
+/// effective min/max endpoints. Grid semantics (the grid view derives the
+/// endpoints via `effective_range` with data fallback; the today view
+/// passes the tracker's configured `min`/`max` directly):
+/// - both endpoints with a non-degenerate range → linear binning across the
+///   palette (inverted ranges: `max < min` maps lower scores to the last
+///   color);
+/// - only a lower bound → binary: below it the first color, at/above it the
+///   last (success) color;
+/// - only an upper bound → binary: above it the first color, at/below it the
+///   last (success) color;
+/// - no usable range (neither bound, or degenerate `min == max`) → the middle
+///   palette color, rounded down (`colors.len() >= 2`).
+pub(crate) fn tracker_color(
+    colors: &[CtColor],
+    score: f64,
+    eff_min: Option<f64>,
+    eff_max: Option<f64>,
+) -> CtColor {
+    match (eff_min, eff_max) {
+        (Some(min), Some(max)) if (max - min).abs() > f64::EPSILON => {
+            let t = if min < max {
+                // normal: higher score → success
+                ((score - min) / (max - min)).clamp(0.0, 1.0)
+            } else {
+                // Inverted range (min > max): lower score → success
+                ((min - score) / (min - max)).clamp(0.0, 1.0)
+            };
+            let idx = ((t * (colors.len() as f64 - 1.0)).round() as usize).min(colors.len() - 1);
+            colors[idx]
+        }
+        (Some(min), None) => {
+            if score < min {
+                colors[0]
+            } else {
+                *colors.last().unwrap()
+            }
+        }
+        (None, Some(max)) => {
+            if score > max {
+                colors[0]
+            } else {
+                *colors.last().unwrap()
+            }
+        }
+        _ => colors[(colors.len() - 1) / 2],
     }
 }
 
@@ -355,6 +405,99 @@ mod tests {
         assert_eq!(
             task_badge(&expired, &config, false),
             ('↻', CtColor::DarkGrey)
+        );
+    }
+
+    #[test]
+    fn test_tracker_color_linear() {
+        let colors = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
+        // min=0, max=10: endpoints and midpoint bin onto the palette.
+        assert_eq!(
+            tracker_color(&colors, 0.0, Some(0.0), Some(10.0)),
+            CtColor::DarkRed
+        );
+        assert_eq!(
+            tracker_color(&colors, 10.0, Some(0.0), Some(10.0)),
+            CtColor::DarkGreen
+        );
+        assert_eq!(
+            tracker_color(&colors, 5.0, Some(0.0), Some(10.0)),
+            CtColor::DarkYellow
+        );
+        // Out-of-range scores clamp to the endpoints.
+        assert_eq!(
+            tracker_color(&colors, -3.0, Some(0.0), Some(10.0)),
+            CtColor::DarkRed
+        );
+        assert_eq!(
+            tracker_color(&colors, 99.0, Some(0.0), Some(10.0)),
+            CtColor::DarkGreen
+        );
+        // Inverted range (min > max): lower score → success.
+        assert_eq!(
+            tracker_color(&colors, 0.0, Some(10.0), Some(0.0)),
+            CtColor::DarkGreen
+        );
+        assert_eq!(
+            tracker_color(&colors, 10.0, Some(10.0), Some(0.0)),
+            CtColor::DarkRed
+        );
+    }
+
+    #[test]
+    fn test_tracker_color_single_bound() {
+        let colors = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
+        // Only a lower bound: below → first color, at/above → last.
+        assert_eq!(
+            tracker_color(&colors, 4.9, Some(5.0), None),
+            CtColor::DarkRed
+        );
+        assert_eq!(
+            tracker_color(&colors, 5.0, Some(5.0), None),
+            CtColor::DarkGreen
+        );
+        assert_eq!(
+            tracker_color(&colors, 8.0, Some(5.0), None),
+            CtColor::DarkGreen
+        );
+        // Only an upper bound: above → first color, at/below → last.
+        assert_eq!(
+            tracker_color(&colors, 8.1, None, Some(8.0)),
+            CtColor::DarkRed
+        );
+        assert_eq!(
+            tracker_color(&colors, 8.0, None, Some(8.0)),
+            CtColor::DarkGreen
+        );
+        assert_eq!(
+            tracker_color(&colors, 2.0, None, Some(8.0)),
+            CtColor::DarkGreen
+        );
+    }
+
+    #[test]
+    fn test_tracker_color_no_range() {
+        let colors3 = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
+        // Neither bound → middle color, rounded down.
+        assert_eq!(
+            tracker_color(&colors3, 42.0, None, None),
+            CtColor::DarkYellow
+        );
+        // Degenerate min == max is also "no usable range" → middle.
+        assert_eq!(
+            tracker_color(&colors3, 42.0, Some(5.0), Some(5.0)),
+            CtColor::DarkYellow
+        );
+        // Even-length palette: rounded-down middle is (len - 1) / 2.
+        let colors4 = vec![
+            CtColor::DarkRed,
+            CtColor::DarkYellow,
+            CtColor::DarkGreen,
+            CtColor::DarkCyan,
+        ];
+        assert_eq!(
+            tracker_color(&colors4, 42.0, None, None),
+            CtColor::DarkYellow
         );
     }
 }

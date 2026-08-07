@@ -1,3 +1,4 @@
+/// Lawson-Hanson Non-Negative Least Squares (NNLS) solver using precomputed Gram matrix A^T A and A^T b.
 pub fn nnls_core(at_a: &[Vec<f32>], at_b: &[f32], max_iter: usize) -> Vec<f32> {
     let n = at_b.len();
     if n == 0 {

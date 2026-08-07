@@ -1257,6 +1257,96 @@ async fn test_today_view_with_date() {
     assert!(!output.contains("ancient"), "output: {output:?}");
 }
 
+/// The today view fetches feelings and tracker entries across the whole
+/// horizon (`[day start, horizon end]`), not just the anchored day — the
+/// +tomorrow / +this week horizons must surface tomorrow's moods and
+/// tracker values, matching the task fetches.
+#[tokio::test]
+async fn test_today_view_horizon_includes_feelings_and_trackers() {
+    let pool = test_pool().await.unwrap();
+    let mut config = Config::default();
+    config
+        .moods
+        .init_with(&pool, feeling::embedding::global_embedder())
+        .await
+        .unwrap();
+    config.tracker.insert(
+        "sleep".to_string(),
+        feeling::config::TrackerSetting {
+            interval: None,
+            min: None,
+            max: None,
+            kind: TrackerKind::Number,
+            colors: None,
+        },
+    );
+
+    let anchored_day = feeling::date::today_start() - 2 * 86_400;
+    let tomorrow = anchored_day + 86_400;
+
+    // A feeling + tracker entry on the anchored day, and one of each on
+    // the next day (inside the +tomorrow horizon, outside the day one).
+    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('today mood', '', ?)")
+        .bind(anchored_day + 9 * 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('tomorrow mood', '', ?)")
+        .bind(tomorrow + 9 * 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time, feeling) VALUES ('sleep', 7, ?, NULL)")
+        .bind(anchored_day + 10 * 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracker (type, score, time, feeling) VALUES ('sleep', 8, ?, NULL)")
+        .bind(tomorrow + 10 * 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut color_cache = std::collections::HashMap::new();
+    macro_rules! labels {
+        ($horizon:expr) => {{
+            let entries = feeling::today::fetch_today_entries(
+                &pool,
+                &config,
+                $horizon,
+                Some(anchored_day),
+                feeling::types::ViewVariant::All,
+                &mut color_cache,
+            )
+            .await
+            .unwrap();
+            entries
+                .iter()
+                .map(|e| e.label.clone())
+                .filter(|l| l.contains("mood") || l.starts_with("sleep"))
+                .collect::<Vec<_>>()
+        }};
+    }
+
+    // Day horizon: only the anchored-day entries.
+    assert_eq!(
+        labels!(feeling::types::TodayHorizon::Today),
+        ["today mood".to_string(), "sleep: 7".to_string()]
+    );
+
+    // +tomorrow horizon: tomorrow's entries are fetched too (sorted by
+    // time, so each day's pair keeps its order).
+    assert_eq!(
+        labels!(feeling::types::TodayHorizon::Tomorrow),
+        [
+            "today mood".to_string(),
+            "sleep: 7".to_string(),
+            "tomorrow mood".to_string(),
+            "sleep: 8".to_string(),
+        ]
+    );
+}
+
 /// `feeling.score` round-trips through the sql layer (nullable REAL column).
 #[tokio::test]
 async fn test_feeling_score_roundtrip() {
@@ -2084,32 +2174,20 @@ async fn test_today_view_interval_aware_recurring_overlap() {
         .iter()
         .find(|e| e.label == "old but active today")
         .expect("interval-aware overlap must surface the old recurring task");
-    // The time cell follows the now-anchored availability rule: the window
-    // end while still open (now < interval_start + dur), else the start of
-    // the next interval — computed here, never hardcoded, because the
-    // 06:00-07:00 window's phase (open / closed / deferred) depends on the
-    // run time.
+    // The time cell follows the availability rule (window start while
+    // still open, else window end — the window's own interval has no
+    // completion, so no last-time fallback). The window intersecting
+    // today's period is deterministically today 06:00-07:00 (origin +
+    // 60 daily intervals), so the expectation has no phase dependence on
+    // the run time: before 07:00 the open window shows its start, at or
+    // after 07:00 the passed window shows its end.
     let now = feeling::date::now();
-    let st = today_start - 60 * 86_400 + 6 * 3600;
-    let interval_start = if now <= st {
-        st
+    let window_start = today_start + 6 * 3600;
+    let window_end = window_start + 3600;
+    let expected_label = if now >= window_end {
+        feeling::date::format_time(window_end)
     } else {
-        st + ((now - st).div_euclid(86_400)) * 86_400
-    };
-    let window_end = interval_start + 3600;
-    let expected_time = if now >= window_end {
-        window_end
-    } else {
-        interval_start
-    };
-    let expected_label = if feeling::date::day_start(expected_time) == today_start {
-        feeling::date::format_time(expected_time)
-    } else {
-        format!(
-            "{} {}",
-            feeling::date::format_weekday(expected_time),
-            feeling::date::format_time(expected_time)
-        )
+        feeling::date::format_time(window_start)
     };
     assert_eq!(active_row.time_label, expected_label);
     assert!(

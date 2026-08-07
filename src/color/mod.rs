@@ -378,8 +378,6 @@ impl ColorAxes {
     }
 }
 
-/// Lawson-Hanson Non-Negative Least Squares (NNLS) solver using precomputed Gram matrix A^T A and A^T b.
-
 /// Effective saliency after the emotional gate: `Seff = 1 + P*(S - 1)` for gate
 /// fraction P in [0, 1]. P = 1.0 leaves raw saliency untouched; P = 0.0 disables
 /// saliency (Seff = 1.0).

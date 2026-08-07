@@ -25,18 +25,38 @@ example: a preset for a linear blend along an interesting axis.
 
 whats causing the startup delay?
 
-
 ### Notetaking
 store body files in folder, named by mood/time-mood_summary-disambiguating_number.md or task/time-name_slug
 	mood_summary: use our model to do some kind of summarization somehow or allow configuring a set of categories.
 recommend using fs with rg to search through all notes.
 
+# linking tasks and moods
+add a table linking tasks to (mood) entries. Read help.txt, currently we allow [-tracker v].. mood [-tracker], want to also allow [-id] in place of tracker where numeric means it refers to a short id of a task. This is not a completion, simply adds an entry in the link table (short id resolved to actual task id). In make_preview, if any linked moods, display a field moods:, below '  - {mood badge} {mood text}', use mood_color_cached with a mutexed global hashmap.
+
+- change mood_color_cached to be sync (no backfill)
+- change :prune to :db, with subcommands :db prune, :backfill
+note that embedding loading should be lazy with a startup queue, render badge method checks color cache instead of coloring at injection.
+
+# grid
+show grid by last completion time
+changeable tracker types: what to do?
+db :doctor -- clear all invalid entries, feeling :config should auto-call
+ How coloring happens on dots without min/max again?
+:query for a variety of items, categories, filters, output null seperated items
+
+Add a TrackerKind::Null:
+	in cli parsing where we expect trackers, null tracker doesn't consume a next token.
+
+- change interval for trackers to be calendar based.
+- null entry: min/max from interval start/end. direction is always forward. colors can be adjusted so min/max reversal is unnecessary. No payload.
+- specifying min/max reverts it to count based: payload is count. new entries increment. Accept: applies delta instead of set.
+
+If no interval is specified, acts as a tag ig. Grid view, leave as todo.
 
 
 # Lowpri
 config value, confirm before accepting scheduled
 interactive todo creation requires opening editor, a bit odd but not sure how to signal to enable easily.
-:query for a variety of items, categories, filters, output null seperated items
 time-sliced grid views.
 CliError instead of anyhow error, so that we can return Handled without logging the error
 support attaching additional mood/journal entries to Moods, display timestamped in preview (carry extra id column)

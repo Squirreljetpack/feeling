@@ -63,7 +63,7 @@ pub struct TodayEntry {
     /// journal entries without a configured `journal_badge`).
     pub badge: Option<char>,
     /// Dynamic dot color: Oklab mood projection for feeling entries,
-    /// bin_score_color for numeric tracker entries, completion_badge
+    /// tracker_color for numeric tracker entries, completion_badge
     /// colors for tasks, or a neutral dark gray for journal-only and
     /// text-tracker entries.
     pub color: RatColor,
@@ -164,9 +164,10 @@ pub async fn fetch_today_entries(
         let embedder = crate::embedding::global_embedder();
         let axes = config.moods.color_axes.as_ref().unwrap();
 
-        // 1. Today's feelings
+        // 1. Feelings within the horizon (day start through horizon end,
+        // matching the task fetches below).
         let feelings =
-            crate::db::fetch_feelings_between(pool, day_start_epoch, day_end_epoch).await?;
+            crate::db::fetch_feelings_between(pool, day_start_epoch, horizon_end).await?;
 
         for f in feelings {
             // Journal-only entries (empty mood) use the configured journal
@@ -212,9 +213,9 @@ pub async fn fetch_today_entries(
             });
         }
 
-        // 2. Today's tracker entries
+        // 2. Tracker entries within the horizon.
         let trackers =
-            crate::db::fetch_tracker_entries_today(pool, day_start_epoch, day_end_epoch).await?;
+            crate::db::fetch_tracker_entries_today(pool, day_start_epoch, horizon_end).await?;
 
         for row in trackers {
             let tracker_id = row.id;
@@ -239,10 +240,17 @@ pub async fn fetch_today_entries(
                     )
                 }
             };
+            // Color from the tracker's configured min/max only — no data
+            // fallback here (unlike the grid). Interval trackers store at
+            // most one entry per interval, so each score is used as-is.
+            let colors = tracker.colors.as_ref().unwrap_or(&config.tasks.colors);
             let color = match score {
-                Some(s) => {
-                    RatColor::from_crossterm(crate::tracker::bin_score_color(config, tracker, s))
-                }
+                Some(s) => RatColor::from_crossterm(crate::badge::tracker_color(
+                    colors,
+                    s,
+                    tracker.min,
+                    tracker.max,
+                )),
                 None => RatColor::DarkGray,
             };
             entries.push(TodayEntry {
