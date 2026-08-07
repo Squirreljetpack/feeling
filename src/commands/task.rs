@@ -269,7 +269,7 @@ async fn create_recurring_task(
     prefill: Option<String>,
     body: Option<String>,
 ) -> Result<()> {
-    use crate::date::parse_duration_secs;
+    use crate::date::{parse_duration_secs, parse_span};
 
     if !atty::is(atty::Stream::Stdin) {
         anyhow::bail!("Recurring task creation requires an interactive terminal");
@@ -302,23 +302,21 @@ async fn create_recurring_task(
     // formatted default so the current anchor is visible before editing.
     let start_time = crate::prompts::prompt_start_time(None)?;
 
-    // 4. Interval (required, valid duration)
+    // 4. Interval (required, valid duration; calendar-aware)
     let interval_str = crate::prompts::prompt_interval(None)?;
-    let interval_secs = parse_duration_secs(&interval_str)?;
-    if interval_secs <= 0 {
-        anyhow::bail!("Interval must be positive (got '{}')", interval_str);
-    }
+    let interval_span = parse_span(&interval_str)?;
 
     // 5. Available duration (blank = always available; capped at the
     // interval — availability beyond it means always available).
+    let interval_rough_secs = crate::date::span_rough_seconds(interval_span) as i64;
     let avail_str =
-        crate::prompts::prompt_available_duration(&interval_str, None, Some(interval_secs))?;
+        crate::prompts::prompt_available_duration(&interval_str, None, Some(interval_rough_secs))?;
 
     let available_duration_secs = if avail_str.is_empty() {
         None
     } else {
         let dur = parse_duration_secs(&avail_str)?;
-        if dur >= interval_secs {
+        if dur >= interval_rough_secs {
             None
         } else {
             Some(dur)
@@ -351,7 +349,7 @@ async fn create_recurring_task(
         priority,
         start_time: Some(start_time),
         available_duration_secs,
-        interval_secs: Some(interval_secs),
+        interval_secs: Some(crate::date::span_to_db(&interval_span)),
         target_count,
         optional: is_optional,
         end_time,

@@ -532,25 +532,41 @@ async fn display_recurring_tracker<W: Write>(
     };
 
     let task_id = task.id;
-    let interval_secs = task.interval_secs;
+    let start_time = task.start_time;
+    let span = task.interval_secs.map(crate::date::db_to_span);
     let target_count = task.target_count;
 
     // Get completion events (time, count) for this task in the period
     let completions =
         crate::db::fetch_completions_between(pool, task_id, start_epoch, end_epoch).await?;
 
-    if let Some(interval) = interval_secs {
-        // For interval-based recurring tasks, show dots per interval,
-        // summing the per-event counts into each interval.
-        let num_intervals = ((end_epoch - start_epoch) / interval + 1) as usize;
+    if let (Some(st), Some(span)) = (start_time, span) {
+        // For interval-based recurring tasks, show dots per interval
+        // (calendar slots anchored at the task's start time), summing the
+        // per-event counts into each interval.
+        let (Ok(anchor_z), Ok(start_z), Ok(end_z)) = (
+            crate::date::zoned_from_unix_secs(st),
+            crate::date::zoned_from_unix_secs(start_epoch),
+            crate::date::zoned_from_unix_secs(end_epoch),
+        ) else {
+            writeln!(out, "Recurring task '{}' has an invalid start time.", name)?;
+            return Ok(());
+        };
+        let start_idx = crate::date::interval_index(&anchor_z, &start_z, span).unwrap_or(0);
+        let end_idx = crate::date::interval_index(&anchor_z, &end_z, span).unwrap_or(start_idx);
+        let num_intervals = (end_idx - start_idx + 1).max(0) as usize;
         let mut interval_sums: Vec<i64> = vec![0; num_intervals];
 
         for completion in &completions {
-            let ctime = completion.time;
-            let count = completion.count;
-            let idx = ((ctime - start_epoch) / interval) as usize;
+            let Ok(t_z) = crate::date::zoned_from_unix_secs(completion.time) else {
+                continue;
+            };
+            let Ok(idx) = crate::date::interval_index(&anchor_z, &t_z, span) else {
+                continue;
+            };
+            let idx = (idx - start_idx) as usize;
             if idx < num_intervals {
-                interval_sums[idx] += i64::from(count);
+                interval_sums[idx] += i64::from(completion.count);
             }
         }
 

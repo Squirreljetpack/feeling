@@ -493,11 +493,13 @@ mod tests {
     fn task_row(
         start_time: Option<i64>,
         available_duration_secs: Option<i64>,
-        interval_secs: Option<i64>,
+        interval: Option<jiff::Span>,
         end_time: Option<i64>,
         completions: Option<i32>,
         last_time: Option<i64>,
     ) -> TaskRow {
+        // The row stores the packed DbSpan.
+        let interval_secs = interval.map(|s| crate::date::span_to_db(&s));
         TaskRow {
             id: 1,
             short_id: Some(1),
@@ -542,7 +544,7 @@ mod tests {
             &task_row(
                 Some(anchor),
                 Some(hour_secs),
-                Some(day_secs),
+                Some(jiff::Span::new().days(1)),
                 None,
                 None,
                 None,
@@ -556,7 +558,7 @@ mod tests {
         let open = task_row(
             Some(anchor),
             Some(hour_secs),
-            Some(day_secs),
+            Some(jiff::Span::new().days(1)),
             None,
             None,
             None,
@@ -570,7 +572,14 @@ mod tests {
         // window, so the closed window defers to the next interval's start
         // (timed — every recurring window has a time cell now).
         check(
-            &task_row(Some(anchor), None, Some(day_secs), None, None, None),
+            &task_row(
+                Some(anchor),
+                None,
+                Some(jiff::Span::new().days(1)),
+                None,
+                None,
+                None,
+            ),
             at("2024-03-17 08:00"),
             "Su 08:00",
         );
@@ -581,7 +590,7 @@ mod tests {
             &task_row(
                 Some(anchor),
                 Some(day_secs),
-                Some(day_secs),
+                Some(jiff::Span::new().days(1)),
                 None,
                 None,
                 None,
@@ -672,7 +681,7 @@ mod tests {
             ..task_row(
                 Some(anchor),
                 Some(hour_secs),
-                Some(day_secs),
+                Some(jiff::Span::new().days(1)),
                 None,
                 Some(1),
                 Some(at("2024-03-16 13:00")),
@@ -739,7 +748,7 @@ mod tests {
             crate::task::completed_sort_time(&task_row(
                 Some(at("2024-03-15 08:00")),
                 Some(2 * hour_secs),
-                Some(day_secs),
+                Some(jiff::Span::new().days(1)),
                 None,
                 None,
                 None,

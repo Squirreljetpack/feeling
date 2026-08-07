@@ -112,12 +112,13 @@ pub fn build_preview(
         // a fixed start time.
         if let Some(st) = task.start_time {
             let now = date::now();
-            let next = match task.interval_secs {
-                Some(interval) if interval > 0 => {
+            let next = match task.interval_span() {
+                Some(span) if crate::date::span_rough_seconds(span) > 0.0 => {
                     if now <= st {
                         st
                     } else {
-                        st + ((now - st) / interval + 1) * interval
+                        // Next interval start = end of the current interval.
+                        crate::date::interval_end_unix_secs(st, span, now).unwrap_or(st)
                     }
                 }
                 _ => st,
@@ -166,8 +167,8 @@ pub fn build_preview(
 
     // Recurring metadata: interval, availability window, end, optional.
     if task.is_recurring() {
-        if let Some(interval) = task.interval_secs {
-            lines.push(field_line("interval", date::format_duration(interval)));
+        if let Some(span) = task.interval_span() {
+            lines.push(field_line("interval", date::format_span(&span)));
         }
         if let Some(avail) = task.available_duration_secs {
             lines.push(field_line("duration", date::format_duration(avail)));
@@ -317,7 +318,7 @@ mod tests {
             priority: 3,
             start_time: Some(1_700_000_000),
             available_duration_secs: Some(3600),
-            interval_secs: Some(86_400),
+            interval_secs: Some(crate::date::span_to_db(&jiff::Span::new().days(1))),
             target_count: 0,
             optional: 0,
             end_time: Some(1_700_500_000),

@@ -45,21 +45,12 @@ impl TaskTree {
                    UNION
                    SELECT t.id FROM todos t JOIN subtree s ON t.parent = s.id
                )
-               SELECT t.*, SUM(tc.count) AS completions
+               SELECT t.*, NULL AS completions, NULL AS last_time
                FROM todos t
-               LEFT JOIN todo_completions tc ON tc.todo_id = t.id
-                   AND tc.time >= CASE
-                       WHEN t.interval_secs > 0 AND t.start_time IS NOT NULL THEN
-                           CASE WHEN ? <= t.start_time THEN t.start_time
-                                ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                       ELSE 0 END
                WHERE t.id IN (SELECT id FROM subtree)
-               GROUP BY t.id
                ORDER BY t.priority DESC, t.start_time ASC, t.id ASC"#,
         )
         .bind(root_id)
-        .bind(now)
-        .bind(now)
         .fetch_all(pool)
         .await
         .context("Failed to fetch task tree")?;
@@ -67,6 +58,10 @@ impl TaskTree {
         if rows.is_empty() {
             return Ok(None);
         }
+
+        // Attach interval-scoped completion sums (recurring tasks scope to
+        // the current interval via jiff calendar math).
+        let rows = crate::db::attach_full_completions(pool, rows, now).await?;
 
         let mut nodes: HashMap<i64, TaskRow> = HashMap::with_capacity(rows.len());
         let mut children_of: HashMap<i64, Vec<i64>> = HashMap::new();
@@ -266,7 +261,7 @@ mod tests {
                 priority: 5,
                 start_time: Some(1_600_000_000),
                 available_duration_secs: None,
-                interval_secs: Some(86_400),
+                interval_secs: Some(crate::date::span_to_db(&jiff::Span::new().days(1))),
                 target_count: 1,
                 optional: false,
                 end_time: None,

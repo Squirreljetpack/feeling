@@ -16,6 +16,8 @@ pub struct TaskObject {
     pub priority: i32,
     pub start_time: Option<i64>,
     pub available_duration_secs: Option<i64>,
+    /// Recurrence interval as a packed [`crate::date::DbSpan`] (see
+    /// [`crate::date::span_to_db`]) — NOT seconds despite the name.
     pub interval_secs: Option<i64>,
     pub target_count: i32,
     pub optional: bool,
@@ -30,6 +32,11 @@ impl TaskObject {
         self.interval_secs.is_some()
     }
 
+    /// The recurrence interval as a calendar `jiff::Span`.
+    pub fn interval_span(&self) -> Option<jiff::Span> {
+        self.interval_secs.map(crate::date::db_to_span)
+    }
+
     /// A scheduled task: no recurrence interval, with an availability
     /// window. See [`TaskRow::is_scheduled`].
     pub fn is_scheduled(&self) -> bool {
@@ -41,6 +48,7 @@ impl TaskObject {
 #[derive(Debug, Clone)]
 pub struct UpdateTaskObject {
     pub id: i64,
+    /// Recurrence interval as a packed [`crate::date::DbSpan`].
     pub interval_secs: Option<i64>,
     pub available_duration_secs: Option<i64>,
     pub target_count: i32,
@@ -101,6 +109,8 @@ pub struct TaskRow {
     pub priority: i32,
     pub start_time: Option<i64>,
     pub available_duration_secs: Option<i64>,
+    /// Recurrence interval as a packed [`crate::date::DbSpan`] (see
+    /// [`crate::date::span_to_db`]) — NOT seconds despite the name.
     pub interval_secs: Option<i64>,
     pub target_count: i32,
     pub optional: i32,
@@ -115,6 +125,11 @@ pub struct TaskRow {
 impl TaskRow {
     pub fn is_recurring(&self) -> bool {
         self.interval_secs.is_some()
+    }
+
+    /// The recurrence interval as a calendar `jiff::Span`.
+    pub fn interval_span(&self) -> Option<jiff::Span> {
+        self.interval_secs.map(crate::date::db_to_span)
     }
 
     /// A scheduled task: no recurrence interval, with an availability
@@ -193,6 +208,10 @@ pub struct TrackerEntryRow {
 #[derive(Debug, Clone)]
 pub struct RecurringTaskMeta {
     pub id: i64,
+    /// Recurrence anchor; interval slots are computed from it
+    /// (`start_time + span * k`).
+    pub start_time: Option<i64>,
+    /// Recurrence interval as a packed [`crate::date::DbSpan`].
     pub interval_secs: Option<i64>,
     pub target_count: i32,
 }

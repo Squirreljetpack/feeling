@@ -165,6 +165,18 @@ pub fn interval_start_unix_secs(anchor_unix: i64, span: Span, t_unix: i64) -> Op
         .map(|z| z.timestamp().as_second())
 }
 
+/// The end of the interval containing `t` (`interval start + span`) as unix
+/// seconds (`None` when `t` precedes the anchor or the addition overflows).
+pub fn interval_end_unix_secs(anchor_unix: i64, span: Span, t_unix: i64) -> Option<i64> {
+    let anchor = zoned_from_unix_secs(anchor_unix).ok()?;
+    let t = zoned_from_unix_secs(t_unix).ok()?;
+    let start = current_interval_start_zoned(&anchor, &t, span).ok()?;
+    start
+        .checked_add(span)
+        .ok()
+        .map(|z| z.timestamp().as_second())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -51,7 +51,9 @@ pub(crate) fn task_rows(task: &crate::db::TaskObject) -> Vec<(String, String)> {
     if task.is_recurring() {
         rows.push((
             "Interval".to_string(),
-            crate::date::format_duration(task.interval_secs.unwrap_or_default()),
+            task.interval_span()
+                .map(|span| crate::date::format_span(&span))
+                .unwrap_or_default(),
         ));
         rows.push((
             "Available".to_string(),
@@ -128,16 +130,17 @@ pub fn format_tasks_simple(tasks: &[TaskRow], config: &Config, done_view: bool) 
         // available (the start of the next interval window); oneshot tasks
         // render a single space in both columns.
         let interval_cell = task
-            .interval_secs
-            .map(crate::date::format_duration)
+            .interval_span()
+            .map(|span| crate::date::format_span(&span))
             .unwrap_or_else(|| " ".to_string());
-        let next_available_cell = match (task.start_time, task.interval_secs) {
-            (Some(start), Some(interval)) if interval > 0 => {
+        let next_available_cell = match (task.start_time, task.interval_span()) {
+            (Some(start), Some(span)) if crate::date::span_rough_seconds(span) > 0.0 => {
                 let now = crate::date::now();
                 let next = if now <= start {
                     start
                 } else {
-                    start + ((now - start) / interval + 1) * interval
+                    // Next interval start = end of the current interval.
+                    crate::date::interval_end_unix_secs(start, span, now).unwrap_or(start)
                 };
                 crate::date::format_datetime(next)
             }
@@ -187,7 +190,7 @@ mod tests {
         assert!(!rows.iter().any(|(l, _)| l == "Target"));
 
         // Recurring and scheduled stay lowercase.
-        task.interval_secs = Some(86400);
+        task.interval_secs = Some(crate::date::span_to_db(&jiff::Span::new().days(1)));
         assert_eq!(task_rows(&task)[0].1, "recurring");
         task.interval_secs = None;
         task.start_time = Some(1700000000);

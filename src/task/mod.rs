@@ -55,7 +55,7 @@ mod tests {
         let day = 86_400;
         let st = 1_000_000i64;
         let hour = 3600;
-        let row = |interval: Option<i64>, dur: Option<i64>| crate::db::TaskRow {
+        let row = |interval: Option<jiff::Span>, dur: Option<i64>| crate::db::TaskRow {
             id: 1,
             short_id: Some(1),
             name: "t".to_string(),
@@ -63,7 +63,7 @@ mod tests {
             priority: 5,
             start_time: Some(st),
             available_duration_secs: dur,
-            interval_secs: interval,
+            interval_secs: interval.map(|s| crate::date::span_to_db(&s)),
             target_count: 0,
             optional: 0,
             end_time: None,
@@ -75,26 +75,30 @@ mod tests {
         // Recurring, old origin (60 days ago): the window is anchored to
         // the current interval, not the chain origin.
         let now = st + 60 * day + 10_000;
+        let span1 = jiff::Span::new().days(1);
         assert!(
-            availability_passed(&row(Some(day), Some(hour)), now),
+            availability_passed(&row(Some(span1), Some(hour)), now),
             "window ended at interval_start + 1h, now is 2.7h in"
         );
         assert!(
-            !availability_passed(&row(Some(day), Some(hour)), st + 60 * day + 1800),
+            !availability_passed(&row(Some(span1), Some(hour)), st + 60 * day + 1800),
             "window still open 30min in"
         );
         // Exactly at the window end → passed (<=).
         assert!(availability_passed(
-            &row(Some(day), Some(hour)),
+            &row(Some(jiff::Span::new().days(1)), Some(hour)),
             st + 60 * day + hour
         ));
         // dur >= interval: the window covers the whole interval → never passed.
         assert!(!availability_passed(
-            &row(Some(day), Some(2 * day)),
+            &row(Some(jiff::Span::new().days(1)), Some(2 * day)),
             st + 60 * day + 1800
         ));
         // No duration → never passed.
-        assert!(!availability_passed(&row(Some(day), None), now));
+        assert!(!availability_passed(
+            &row(Some(jiff::Span::new().days(1)), None),
+            now
+        ));
         assert!(!availability_passed(&row(None, None), now));
 
         // Scheduled: the window is absolute.
@@ -109,22 +113,26 @@ mod tests {
     fn test_current_interval_start() {
         let day = 86_400;
         let start = 1_000_000;
+        let span = jiff::Span::new().days(1);
         // now exactly at start → first interval
-        assert_eq!(current_interval_start(start, day, start), start);
+        assert_eq!(current_interval_start(start, span, start), start);
         // now mid-first-interval → boundary is start
-        assert_eq!(current_interval_start(start, day, start + 100), start);
+        assert_eq!(current_interval_start(start, span, start + 100), start);
         // now exactly one interval later → second interval starts at start+day
-        assert_eq!(current_interval_start(start, day, start + day), start + day);
+        assert_eq!(
+            current_interval_start(start, span, start + day),
+            start + day
+        );
         // now mid-second-interval → boundary is start+day
         assert_eq!(
-            current_interval_start(start, day, start + day + 50),
+            current_interval_start(start, span, start + day + 50),
             start + day
         );
         // now before task start → boundary clamps to task start
-        assert_eq!(current_interval_start(start, day, start - 10), start);
+        assert_eq!(current_interval_start(start, span, start - 10), start);
         // now many intervals later
         assert_eq!(
-            current_interval_start(start, day, start + 10 * day + 123),
+            current_interval_start(start, span, start + 10 * day + 123),
             start + 10 * day
         );
     }

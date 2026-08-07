@@ -109,7 +109,7 @@ pub async fn update_task(pool: &SqlitePool, todo_id: i64, delta: i32) -> Result<
                 match (start, interval) {
                     (Some(st), Some(iv)) if iv > 0 => Some(crate::task::current_interval_start(
                         st,
-                        iv,
+                        crate::date::db_to_span(iv),
                         crate::date::now(),
                     )),
                     _ => None,
@@ -281,7 +281,7 @@ pub async fn sync_short_id(pool: &SqlitePool, todo_id: i64) -> Result<()> {
     let boundary = match (start_time, interval_secs) {
         (Some(st), Some(iv)) if iv > 0 => Some(crate::task::current_interval_start(
             st,
-            iv,
+            crate::date::db_to_span(iv),
             crate::date::now(),
         )),
         _ => None,
@@ -408,24 +408,49 @@ pub async fn task_name_exists(
 /// last_time is unscoped.
 pub async fn fetch_task_by_id(pool: &SqlitePool, id: i64, now: i64) -> Result<Option<TaskRow>> {
     let row = sqlx::query_as::<_, TaskRow>(
-        r#"SELECT t.*, (SELECT SUM(tc.count) FROM todo_completions tc
-                           WHERE tc.todo_id = t.id
-                           AND tc.time >= CASE
-                               WHEN t.interval_secs IS NOT NULL AND t.start_time IS NOT NULL THEN
-                                   CASE WHEN ? <= t.start_time THEN t.start_time
-                                        ELSE t.start_time + ((? - t.start_time) / t.interval_secs) * t.interval_secs END
-                               ELSE 0 END) AS completions,
-                      (SELECT MAX(tc.time) FROM todo_completions tc
-                           WHERE tc.todo_id = t.id) AS last_time
-               FROM todos t WHERE t.id = ?"#,
+        r#"SELECT t.*, NULL AS completions, NULL AS last_time
+           FROM todos t WHERE t.id = ?"#,
     )
-    .bind(now)
-    .bind(now)
     .bind(id)
     .fetch_optional(pool)
     .await
     .context("Failed to fetch task")?;
-    Ok(row)
+
+    let Some(mut task) = row else { return Ok(None) };
+    // Scope the completion sum to the current interval for recurring tasks
+    // (calendar-aware jiff math); last_time stays unscoped.
+    let rows =
+        sqlx::query("SELECT time, count FROM todo_completions WHERE todo_id = ? ORDER BY time ASC")
+            .bind(id)
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch task completions")?;
+    let completions: Vec<super::models::CompletionRow> = rows
+        .iter()
+        .map(|r| super::models::CompletionRow {
+            time: r.get("time"),
+            count: r.get("count"),
+        })
+        .collect();
+    task.completions = match crate::task::interval_start(&task, now) {
+        Some(floor) => {
+            let scoped: Vec<_> = completions.iter().filter(|c| c.time >= floor).collect();
+            if scoped.is_empty() {
+                None
+            } else {
+                Some(scoped.iter().map(|c| c.count).sum())
+            }
+        }
+        None => {
+            if completions.is_empty() {
+                None
+            } else {
+                Some(completions.iter().map(|c| c.count).sum())
+            }
+        }
+    };
+    task.last_time = completions.iter().map(|c| c.time).max();
+    Ok(Some(task))
 }
 
 /// Full recurring task (edit flow), looked up by name.

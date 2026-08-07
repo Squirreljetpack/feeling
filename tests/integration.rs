@@ -1558,6 +1558,26 @@ async fn test_view_due_tasks() {
     }
 }
 
+/// Pack a seconds-denominated interval into its packed-DbSpan form (test
+/// fixtures historically used 86400 to mean "1 day").
+fn pack_interval(secs: i64) -> i64 {
+    let span = jiff::Span::new()
+        .days(secs / 86_400)
+        .hours((secs % 86_400) / 3600)
+        .minutes((secs % 3600) / 60)
+        .seconds(secs % 60);
+    feeling::date::span_to_db(&span)
+}
+
+/// The calendar span for a seconds-denominated interval (fixture helper).
+fn interval_span(secs: i64) -> jiff::Span {
+    jiff::Span::new()
+        .days(secs / 86_400)
+        .hours((secs % 86_400) / 3600)
+        .minutes((secs % 3600) / 60)
+        .seconds(secs % 60)
+}
+
 /// Insert a recurring task row directly and return its id.
 async fn insert_recurring_task(
     pool: &SqlitePool,
@@ -1573,7 +1593,7 @@ async fn insert_recurring_task(
          VALUES (?, '', 5, ?, ?, ?, 0, ?, ?)",
     )
     .bind(name)
-    .bind(interval)
+    .bind(pack_interval(interval))
     .bind(available_duration)
     .bind(target_count)
     .bind(start_time)
@@ -2463,7 +2483,7 @@ async fn test_tracker_recurring_dots() {
     .bind(name)
     .bind("")
     .bind(5)
-    .bind(86400) // 1 day interval
+    .bind(pack_interval(86400)) // 1 day interval
     .bind::<Option<i64>>(None)
     .bind(0)
     .bind(0)
@@ -2520,7 +2540,7 @@ async fn test_tracker_recurring_year_uses_middle_dot() {
     .bind(name)
     .bind("")
     .bind(5)
-    .bind(86400) // 1 day interval
+    .bind(pack_interval(86400)) // 1 day interval
     .bind::<Option<i64>>(None)
     .bind(0)
     .bind(0)
@@ -2587,7 +2607,7 @@ async fn test_recurring_negative_delta_does_not_touch_previous_intervals() {
     .bind(name)
     .bind("")
     .bind(5)
-    .bind(interval)
+    .bind(pack_interval(interval))
     .bind::<Option<i64>>(None)
     .bind(0)
     .bind(0)
@@ -2604,7 +2624,8 @@ async fn test_recurring_negative_delta_does_not_touch_previous_intervals() {
 
     // The boundary between the previous and current intervals, computed with
     // the same helper the update path uses.
-    let interval_start = feeling::task::current_interval_start(start_time, interval, now);
+    let interval_start =
+        feeling::task::current_interval_start(start_time, interval_span(interval), now);
 
     // One completion in the previous interval (count 2), one in the current
     // interval (count 3).
@@ -2662,7 +2683,7 @@ async fn test_recurring_previous_interval_completions_still_shown() {
     .bind(name)
     .bind("")
     .bind(5)
-    .bind(interval)
+    .bind(pack_interval(interval))
     .bind::<Option<i64>>(None)
     .bind(2)
     .bind(0)
@@ -3809,16 +3830,17 @@ async fn test_prune_deletes_expired_recurring_task() {
     let past = feeling::date::now() - 3600;
     sqlx::query(
         "INSERT INTO todos (name, body, priority, start_time, interval_secs, target_count, optional, end_time) \
-         VALUES ('expired', '', 5, ?, 86400, 1, 0, ?)",
+         VALUES ('expired', '', 5, ?, ?, 1, 0, ?)",
     )
     .bind(past - 86_400)
+    .bind(pack_interval(86_400))
     .bind(past)
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query(
         "INSERT INTO todos (name, body, priority, start_time, interval_secs, target_count, optional, end_time) \
-         VALUES ('still going', '', 5, ?, 86400, 1, 0, ?)",
+         VALUES ('still going', '', 5, ?, ?, 1, 0, ?)",
     )
     .bind(past)
     .bind(past + 86_400)
@@ -3827,9 +3849,9 @@ async fn test_prune_deletes_expired_recurring_task() {
     .unwrap();
     sqlx::query(
         "INSERT INTO todos (name, body, priority, start_time, interval_secs, target_count, optional, end_time) \
-         VALUES ('forever', '', 5, ?, 86400, 1, 0, NULL)",
+         VALUES ('forever', '', 5, ?, ?, 1, 0, NULL)",
     )
-    .bind(past)
+    .bind(pack_interval(86_400))
     .execute(&pool)
     .await
     .unwrap();
@@ -4428,7 +4450,7 @@ async fn test_reset_progress_recurring_only_current_interval() {
     .bind(name)
     .bind("")
     .bind(5)
-    .bind(interval)
+    .bind(pack_interval(interval))
     .bind::<Option<i64>>(None)
     .bind(0)
     .bind(0)
@@ -4442,7 +4464,8 @@ async fn test_reset_progress_recurring_only_current_interval() {
         .await
         .unwrap();
 
-    let interval_start = feeling::task::current_interval_start(start_time, interval, now);
+    let interval_start =
+        feeling::task::current_interval_start(start_time, interval_span(interval), now);
     update_task(&pool, task_id, interval_start - 100, 2).await;
     update_task(&pool, task_id, interval_start + 100, 3).await;
 

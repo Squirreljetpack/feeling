@@ -186,9 +186,8 @@ pub fn prompt_interval(default: Option<&str>) -> Result<String> {
             if input.is_empty() {
                 Err(String::from("Interval is required"))
             } else {
-                match crate::date::parse_duration_secs(input) {
-                    Ok(secs) if secs > 0 => Ok(()),
-                    Ok(_) => Err(String::from("Interval must be positive")),
+                match crate::date::parse_span(input) {
+                    Ok(_) => Ok(()),
                     Err(e) => Err(format!("Invalid duration: {}", e)),
                 }
             }

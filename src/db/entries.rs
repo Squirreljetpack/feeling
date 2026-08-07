@@ -218,7 +218,7 @@ pub async fn fetch_recurring_task_meta(
 ) -> Result<Option<RecurringTaskMeta>> {
     let row = if let Ok(short_id) = name_or_id.parse::<i64>() {
         sqlx::query(
-            "SELECT id, interval_secs, target_count FROM todos WHERE short_id = ? AND interval_secs IS NOT NULL",
+            "SELECT id, start_time, interval_secs, target_count FROM todos WHERE short_id = ? AND interval_secs IS NOT NULL",
         )
         .bind(short_id)
         .fetch_optional(pool)
@@ -226,7 +226,7 @@ pub async fn fetch_recurring_task_meta(
         .context("Failed to fetch recurring task")?
     } else {
         sqlx::query(
-            "SELECT id, interval_secs, target_count FROM todos WHERE name = ? AND interval_secs IS NOT NULL",
+            "SELECT id, start_time, interval_secs, target_count FROM todos WHERE name = ? AND interval_secs IS NOT NULL",
         )
         .bind(name_or_id)
         .fetch_optional(pool)
@@ -236,6 +236,7 @@ pub async fn fetch_recurring_task_meta(
 
     Ok(row.map(|r| RecurringTaskMeta {
         id: r.get("id"),
+        start_time: r.get("start_time"),
         interval_secs: r.get("interval_secs"),
         target_count: r.get("target_count"),
     }))

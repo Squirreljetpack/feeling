@@ -353,7 +353,8 @@ mod tests {
     #[test]
     fn test_recurring_not_done_availability_window() {
         let config = Config::default();
-        let day = 86_400;
+        let day_secs = 86_400;
+        let day = crate::date::span_to_db(&jiff::Span::new().days(1));
         let hour = 3600;
         let now = crate::date::now();
         let row =
@@ -378,7 +379,7 @@ mod tests {
         // interval (30min into a 1h window), zero entries → Reset (not
         // binned as "missed" — the absolute formula marked it passed
         // forever).
-        let old = now - 60 * day - 1800;
+        let old = now - 60 * day_secs - 1800;
         assert_eq!(
             task_badge(&row(old, hour, 0, 0, None), &config, false),
             ('↻', CtColor::Reset)
