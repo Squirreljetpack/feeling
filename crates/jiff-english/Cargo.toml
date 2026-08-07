@@ -1,7 +1,7 @@
 [package]
 name = "jiff-english"
 description = "Parses informal English dates on jiff, in the spirit of the Linux `date` command; a port of chrono-english with eod/end/start time specifiers and hence/later"
-version.workspace = true
+version = "0.0.1"
 edition.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -16,3 +16,6 @@ serde = ["dep:serde"]
 jiff = { workspace = true }
 scanlex = "0.1"
 serde = { version = "1", features = ["derive"], optional = true }
+
+[package.metadata.workspaces]
+independent = true

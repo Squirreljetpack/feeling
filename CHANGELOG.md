@@ -1,3 +1,17 @@
+## [0.2.4] - 2026-08-07
+
+### 🚀 Features
+
+- Db :doctor
+- Jiff-english
+- Duration trackers
+- Tui interaction for trackers
+
+### 🐛 Bug Fixes
+
+- Inconsistencies in tracker/today fetch
+- Null tracker coloring per clarified spec; chainable valueless trackers
+
 ## [Unreleased]
 
 ### 🚀 Features

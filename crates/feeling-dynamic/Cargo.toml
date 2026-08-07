@@ -7,7 +7,9 @@ homepage.workspace = true
 description = "Dynamic ONNX Runtime variant of feeling CLI (requires system libonnxruntime)"
 
 [dependencies]
-feeling = { path = "../..", default-features = false, features = ["load-dynamic"] }
+feeling = { path = "../..", default-features = false, features = [
+  "load-dynamic",
+] }
 tokio = { version = "1", features = ["full"] }
 mimalloc = "0.1"
 

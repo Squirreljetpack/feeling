@@ -5,5 +5,4 @@ target/
 .pixi/
 TODO/
 /cache
-.cargo/config.toml
 /model/
