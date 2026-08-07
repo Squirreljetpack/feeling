@@ -19,7 +19,8 @@ Don't update help.txt
 
 use macros from cba crate (_ebog, ebog!) for logging **when outside the TUI loop**, for calls made while the tui is running, use log (i.e. log::error) for logging.
 
-Day/horizon/interval computation intentionally fixed second arithmetic, oos for now.
+Day/horizon/interval computation is calendar-aware (jiff), so DST transitions
+and variable month lengths are handled correctly; see "4. Date & duration".
 
 ## 1. Crate layout
 
@@ -45,7 +46,7 @@ src/
     entry.rs    mood/tracker entry writes
     task.rs     oneshot, recurring, and scheduled creation
     update.rs   task completion updates
-    maintenance.rs  clear, prune, config/moods editing
+    maintenance.rs  clear, :db prune/:db backfill, config/moods editing
     diagnostics.rs  :embed and :color utilities
 
   config/       serde configuration sections
@@ -62,12 +63,15 @@ src/
     tasks.rs    task CRUD, identity, completion, and task reads
     entries.rs  mood/tracker entries and mutations
     views.rs    today/task-view query composition
-    embeddings.rs embedding cache and feeling backfills
+    embeddings.rs embedding cache
 
-  date/         all chrono/humantime usage lives here
+  date/         all date/time usage lives here (jiff internally; chrono only
+                 via the chrono-english parsing bridge)
     mod.rs      Epoch type and time boundaries
     parse.rs    datetime parsing
-    parse_duration.rs  duration parsing
+    parse_duration.rs  duration parsing (fixed seconds + calendar spans)
+    span.rs     DbSpan pack/unpack and calendar interval math
+    format.rs   epoch/duration formatting
     format.rs   date/time/duration formatting
 
   today.rs      TodayItem model, today query assembly, sorting, plain output
@@ -182,7 +186,7 @@ database's prior state.
 ```text
 feeling:  id, mood TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', time INTEGER (unixepoch),
           embedding BLOB, score REAL          -- cached saliency for the mood text; computed at
-                                              -- entry creation, backfilled for legacy rows
+                                              -- entry creation; legacy rows get it via :db backfill
 tracker:  id, type TEXT, score BLOB NOT NULL CHECK (typeof(score) IN ('integer','text','real')),
           time, feeling INTEGER → feeling(id)   -- nullable: tracker entries without a linked feeling are allowed
           -- score holds a text | integer | real payload per the tracker's declared kind;
@@ -192,12 +196,16 @@ todos:    id (AUTOINCREMENT), name TEXT NOT NULL, body, priority INTEGER DEFAULT
                                      -- task is completed (see "Short-id allocation" below)
           name_embedding BLOB,       -- reserved for a name-derived embedding; never populated
           start_time, available_duration_secs, interval_secs, target_count INTEGER DEFAULT 0,
+          -- interval_secs stores a packed DbSpan (NOT seconds) — a jiff Span
+          -- with calendar units, unpacked via date::db_to_span
           optional INTEGER DEFAULT 0, end_time, parent → todos(id) ON DELETE SET NULL
           -- parent = task-tree link (NULL = root-level task); deleting a parent
           -- re-parents its children to root instead of cascading
 todo_completions: id, todo_id → todos(id) ON DELETE CASCADE,
           -- row ids are stable (never reassigned), so no ON UPDATE CASCADE.
           time INTEGER, count INTEGER NOT NULL DEFAULT 1
+task_moods: todo_id → todos(id) ON DELETE CASCADE, feeling_id → feeling(id) ON DELETE CASCADE,
+          -- task ↔ mood links recorded by `feeling <mood> -<short id>`
 embedding_cache: text TEXT PRIMARY KEY, embedding BLOB
 ```text
 
@@ -218,11 +226,15 @@ Timestamps are **Unix epoch seconds (INTEGER)** everywhere, via the `date` modul
   negative rows are ever stored and totals floor at 0. Pure model
   `apply_delta_to_counts` is unit-tested.
 - **Interval awareness**: recurring tasks define their recurrence start as
-  `start_time` (CLI creation stores `date::now()`). The current interval boundary
-  is `start_time + floor((now - start_time)/interval) * interval`
-  (`task::current_interval_start`, `div_euclid`, clamped when `now <= start_time`).
+  `start_time` (CLI creation stores `date::now()`) and their interval as a
+  calendar `jiff::Span` (stored packed). The current interval boundary is
+  `current_interval_start_zoned(start_time, now, span)` — calendar-based, so
+  "1 day" respects DST and "1 month" real months
+  (`task::current_interval_start`, clamped when `now <= start_time`).
   Negative deltas on recurring tasks never touch entries recorded before that
-  boundary; the returned total is interval-scoped for recurring tasks.
+  boundary; the returned total is interval-scoped for recurring tasks. View
+  completion scoping (previously SQL `interval_secs` arithmetic) runs in Rust
+  via `interval_index` (`db::views::scoped_completion_sum`).
 - **Scheduled tasks** keep at most one completion row: value `1` = completed
   (early, or auto-completed when the window elapses), `0` = failed (marked as
   missed). `set_scheduled_completion` replaces the row in a transaction.
@@ -255,11 +267,12 @@ reassigned**. The user-facing id is the separate `short_id` column:
 
 ## 4. Date & duration parsing (date/)
 
-All date and duration string parsing is encapsulated in the `date/` sub-module so callers work exclusively with `Epoch` (i64 Unix epoch seconds) or duration seconds (`i64`) without touching `chrono` or `humantime` types directly.
+All date and duration parsing is encapsulated in the `date/` sub-module so callers work exclusively with `Epoch` (i64 Unix epoch seconds), duration seconds (`i64`), packed `DbSpan`s, or `jiff::Span`s. Internal calendar math runs on jiff with the local system time zone.
 
-- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: chrono_english::Dialect) -> Result<Epoch>` uses `chrono-english` (`chrono_english::parse_date_string`) with `chrono::Local::now()` as the anchor. Callers pass the compile-time-fixed `crate::date::DATE_DIALECT` constant (no config knob); it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
-- **Duration parsing (`date/parse_duration.rs`)**: `parse_duration_secs(s: &str) -> Result<i64>` uses `humantime` (`humantime::parse_duration`) to parse human-readable durations (e.g. `"1 day"`, `"2 hours"`, `"1d"`, `"2h"`), returning total seconds as an `i64`.
-- **Formatting (`date/format.rs`)**: `format_time` (HH:MM), `format_date` (ISO), `format_datetime` (ISO + HH:MM), `format_datetime_short` (= datetime), `format_date_dmy` (DD-MM-YY, the today TUI's anchored-day label), `format_duration` (humantime).
+- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: chrono_english::Dialect) -> Result<Epoch>` uses `chrono-english` (`chrono_english::parse_date_string`) with `chrono::Local::now()` as the anchor, then bridges the result to a `jiff::Timestamp` (DateTime → SystemTime → Timestamp). Callers pass the compile-time-fixed `crate::date::DATE_DIALECT` constant (no config knob); it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
+- **Duration parsing (`date/parse_duration.rs`)**: `parse_duration_secs(s: &str) -> Result<i64>` uses `humantime` for fixed durations (availability windows). `parse_span(s) -> Result<jiff::Span>` parses calendar-aware intervals ("1 day", "1 month", "1 week 2 days") for recurring-task and tracker intervals; `format_span` renders them back.
+- **Intervals (`date/span.rs`)**: `DbSpan` packs a `jiff::Span` (years/months/weeks/days/hours/minutes/seconds) into one `i64` for database storage (`span_to_db`/`db_to_span`). `current_interval_start_zoned(anchor, now, span)` computes the calendar interval boundary (estimate + fine-tune; DST-safe); `interval_index(anchor, t, span)` numbers intervals (negative before the anchor); `interval_slot_unix_secs` gives `[start, end)` replacement slots.
+- **Formatting (`date/format.rs`)**: jiff strtime: `format_time` (HH:MM), `format_date` (ISO), `format_datetime` (ISO + HH:MM), `format_datetime_short`, `format_day_time`, `format_duration` (humantime).
 - **Boundary helpers (`date/mod.rs`)**: `now`, `today_start`/`today_end`, `day_start`/`day_end` (arbitrary day), `week_start(weekday)` (grids), `month_start`/`month_end`, `year_start`/`year_end`, rolling variants (`rolling_month_start`, `aligned_year_start`).
 
 ---
@@ -297,7 +310,8 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `:embed` | `Embed` — stdin lines → one 768-dim vector per line |
 | `:score "start" "end"` | `Score` — stub (`todo!()`) |
 | `:config` | `Config` — opens the live config in `$VISUAL`/`$EDITOR` |
-| `:prune` | `Prune` — prunes expired tasks, clears the embedding cache |
+| `:db prune` | `Db { Prune }` — prunes expired/completed tasks, clears the embedding cache |
+| `:db backfill` | `Db { Backfill }` — computes and persists missing feeling embeddings + saliency scores |
 | `:color <mood>` | `Color` — full mood-color pipeline diagnostic |
 | `:clear [@date]` | `Clear` — deletes that day's mood entries (interactive confirm) |
 
@@ -316,10 +330,15 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   `tracker` rows with `feeling_id`). Each `-type value` is parsed against the
   tracker's declared kind (text/number/float) with a clear error on mismatch;
   min/max apply to number/float, unknown tracker types are rejected. Insertion
-  strategy is kind × interval: `text`/`float` trackers **with an interval** keep
-  one entry per interval slot — re-logging the same tracker inside the same slot
-  replaces the previous entry; `number` trackers and interval-less trackers are
-  plain inserts that accumulate (the views sum per-slot scores). When the mood is
+  strategy is kind × interval: `text`/`float` trackers **with an interval**
+  (config `interval = ["2020-01-01 00:00", "1 day"]` — anchor + calendar span)
+  keep one entry per interval slot — re-logging the same tracker inside the
+  same slot replaces the previous entry; `number` trackers and interval-less
+  trackers are plain inserts that accumulate (the views sum per-slot scores).
+  `null` trackers (valueless `-<name>` timestamps) with an interval either
+  move the slot's entry to now (both min/max set — color by time of day) or
+  increment its score (count mode); without an interval they are unsupported.
+  `-<short id>` tokens link the mood entry to a task in `task_moods`. When the mood is
   non-empty it is embedded **before** the transaction opens, and its emotional
   saliency is computed (`color::predict_saliency`) and stored in `feeling.score`
   — so later color passes skip the saliency ONNX run for fresh rows. A wholly
@@ -363,8 +382,10 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   persist_pending_seconds).run()`) when `tui`, else
   `task_view::write_task_view(pool, mode, config, show, out)`.
 - **Tracker** → `tracker::write_tracker_grid` (no TUI path yet).
-- **Prune** → prunes expired/completed tasks and clears the **entire**
-  `embedding_cache` (it is a cache — rows are lazily re-embedded).
+- **Db** → `:db prune` prunes expired/completed tasks and clears the
+  **entire** `embedding_cache` (it is a cache — rows are lazily re-embedded);
+  `:db backfill` computes and persists missing feeling embeddings and
+  saliency scores (rendering no longer backfills them inline).
 - **Clear** → `:clear [@date]` deletes that day's mood entries (and linked
   tracker entries), with an interactive confirm showing the computed date.
 - **Color** → `:color <mood>` runs the whole pipeline once and prints every
@@ -619,7 +640,7 @@ the tracker kind on Enter).
   raw mood text embedding.
 - **SQLite embedding cache** (`embedding_cache`): keyed by
   `prefix + text`; `get_or_embed_cached` embeds and stores on miss. The axes
-  build, the today view, and the mood tracker all go through it; `:prune`
+  build, the today view, and the mood tracker all go through it; `:db prune`
   clears it entirely (a cache — rows are lazily re-embedded).
 - **Build-time model management (`build.rs`)**: `EMBED_MODEL` env var
   (default `nomic`) must match `assets/model/.embed_model_stamp`; on mismatch,

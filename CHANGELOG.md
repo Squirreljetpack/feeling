@@ -1,3 +1,21 @@
+## [Unreleased]
+
+### 🚀 Features
+
+- Task↔mood links: `feeling <mood> -<short id>` records a link; the task
+  preview shows a `moods:` field with colored badges
+- `:db` command replaces `:prune` — `:db prune` (old behavior) and
+  `:db backfill` (persist missing mood embeddings/scores)
+- Tracker intervals are calendar-aware (`interval = ["2020-01-01 00:00", "1 day"]`)
+- New `null` tracker kind: valueless timestamp markers with time-of-day
+  coloring (e.g. sleep start) or per-interval counting
+
+### 🐛 Bug Fixes
+
+- Recurring-task and tracker intervals are calendar-based (jiff): DST and
+  variable month lengths no longer drift interval boundaries
+- Interval storage switched from seconds to packed jiff spans
+
 ## [0.2.3] - 2026-08-07
 
 ### 🐛 Bug Fixes

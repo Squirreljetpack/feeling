@@ -139,6 +139,38 @@ checkpoint command for this session.
 - Tests: null semantics integration test, TrackerInterval serde roundtrip,
   null_tracker_color unit tests. 179 lib + 89 integration pass.
 
+### Stage 3 ✅ (commit `stage 3: task-mood links + preview moods + sync mood color cache`)
+
+- `task_moods` link table (cascades both ways); `-<short id>` tokens in
+  entry commands record links — resolved to row ids at write time, require
+  a feeling entry ("Nothing to log" / explicit error otherwise).
+- `ColorAxes::mood_color_cached` is now **sync and backfill-free**: rows
+  without a stored embedding are embedded on the fly, rows without a score
+  fall back to predicting inline, no DB writes. `:db backfill` (stage 4)
+  persists those.
+- Process-wide `GLOBAL_MOOD_COLOR_CACHE` (Mutex<HashMap>) for the sync
+  task preview; `build_preview` gained `linked_moods` + `axes` params and
+  renders `moods:` with `  - ● mood` lines. The tasks/today apps fetch the
+  selected task's linked moods on selection change (async, cached per app).
+- The old render-time score/embedding backfill is gone; the integration
+  test that asserted it now asserts the opposite.
+
+### Stage 4 ✅ (commit `stage 4: :db command (prune + backfill)`)
+
+- `Command::Prune` → `Command::Db { sub: DbSubcommand }` (`Prune` |
+  `Backfill`); `:db prune` = old `:prune`; `:db backfill` persists missing
+  feeling embeddings + saliency scores (journal rows skipped); bare `:db`
+  and unknown subcommands error with usage.
+
+### Stage 5 ✅ (docs + final validation)
+
+- docs/ARCHITECTURE.md rewritten for jiff/calendar intervals (DbSpan),
+  tracker interval config format, Null tracker semantics, task_moods,
+  `:db` commands, sync mood cache; README help block re-synced from
+  help.txt; CHANGELOG entry added.
+- Live smoke test (scratch XDG state): task link, Null trackers (count +
+  time-marker), today view, `:db backfill`, `:db` usage error all work.
+
 ## Misc observations
 
 - Baseline: `cargo check` clean except the pre-existing `IoStream::Stdout`
