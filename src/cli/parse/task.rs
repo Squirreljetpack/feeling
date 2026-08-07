@@ -3,6 +3,8 @@ use anyhow::Context;
 use super::super::Command;
 use crate::types::{Task, TaskKind};
 
+const BODY_DELIMITER: &'static str = ".."; // by idiom this should be --, but . or .. feels more linguistic, decision deferred
+
 pub(crate) fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command> {
     // The leading "!" has already been stripped by the caller — `args` holds
     // everything after it.
@@ -17,70 +19,44 @@ pub(crate) fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command>
         args = &args[1..];
     }
 
-    // ! alone → interactive oneshot creation (the name is prompted; the
-    // editor flow runs for priority/target/body). `!` is no longer a list
-    // view — the pending-oneshots list lives at `@:o`. An optional
-    // `-<parent_id>` (short id) pre-fills the parent prompt.
+    // everything before the delimiter is the command
+    // arguments (name/time), everything after it is body text: Option<String>. How an empty/absent body
+    // is resolved (editor or not) is a handler concern, decided from whether
+    // the creation flow is interactive.
+    let (args, body) = match args.iter().position(|a| a == BODY_DELIMITER) {
+        Some(d) => (&args[..d], Some(args[d + 1..].join(" "))),
+        None => (args, None),
+    };
+
+    // ! → interactive oneshot creation
     if args.is_empty() {
         return Ok(Command::Task(Task {
             task_type: TaskKind::Oneshot,
             name: None,
             priority: None,
             date: None,
-            body: String::new(),
-            open_editor: true,
+            body,
             prefill: None,
             available_duration: None,
             parent,
         }));
     }
 
-    // `! @ [name] [.. body]` → interactive recurring task creation.
-    // An optional name after the bare '@' pre-fills the name prompt,
-    // mirroring oneshot creation where the name comes from the command
-    // line; a trailing `..` carries the body text (empty body → body
-    // editor). The name is trimmed; if it trims to empty it is
-    // treated as absent.
+    // `! @ [name]` → interactive recurring task creation.
     if args[0] == "@" {
-        return parse_recurring_task(args);
+        return parse_recurring_task(&args[1..], body);
     }
 
-    // `! @<time> [:name] [%<duration>] [.. [body]]` → scheduled task
-    // creation. The first '@' word is the start time (multi-word forms like
-    // `@2024-03-20 14:30` survive shell word-splitting); a word beginning
-    // with ':' starts the name, a word beginning with '%' starts the
-    // duration. Note the space discriminator: `! @ 10pm` is a recurring
-    // task named "10pm", while `! @10pm` is a scheduled task.
+    // `! @<time> [:name] [%<duration>]` → scheduled task
     if args[0].starts_with('@') {
-        return parse_scheduled_task(args);
+        return parse_scheduled_task(args, body);
     }
 
-    // Creating oneshot task: ! <name> [@<time> [more time words]] [..]
-    //
-    // The grammar is positional, not stateful: split at the first `..` —
-    // everything before it goes to name/time, everything after is body —
-    // then within that head split at the first '@'-word into name | time.
-    // `..` may appear anywhere in the args: a later `..` inside the body is
-    // plain body text. The first time word's leading '@' is stripped and the
-    // following words append, so multi-word times like `@2024-03-20
-    // 14:30:00` survive shell word-splitting. Words before it form the
-    // name; a second '@'-word in the time field is rejected with an
-    // error; after `..`, '@' is literal and never looked for. The editor
-    // opens (with priority/target_count prompts as usual) iff `..` was used
-    // AND `body` ends up empty.
-    // `-<parent_id>` parses in the initial position only: once a parent
-    // has been consumed (or the first word is not a parent flag), later
-    // words starting with '-' are ordinary name/time/body text — e.g.
-    // `! -5 buy -milk` is task "buy -milk" under short id 5.
-    let dotdot = args.iter().position(|a| a == "..");
-    let (head, body_parts) = match dotdot {
-        Some(d) => (&args[..d], &args[d + 1..]),
-        None => (args, &[][..]),
-    };
-    let at = head.iter().position(|a| a.starts_with('@'));
+    // Creating oneshot task: ! <name> [@<time> ...]
+    let at = args.iter().position(|a| a.starts_with('@'));
     let (name_parts, time_parts) = match at {
-        Some(a) => (&head[..a], &head[a..]),
-        None => (head, &[][..]),
+        Some(a) => (&args[..a], &args[a..]),
+        None => (args, &[][..]),
     };
     for word in time_parts.iter().skip(1) {
         if word.starts_with('@') {
@@ -121,8 +97,6 @@ pub(crate) fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command>
                 .with_context(|| format!("Invalid task start time: '{}'", parts))?,
         )
     };
-    let body = body_parts.join(" ");
-    let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
         task_type: TaskKind::Oneshot,
@@ -130,7 +104,6 @@ pub(crate) fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command>
         priority: None,
         date,
         body,
-        open_editor,
         prefill: None,
         available_duration: None,
         parent,
@@ -155,28 +128,18 @@ fn parse_parent_flag(arg: &str) -> anyhow::Result<Option<i64>> {
 }
 
 /// Parse `! @ [name] [.. body]` — interactive recurring task
-/// creation. `args[0]` is the bare `@`; the name (everything before
-/// `..`) pre-fills the name prompt, and text after `..` becomes the body
-/// (empty body → body editor).
-fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
+/// creation. `args` holds everything after the bare `@` (the `..` split
+/// already happened in `parse_task_command`); the name (everything before
+/// `..`) pre-fills the name prompt, and `body` carries the text after `..`
+/// (the handler decides editor-vs-text from the interactive flow).
+fn parse_recurring_task(args: &[String], body: Option<String>) -> anyhow::Result<Command> {
     // `! @ <name>` — the name is free text that pre-fills the
     // name prompt. @-words inside it (e.g. `! @ buy milk @x`) stay literal:
     // they are part of the name, never parsed as a time (unlike the
     // oneshot/scheduled @-word handling). To keep a literal `@` at the start
     // of a word, use `..` as the escape.
-    //
-    // Same positional `..` split as the oneshot parser: everything before
-    // the first `..` is the name, everything after is body text (a later
-    // `..` inside the body is plain body text; bare `..` → body editor).
-    let rest = &args[1..];
-    let dotdot = rest.iter().position(|a| a == "..");
-    let (head, body_parts) = match dotdot {
-        Some(d) => (&rest[..d], &rest[d + 1..]),
-        None => (rest, &[][..]),
-    };
-
     let prefill = {
-        let joined = head.join(" ");
+        let joined = args.join(" ");
         let trimmed = joined.trim();
         if trimmed.is_empty() {
             None
@@ -184,8 +147,6 @@ fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
             Some(trimmed.to_string())
         }
     };
-    let body = body_parts.join(" ");
-    let open_editor = dotdot.is_some() && body.is_empty();
 
     Ok(Command::Task(Task {
         task_type: TaskKind::Recurring,
@@ -193,38 +154,28 @@ fn parse_recurring_task(args: &[String]) -> anyhow::Result<Command> {
         priority: None,
         date: None,
         body,
-        open_editor,
         prefill,
         available_duration: None,
         parent: None,
     }))
 }
 /// `! @<time> [:name] [%<duration>] [.. [body]]` → scheduled task
-/// creation.
-fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
-    // Body split first, same positional rule as the oneshot parser:
-    // everything before the first `..` is the command words, everything
-    // after is body text (a later `..` inside the body is plain body text;
-    // bare `..` → body editor).
-    let dotdot = args.iter().position(|a| a == "..");
-    let (head, body_parts) = match dotdot {
-        Some(d) => (&args[..d], &args[d + 1..]),
-        None => (args, &[][..]),
-    };
-
+/// creation. `args` holds the command words (the `..` split already
+/// happened in `parse_task_command`); `body` carries the text after `..`.
+fn parse_scheduled_task(args: &[String], body: Option<String>) -> anyhow::Result<Command> {
     // The first marker word ends the time field. The dispatcher guarantees
     // the first word starts with '@', so the time field is never empty.
-    let colon = head.iter().position(|w| w.starts_with(':'));
-    let pct = head.iter().position(|w| w.starts_with('%'));
+    let colon = args.iter().position(|w| w.starts_with(':'));
+    let pct = args.iter().position(|w| w.starts_with('%'));
     let first = match (colon, pct) {
         (Some(c), Some(p)) => c.min(p),
         (Some(c), None) => c,
         (None, Some(p)) => p,
-        (None, None) => head.len(),
+        (None, None) => args.len(),
     };
 
-    let time_parts = &head[..first];
-    let tail = &head[first..];
+    let time_parts = &args[..first];
+    let tail = &args[first..];
 
     let (mut name_parts, mut duration) = (&[][..], &[][..]);
 
@@ -316,16 +267,12 @@ fn parse_scheduled_task(args: &[String]) -> anyhow::Result<Command> {
         )
     };
 
-    let body = body_parts.join(" ");
-    let open_editor = dotdot.is_some() && body.is_empty();
-
     Ok(Command::Task(Task {
         task_type: TaskKind::Scheduled,
         name,
         priority: None,
         date,
         body,
-        open_editor,
         prefill: None,
         available_duration,
         parent: None,

@@ -186,13 +186,14 @@ mod tests {
     fn test_parse_task_bare_is_interactive() {
         // `!` alone → interactive oneshot creation, no parent. (Regression
         // guard: parent parsing used to index into an empty args slice.)
+        // No `..` → body is `None`; the interactive flow opens the editor.
         let cmd = parse_from(args(&["!"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, None);
                 assert_eq!(task.parent, None);
-                assert!(task.open_editor);
+                assert_eq!(task.body, None);
             }
             _ => panic!("Expected Task command"),
         }
@@ -330,7 +331,7 @@ mod tests {
                 assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("task".to_string()));
                 assert_eq!(task.date, None);
-                assert_eq!(task.body, "@notdate");
+                assert_eq!(task.body, Some("@notdate".to_string()));
             }
             _ => panic!("Expected Task command"),
         }
@@ -346,7 +347,7 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.date, Some(ts("2024-03-20")));
-                assert_eq!(task.body, "@b");
+                assert_eq!(task.body, Some("@b".to_string()));
             }
             _ => panic!("Expected Task command"),
         }
@@ -361,8 +362,7 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("task".to_string()));
-                assert_eq!(task.body, "see .. note");
-                assert!(!task.open_editor);
+                assert_eq!(task.body, Some("see .. note".to_string()));
             }
             _ => panic!("Expected Task command"),
         }
@@ -552,21 +552,21 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Scheduled);
                 assert_eq!(task.name, Some("meeting".to_string()));
-                assert_eq!(task.body, "take notes");
-                assert!(!task.open_editor);
+                assert_eq!(task.body, Some("take notes".to_string()));
             }
             _ => panic!("Expected Task command"),
         }
     }
 
     #[test]
-    fn test_parse_task_scheduled_bare_dotdot_opens_editor() {
+    fn test_parse_task_scheduled_bare_dotdot_empty_body() {
+        // Bare `..` → body is `Some("")`; the handler decides the editor
+        // (opens it in direct creation, errors in the interactive flow).
         let cmd = parse_from(args(&["!", "@10pm", ":meeting", ".."])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Scheduled);
-                assert_eq!(task.body, "");
-                assert!(task.open_editor);
+                assert_eq!(task.body, Some(String::new()));
             }
             _ => panic!("Expected Task command"),
         }
@@ -581,22 +581,20 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Recurring);
                 assert_eq!(task.prefill, Some("exercise".to_string()));
-                assert_eq!(task.body, "notes");
-                assert!(!task.open_editor);
+                assert_eq!(task.body, Some("notes".to_string()));
             }
             _ => panic!("Expected Task command"),
         }
     }
 
     #[test]
-    fn test_parse_task_recurring_bare_dotdot_opens_editor() {
+    fn test_parse_task_recurring_bare_dotdot_empty_body() {
         let cmd = parse_from(args(&["!", "@", "exercise", ".."])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Recurring);
                 assert_eq!(task.prefill, Some("exercise".to_string()));
-                assert_eq!(task.body, "");
-                assert!(task.open_editor);
+                assert_eq!(task.body, Some(String::new()));
             }
             _ => panic!("Expected Task command"),
         }
@@ -627,13 +625,14 @@ mod tests {
     #[test]
     fn test_parse_view_oneshot_list() {
         // Bare `!` is interactive oneshot creation now — name prompted,
-        // editor flow on. The pending-oneshots list lives at `@:o`.
+        // body editor flow on (body `None` → editor in the handler). The
+        // pending-oneshots list lives at `@:o`.
         let cmd = parse_from(args(&["!"])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, None);
-                assert!(task.open_editor);
+                assert_eq!(task.body, None);
             }
             _ => panic!("Expected Task command"),
         }
@@ -1475,20 +1474,19 @@ mod tests {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("do thing".to_string()));
-                assert_eq!(task.body, "body text");
-                assert!(!task.open_editor);
+                assert_eq!(task.body, Some("body text".to_string()));
             }
             _ => panic!("Expected Task command"),
         }
 
-        // `..` at end with empty body → editor opens.
+        // `..` at end with empty body → body is `Some("")`; direct
+        // creation opens the editor, the interactive flow errors.
         let cmd = parse_from(args(&["!", "do", "thing", ".."])).unwrap();
         match cmd {
             Command::Task(task) => {
                 assert_eq!(task.task_type, TaskKind::Oneshot);
                 assert_eq!(task.name, Some("do thing".to_string()));
-                assert_eq!(task.body, "");
-                assert!(task.open_editor);
+                assert_eq!(task.body, Some(String::new()));
             }
             _ => panic!("Expected Task command"),
         }

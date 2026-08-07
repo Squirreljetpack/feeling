@@ -119,10 +119,11 @@ pub struct Task {
     /// Start/due time for oneshot and scheduled creations (`! name @<time>`),
     /// resolved to an epoch at CLI parse time (`DATE_DIALECT`).
     pub date: Option<Epoch>,
-    /// Body text from words following `..` for oneshot creations.
-    pub body: String,
-    /// Open the editor iff `..` was present and `body` is empty.
-    pub open_editor: bool,
+    /// Body text from words following `..`. `None` when no `..` was given;
+    /// `Some(s)` when `..` was used, with `s` possibly empty (a bare `..`).
+    /// How an empty/absent body is resolved (editor or not) is decided in
+    /// the handler from whether the creation flow is interactive.
+    pub body: Option<String>,
     /// Pre-filled name for interactive recurring creation
     /// (`feeling ! @ <name>`), like oneshot creation where the
     /// name comes from the command line. `Some` always implies creation.
