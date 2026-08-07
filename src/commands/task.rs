@@ -26,45 +26,21 @@ async fn resolve_parent(pool: &SqlitePool, short_id: i64) -> Result<Option<i64>>
     Ok(Some(resolve_parent_named(pool, short_id).await?.0))
 }
 
-/// Resolve a task's body text at creation time.
-///
-/// `interactive` marks the cliclack prompt flows (a oneshot with no
-/// command-line name, recurring always, and scheduled when the name, start
-/// and duration are not all on the command line). The `..` body delimiter
-/// is always legal now; the rules:
+/// Resolve a task's body text at creation time. The `..` body delimiter is
+/// always legal and resolves the same in every flow (direct and
+/// interactive):
 ///
 /// * `.. text` (`Some` non-empty) — the text is used as-is; the editor
 ///   never opens.
-/// * no `..` (`None`) — interactive: the body editor opens at the end of
-///   the flow; direct creation: no body.
-/// * bare `..` (`Some("")`) — direct creation: the body editor opens;
-///   interactive: an error, raised early by
-///   [`reject_bare_dotdot_in_interactive`] before any prompt.
-fn resolve_body(body: Option<String>, interactive: bool, config: &Config) -> Result<String> {
+/// * no `..` (`None`) — no body.
+/// * bare `..` (`Some("")`) — the body editor opens at the end of the
+///   flow; the only case that does (`Some(b) = body && b.is_empty()`).
+fn resolve_body(body: Option<String>, config: &Config) -> Result<String> {
     match body {
         Some(b) if b.is_empty() => open_editor_for_body(config.editor.hint),
         Some(b) => Ok(b),
-        None => {
-            if interactive {
-                open_editor_for_body(config.editor.hint)
-            } else {
-                Ok(String::new())
-            }
-        }
+        None => Ok(String::new()),
     }
-}
-
-/// Fail when an interactive creation was given a bare `..` (an empty body):
-/// in the interactive flows the body editor is the default body source, so
-/// an empty `..` claims a body was provided without providing one. Called
-/// on flow entry so the error hits before any prompt.
-fn reject_bare_dotdot_in_interactive(body: &Option<String>) -> Result<()> {
-    if matches!(body, Some(b) if b.is_empty()) {
-        anyhow::bail!(
-            "Bare '..' with no body text: drop '..' to use the editor, or add text after '..'"
-        );
-    }
-    Ok(())
 }
 
 pub(super) async fn create_task_command(
@@ -86,14 +62,12 @@ pub(super) async fn create_task_command(
             // Only a missing name triggers the interactive creation flow:
             // cliclack intro, then the name (required, unique, no tabs),
             // priority and target count. A `..` body delimiter is always
-            // legal; how it resolves depends on the flow (see
-            // [`resolve_body`]): in the interactive flow `.. text` skips the
-            // body editor at the end and a bare `..` is an error.
+            // legal and resolves the same in every flow (see
+            // [`resolve_body`]): `.. text` skips the body editor at the
+            // end, a bare `..` opens it, and no `..` means no body.
             let interactive = name.is_none();
 
             let (name_str, priority_val, target_count, parent_id) = if interactive {
-                reject_bare_dotdot_in_interactive(&body)?;
-
                 if !atty::is(atty::Stream::Stdin) {
                     anyhow::bail!("Oneshot task creation requires an interactive terminal");
                 }
@@ -155,11 +129,9 @@ pub(super) async fn create_task_command(
                 anyhow::bail!("A task with name '{name_str}' already exists");
             }
 
-            // Body: `.. text` is used as-is (the editor never opens with a
-            // command-line body); a bare `..` opens the editor; no `..`
-            // means no body. In the interactive flow a bare `..` already
-            // errored above, and `None` opens the editor at the end.
-            let body = resolve_body(body, interactive, config)?;
+            // Body: `.. text` is used as-is; a bare `..` opens the editor;
+            // no `..` means no body. Same rules in both flows.
+            let body = resolve_body(body, config)?;
 
             // `@<time>` is the due time and lands in `end_time`; `start_time`
             // records the creation moment. The CLI parser already resolved
@@ -202,8 +174,8 @@ pub(super) async fn create_task_command(
         TaskKind::Recurring => {
             // Create new recurring task via interactive flow, with an
             // optional pre-filled name from `feeling ! @ <name>` and
-            // an optional body from `.. body` (editor when `..` is bare
-            // or absent — the flow is always interactive).
+            // an optional body from `.. body` (editor only when `..` is
+            // bare — no `..` means no body).
             create_recurring_task(pool, config, opts, prefill, body).await?;
         }
         TaskKind::Scheduled => {
@@ -223,7 +195,7 @@ pub(super) async fn create_task_command(
                 if name_str.contains('\t') {
                     anyhow::bail!("Task name cannot contain tab characters");
                 }
-                let body = resolve_body(body, false, config)?;
+                let body = resolve_body(body, config)?;
                 let mut task_obj = TaskObject {
                     id: None,
                     short_id: None,
@@ -274,11 +246,6 @@ async fn create_recurring_task(
     if !atty::is(atty::Stream::Stdin) {
         anyhow::bail!("Recurring task creation requires an interactive terminal");
     }
-
-    // A bare `..` (empty body) is an error in the interactive flow — the
-    // editor is the default body source here, so an empty `..` claims a
-    // body was provided without providing one. Fail before any prompt.
-    reject_bare_dotdot_in_interactive(&body)?;
 
     crate::output::task_intro("Create recurring task")?;
 
@@ -333,9 +300,9 @@ async fn create_recurring_task(
     // 8. Optional
     let is_optional = crate::prompts::prompt_optional(false)?;
 
-    // 9. Body: `.. text` pre-fills the body (no editor); no `..` → the
-    // body editor opens. A bare `..` already errored on entry.
-    let body = resolve_body(body, true, config)?;
+    // 9. Body: `.. text` pre-fills the body (no editor); a bare `..`
+    // opens the body editor; no `..` → no body.
+    let body = resolve_body(body, config)?;
 
     // Insert into database. start_time marks the recurrence start (used as the
     // anchor for interval boundaries when applying completion deltas). Both the
@@ -394,10 +361,6 @@ async fn create_scheduled_task(
         anyhow::bail!("Scheduled task creation requires an interactive terminal");
     }
 
-    // A bare `..` is an error in the interactive flow (see
-    // `reject_bare_dotdot_in_interactive`); fail before any prompt.
-    reject_bare_dotdot_in_interactive(&body)?;
-
     crate::output::task_intro("Create scheduled task")?;
 
     // 1. Task name (required, unique, no tabs). A name from the command
@@ -439,9 +402,9 @@ async fn create_scheduled_task(
     // 4. Priority (blank falls back to the scheduled default).
     let priority = crate::prompts::prompt_priority(config.tasks.default_scheduled_priority)?;
 
-    // 5. Body: `.. text` pre-fills the body (no editor); no `..` → the
-    // body editor opens. A bare `..` already errored on entry.
-    let body = resolve_body(body, true, config)?;
+    // 5. Body: `.. text` pre-fills the body (no editor); a bare `..`
+    // opens the body editor; no `..` → no body.
+    let body = resolve_body(body, config)?;
 
     let mut task_obj = TaskObject {
         id: None,
@@ -500,11 +463,10 @@ async fn prompt_unique_name(
     task_type: Option<TaskKind>,
 ) -> Result<String> {
     let given = given.map(str::trim).filter(|s| !s.is_empty());
-    if let Some(name) = given {
-        if !crate::db::task_name_exists(pool, name, task_type).await? {
+    if let Some(name) = given
+        && !crate::db::task_name_exists(pool, name, task_type).await? {
             return Ok(name.to_string());
         }
-    }
     loop {
         let candidate = crate::prompts::prompt_name(given)?;
         if crate::db::task_name_exists(pool, &candidate, task_type).await? {
@@ -517,7 +479,8 @@ async fn prompt_unique_name(
 
 #[cfg(test)]
 mod tests {
-    use super::{reject_bare_dotdot_in_interactive, validate_name};
+    use super::{resolve_body, validate_name};
+    use crate::config::Config;
 
     /// `validate_name` accepts a normal name and rejects empty and
     /// tab-containing ones (the rules enforced before task creation).
@@ -548,21 +511,22 @@ mod tests {
         );
     }
 
-    /// A bare `..` (empty body) is only rejected in the interactive flows;
-    /// a real body or no `..` at all passes.
+    /// `resolve_body` passes `.. text` through as-is and maps no `..` to
+    /// an empty body without opening the editor; a bare `..` is the only
+    /// case that opens the editor.
     #[test]
-    fn bare_dotdot_rejected_only_in_interactive() {
-        assert!(
-            reject_bare_dotdot_in_interactive(&Some(String::new())).is_err(),
-            "bare `..` must error in the interactive flow"
+    fn resolve_body_editor_only_on_bare_dotdot() {
+        let config = Config::default();
+
+        assert_eq!(
+            resolve_body(Some("notes".to_string()), &config).unwrap(),
+            "notes",
+            "`.. text` is used as-is"
         );
-        assert!(
-            reject_bare_dotdot_in_interactive(&Some("notes".to_string())).is_ok(),
-            "`.. text` passes"
-        );
-        assert!(
-            reject_bare_dotdot_in_interactive(&None).is_ok(),
-            "no `..` passes"
+        assert_eq!(
+            resolve_body(None, &config).unwrap(),
+            "",
+            "no `..` means no body and no editor"
         );
     }
 }

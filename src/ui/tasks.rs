@@ -354,11 +354,10 @@ impl TasksApp {
             };
             let task_id = *id;
             self.modal = None;
-            if proceed {
-                if let Some(task) = self.tasks.iter().find(|t| t.id == task_id).cloned() {
+            if proceed
+                && let Some(task) = self.tasks.iter().find(|t| t.id == task_id).cloned() {
                     self.run_enter_action(task).await;
                 }
-            }
             return true;
         }
 

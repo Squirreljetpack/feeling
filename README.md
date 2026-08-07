@@ -24,12 +24,11 @@ Usage:
   feeling ! [-<parent_id>] [.. body]                  create a oneshot task (interactive)
   feeling ! <name> [@<time>]                          create a oneshot task
   feeling ! @ [name]                                  create a recurring task (interactive)
-  feeling ! @<time> [:name] [%duration]               create a scheduled task (interactive
-                                                        unless all fields are filled)
+  feeling ! @<time> [:name] [%duration]               create a scheduled task 
+                                                        (interactive if partial)
 
-  All creation subcommands above support a trailing body [.. [body]].
-  If the body is empty, and creation is interactive or .. is given,
-  the `$EDITOR` will open for writing the body.
+  All the previous subcommands support a trailing [.. [body]].
+  If only .. is specified, `$EDITOR` will open for writing the body of the entry.
 
   Oneshot tasks can be optionally linked to a parent (i.e. subtasks)
   by writing the parent's id prefixed with `-` in the first argument.

@@ -87,11 +87,10 @@ pub fn build_preview(
     lines.push(Line::default());
     // The short id is shown only while the task is not completed — a
     // completed task's short id is cleared, so the ID field disappears.
-    if !task.is_done() {
-        if let Some(short_id) = task.short_id {
+    if !task.is_done()
+        && let Some(short_id) = task.short_id {
             lines.push(field_line("id", short_id.to_string()));
         }
-    }
     lines.push(field_line("priority", task.priority.to_string()));
     // The last completion on the task. Done rows show it only when
     // `preview.show_last_when_done` is set (the default). Today-view
@@ -177,11 +176,10 @@ pub fn build_preview(
         }
         // Today-view rows carry the unscoped last completion in `end_time`
         // instead of the expiry — no `ends` field there.
-        if !today {
-            if let Some(ref s) = task.end_datetime() {
+        if !today
+            && let Some(ref s) = task.end_datetime() {
                 lines.push(field_line("ends", s.clone()));
             }
-        }
         // The optional flag is only shown when the task is skippable.
         if task.optional != 0 {
             lines.push(field_line("optional", "Yes".to_string()));
@@ -328,8 +326,8 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
 
     // Interval trackers show when the next interval opens — like recurring
     // tasks.
-    if let Some((anchor, span)) = entry.tracker_interval {
-        if crate::date::span_rough_seconds(span) > 0.0 {
+    if let Some((anchor, span)) = entry.tracker_interval
+        && crate::date::span_rough_seconds(span) > 0.0 {
             let now = date::now();
             let next = if now <= anchor {
                 anchor
@@ -339,7 +337,6 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
             };
             lines.push(field_line("next", date::format_human_datetime(next)));
         }
-    }
 
     // `prev:` shows the previous entry of this kind whenever one exists.
     if let Some(prev) = entry.tracker_prev {

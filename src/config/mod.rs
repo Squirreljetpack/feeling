@@ -104,8 +104,8 @@ impl Config {
         // path degrades to the first/last (or sole) color — so clear it
         // and warn.
         for (name, setting) in self.tracker.iter_mut() {
-            if let Some(ref colors) = setting.colors {
-                if colors.is_empty() {
+            if let Some(ref colors) = setting.colors
+                && colors.is_empty() {
                     wbog!(
                         "config";
                         "Ignoring empty colors override on Tracker '{}'",
@@ -113,13 +113,12 @@ impl Config {
                     );
                     setting.colors = None;
                 }
-            }
             // Text trackers have no score: their override palette, when
             // present, must be exactly one color (the entry-badge color);
             // anything else is meaningless, so clear it and warn.
-            if setting.kind == TrackerKind::Text {
-                if let Some(ref colors) = setting.colors {
-                    if colors.len() != 1 {
+            if setting.kind == TrackerKind::Text
+                && let Some(ref colors) = setting.colors
+                    && colors.len() != 1 {
                         wbog!(
                             "config";
                             "Ignoring colors override on text Tracker '{}' with {} entries (text trackers take exactly 1 color)",
@@ -128,8 +127,6 @@ impl Config {
                         );
                         setting.colors = None;
                     }
-                }
-            }
             // A zero interval span would break the calendar slot math, so
             // clear it and warn (parse_span already rejects non-positive
             // input, so this only guards hand-constructed values).

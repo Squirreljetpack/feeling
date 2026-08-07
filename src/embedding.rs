@@ -276,11 +276,10 @@ pub async fn get_or_embed_cached(
 ) -> Result<Vec<f32>> {
     let key = format!("{prefix}{text}");
 
-    if let Ok(Some(blob)) = crate::db::get_embedding_cache(pool, &key).await {
-        if let Some(vec) = blob_to_embedding(&blob) {
+    if let Ok(Some(blob)) = crate::db::get_embedding_cache(pool, &key).await
+        && let Some(vec) = blob_to_embedding(&blob) {
             return Ok(vec);
         }
-    }
 
     let vec = embedder.embed(text, prefix)?;
     let blob = embedding_to_blob(&vec);

@@ -297,8 +297,8 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `@<date>` | `Today { date: Some(date) }` — today view anchored to that day; the **handler** parses it with `DATE_DIALECT` (the parser has no config, so nothing is validated here) |
 | `--help` / `-h` | `Help` — bundled `assets/help.txt` printed via `include_str!` |
 | plain words (`happy`, `good ...`) | `Entry { feeling, trackers, .. }` — mood entry; trackers as `-type score` |
-| `..` (bare, at the end) | opens the body editor — Entry via its `open_editor` flag; Task via the handler's `resolve_body` (direct creation only — the interactive flows error on a bare `..`) |
-| `!` (bare) | `Task { OneShot, name: None, body: None }` — interactive oneshot creation (name prompted via `prompt_name`; body `None` → the editor opens in the flow) |
+| `..` (bare, at the end) | opens the body editor — Entry via its `open_editor` flag; Task via the handler's `resolve_body` (the only case that does, in direct and interactive flows alike) |
+| `!` (bare) | `Task { OneShot, name: None, body: None }` — interactive oneshot creation (name prompted via `prompt_name`; body `None` → no body, no editor; a bare `..` opens the editor) |
 | `! <name> [@date] [..]` | `Task { OneShot, .. }` — `@YYYY-MM-DD` is the **due** time (stored in `end_time`; `start_time` records creation); a second `@`-word is rejected |
 | `! -<parent_id> [name] [@time]` | `Task { OneShot, parent }` — oneshot creation attached to the task whose **short id** is `<parent_id>` (flag parses in the initial position only; resolved to a row id in the handler, so an unknown id errors before anything is inserted) |
 | `! @` / `! @ <name>` | `Task { Recurring, prefill }` — interactive recurring creation; the `<name>` pre-fills the name prompt (`@`-words inside it stay free text) |
@@ -359,14 +359,13 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
     `@<time>` was already resolved to an epoch at CLI parse time with
     `DATE_DIALECT` (an unparseable date fails the command line, before
     anything is created); bare `!` runs the interactive flow (cliclack intro, then
-    name, priority, target count and the body editor). Only a missing name
-    triggers the flow. Body resolution (`resolve_body`) depends on the flow:
-    `.. text` is used as-is, a bare `..` opens the editor in direct
-    creation but is an error in the interactive flows, and no `..` means no
-    body when creating directly / the editor when interactive.
+    name, priority and target count). Only a missing name
+    triggers the flow. Body resolution (`resolve_body`) is the same in every
+    flow: `.. text` is used as-is, a bare `..` opens the editor, and no `..`
+    means no body.
   - recurring: interactive flow (`feeling ! @ <name>`) — cliclack
     prompts for name (unique, pre-filled), priority, interval, available
-    duration, target count, end time, optional, and the body editor. The flow
+    duration, target count, end time, optional. The flow
     bails when stdin is not interactive. Pre-filled values are logged at info
     level (`prefill` tag) and skip their prompts.
   - scheduled: `! @<time> [:name] [%<duration>]` — the start time and

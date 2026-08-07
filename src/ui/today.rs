@@ -208,20 +208,19 @@ impl TodayApp {
         // Tracker rows: Enter re-logs null trackers in place (time → now,
         // count incremented in count mode) or opens the "Update:" prompt
         // modal for value-bearing kinds.
-        if let Some(entry) = self.entries.get(self.selected) {
-            if let EntryKind::Tracker(kind) = entry.kind {
+        if let Some(entry) = self.entries.get(self.selected)
+            && let EntryKind::Tracker(kind) = entry.kind {
                 let tracker_id = entry.id;
                 let label = entry.label.clone();
                 self.tracker_enter_action(kind, tracker_id, &label).await;
                 return;
             }
-        }
         // Resolve the row from the selected entry first: recurring entries
         // carry their window-scoped row (authoritative for the D10 check and
         // the enter-action state machine — `refresh()` does not refetch
         // `selected_task`).
-        if let Some(entry) = self.entries.get(self.selected) {
-            if let Some(w) = entry.recurring_window.as_ref() {
+        if let Some(entry) = self.entries.get(self.selected)
+            && let Some(w) = entry.recurring_window.as_ref() {
                 // D10: Enter on a recurring task whose availability window
                 // has passed asks first (default Yes) before the count
                 // modal / direct toggle. The check is per window (`now >=
@@ -239,7 +238,6 @@ impl TodayApp {
                 self.run_enter_action(task).await;
                 return;
             }
-        }
         let Some(task) = self.selected_task.as_ref() else {
             return;
         };

@@ -94,11 +94,10 @@ impl EventLoop {
                 event = input => {
                     match event {
                         Some(Ok(CtEvent::Key(key))) if key.kind == KeyEventKind::Press => {
-                            if let Some(action) = self.map_key(key.code, key.modifiers) {
-                                if !self.send(RenderEvent::Action(action)) {
+                            if let Some(action) = self.map_key(key.code, key.modifiers)
+                                && !self.send(RenderEvent::Action(action)) {
                                     return Ok(());
                                 }
-                            }
                         }
                         Some(Ok(CtEvent::Resize(width, height))) => {
                             if !self.send(RenderEvent::Resize { width, height }) {

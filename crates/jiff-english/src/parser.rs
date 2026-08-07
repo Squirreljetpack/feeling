@@ -179,11 +179,10 @@ impl<'a> DateParser<'a> {
                                 } else {
                                     false
                                 };
-                                if !got_marker {
-                                    if let Some(h) = t.to_integer() {
+                                if !got_marker
+                                    && let Some(h) = t.to_integer() {
                                         self.maybe_time = Some((h as u32, TimeKind::Unknown));
                                     }
-                                }
                             }
                             Some(DateSpec::skip(u, n))
                         } else if name == "am" || name == "pm" {
@@ -363,11 +362,10 @@ impl<'a> DateParser<'a> {
                 return Ok(None);
             }
             // `eod`/`end`/`start` as the time part after a date
-            if let Some(name) = t.as_iden() {
-                if let Some(align) = DayAlign::from_name(name) {
+            if let Some(name) = t.as_iden()
+                && let Some(align) = DayAlign::from_name(name) {
                     return Ok(Some(TimeSpec::aligned(align)));
                 }
-            }
             let hour = t.to_int_result::<u32>()?;
             Ok(Some(match self.scanner.get() {
                 Token::Char(ch) => match ch {
