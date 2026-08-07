@@ -17,13 +17,13 @@
 
 use std::os::raw::{c_char, c_int, c_long, c_longlong};
 
-extern "C" {
+unsafe extern "C" {
     fn strtol(s: *const c_char, endptr: *mut *mut c_char, base: c_int) -> c_long;
     fn strtoll(s: *const c_char, endptr: *mut *mut c_char, base: c_int) -> c_longlong;
     fn strtoull(s: *const c_char, endptr: *mut *mut c_char, base: c_int) -> u64;
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc23_strtol(
     s: *const c_char,
     endptr: *mut *mut c_char,
@@ -32,7 +32,7 @@ pub unsafe extern "C" fn __isoc23_strtol(
     unsafe { strtol(s, endptr, base) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc23_strtoll(
     s: *const c_char,
     endptr: *mut *mut c_char,
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn __isoc23_strtoll(
     unsafe { strtoll(s, endptr, base) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc23_strtoull(
     s: *const c_char,
     endptr: *mut *mut c_char,
