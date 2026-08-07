@@ -11,7 +11,6 @@ pub mod logger;
 pub mod ort_compat;
 pub mod output;
 pub mod paths;
-pub mod percentage;
 pub mod prompts;
 pub mod task;
 pub mod task_tree;
@@ -20,6 +19,7 @@ pub mod today;
 pub mod tracker;
 pub mod types;
 pub mod ui;
+pub mod utils;
 
 pub async fn run_app() {
     use cba::{_dbg, bog};

@@ -28,7 +28,7 @@ use crate::color::conversion::rgb_to_oklab;
 use crate::config::{ColorAxesSettings, MoodEndpoint};
 use crate::db::FeelingRow;
 use crate::embedding::Embedder;
-use crate::percentage::Percentage;
+use crate::utils::Percentage;
 
 /// State for a single basis mood ray.
 #[derive(Debug, Clone)]

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::embedding::Embedder;
-use crate::percentage::Percentage;
+use crate::utils::Percentage;
 
 use super::types::{MoodEndpoint, MoodsFile};
 
@@ -63,7 +63,8 @@ impl Default for ColorAxesSettings {
 /// from the anchor pairs, plus `source`, the path of the moods file
 /// holding those anchors.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
+#[serde(deny_unknown_fields)] // empirically flatten seems to work ok here tho docs say not
 pub struct MoodConfig {
     /// The color settings — the `[moods]` keys other than `source`
     /// (flattened, so they live directly on the table).

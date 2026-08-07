@@ -3,11 +3,7 @@ use serde::{de, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Seriali
 use super::types::{ColorBins, TrackerKind};
 use crate::date::Epoch;
 
-/// A tracker's expected logging interval: a fixed local anchor time plus a
-/// calendar span. Interval slots are `[anchor + span*k, anchor + span*(k+1))`
-/// — calendar-based, so "1 day" respects DST and "1 month" real months.
-///
-/// TOML form: `interval = ["2026-03-01 00:00", "1 day"]`.
+/// `interval = ["2026-03-01 00:00", "1 day"]`.
 #[derive(Debug, Clone, Copy)]
 pub struct TrackerInterval {
     /// Anchor time (epoch seconds, local time zone) fixing the interval
