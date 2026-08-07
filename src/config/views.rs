@@ -1,55 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// The day each week starts on, as configured in `[grid]` (`"Monday"` …
-/// `"Sunday"`, case-insensitive on parse). jiff's `Weekday` has no serde
-/// impl, so the config carries this wrapper and converts at use sites.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum Weekday {
-    Monday,
-    Tuesday,
-    Wednesday,
-    Thursday,
-    Friday,
-    Saturday,
-    Sunday,
-}
-
-impl<'de> Deserialize<'de> for Weekday {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.to_ascii_lowercase().as_str() {
-            "monday" => Ok(Weekday::Monday),
-            "tuesday" => Ok(Weekday::Tuesday),
-            "wednesday" => Ok(Weekday::Wednesday),
-            "thursday" => Ok(Weekday::Thursday),
-            "friday" => Ok(Weekday::Friday),
-            "saturday" => Ok(Weekday::Saturday),
-            "sunday" => Ok(Weekday::Sunday),
-            other => Err(serde::de::Error::custom(format!(
-                "unknown weekday '{}' (expected Monday..Sunday)",
-                other
-            ))),
-        }
-    }
-}
-
-impl From<Weekday> for jiff::civil::Weekday {
-    fn from(w: Weekday) -> Self {
-        match w {
-            Weekday::Monday => jiff::civil::Weekday::Monday,
-            Weekday::Tuesday => jiff::civil::Weekday::Tuesday,
-            Weekday::Wednesday => jiff::civil::Weekday::Wednesday,
-            Weekday::Thursday => jiff::civil::Weekday::Thursday,
-            Weekday::Friday => jiff::civil::Weekday::Friday,
-            Weekday::Saturday => jiff::civil::Weekday::Saturday,
-            Weekday::Sunday => jiff::civil::Weekday::Sunday,
-        }
-    }
-}
+/// `"Sunday"`, case-insensitive on parse). jiff-english's serde-friendly
+/// `Weekday` wrapper (jiff's `Weekday` has no serde impl); converts at use
+/// sites via `jiff::civil::Weekday::from`.
+pub use jiff_english::serde::Weekday;
 
 /// `[grid]` section — how far back the tracker grids (`:`, `:week`, `:month`,
 /// `:year`) reach, and which day each week starts on.

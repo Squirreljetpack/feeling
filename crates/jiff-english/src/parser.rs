@@ -386,4 +386,14 @@ impl<'a> DateParser<'a> {
         let time = self.parse_time()?;
         Ok(DateTimeSpec { date, time })
     }
+
+    /// The input remaining after the last consumed token.
+    ///
+    /// Used by [`crate::parse_and_remainder`] to slice the leftover input
+    /// off the original string (and by `crate::parse_strict` to reject
+    /// trailing input). Trailing whitespace is included in the rest, so the
+    /// sliced remainder never covers it.
+    pub(crate) fn rest(&mut self) -> String {
+        self.scanner.take_rest()
+    }
 }

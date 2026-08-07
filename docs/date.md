@@ -2,13 +2,16 @@
 
 Reference for every expression accepted by the shared datetime parser
 (`crate::date::parse_datetime`), i.e. any place a `@<time>` / `@<date>` argument
-appears in the CLI and TUIs. The parser is **chrono-english 0.1.8**
-(<https://docs.rs/chrono-english>, <https://github.com/stevedonovan/chrono-english>)
-with the fixed dialect `DATE_DIALECT = Dialect::Uk` — **UK English, day-first**,
-not Ukrainian. It is intentionally a small pattern language, not natural-language
-parsing. All examples below were verified against the actual crate with a fixed
-base of **2024-03-14 12:34:56 UTC (a Thursday)**; month-clamp and same-day
-examples use the stated base.
+appears in the CLI and TUIs. The parser is the **`jiff-english`** subcrate
+(`crates/jiff-english` — a port of chrono-english 0.1.8 onto jiff) with the
+fixed dialect `DATE_DIALECT = Dialect::Uk` — **UK English, day-first**, not
+Ukrainian. It is intentionally a small pattern language, not natural-language
+parsing. All examples below were verified against the actual parser with a
+fixed base of **2024-03-14 12:34:56 UTC (a Thursday)**; month-clamp and
+same-day examples use the stated base. The port reproduces chrono-english's
+grammar and error strings exactly, with three additions: `eod`/`end`/`start`
+time specifiers, `hence`/`later` interval markers, and a normalized 12-hour
+clock (`12am` = midnight, `12pm` = noon).
 
 ## Grammar in one line
 
@@ -18,20 +21,22 @@ date-part  := now|today|yesterday|tomorrow
             | [next|last] (weekday | month | day month | day/month)
             | [next|last] month-name day | day month-name [year]
             | year | year-month-day | day/month[/year] | month-name day[, year]
-            | [+|-]N unit ["ago"] | -N unit
+            | [+|-]N unit ["ago"|"hence"|"later"]
 time-part  := H[:MM[:SS[.ffff]]] [am|pm|Z|±HH[:MM]] | H.MM [am|pm] | H [am|pm]
+            | eod | end | start
 ```
 
 ## Lexical rules
 
-- Case-insensitive (`friday` = `FRIDAY` = `Friday`); only the **first three
-  letters** of weekday, month, and unit names are significant (`tues`,
-  `decemb`, `sept` all work).
+- Weekdays, months, time units, `ago`/`hence`/`later` and `eod`/`end`/`start`
+  are case-insensitive (`friday` = `FRIDAY`, `EOD` = `eod`). Only the **first
+  three letters** of weekday, month, and unit names are significant (`tues`,
+  `decemb`, `sept` all work). `next`/`last` must be lowercase.
 - Whitespace between tokens is free (`June   30,    2018` works).
 - Numbers are plain integers: no floats (`1.5 hours` → error), no spelled-out
   numbers (`two days` → error), no ordinals (`5th of may`, `1st April` → error).
 - No connective words: `at`, `in`, `of`, `next week friday`, `friday next week`,
-  `a week ago`, `midnight`, `eod` are **all errors**.
+  `a week ago`, `midnight`, `noon` are **all errors**.
 
 ## Absolute dates
 
@@ -78,7 +83,9 @@ UK `next` semantics: explicit `next <weekday>` means **the weekday of next week*
 `thursday 13:00` from a Thursday 12:34 base → same day 13:00, while
 `thursday 12:00` → next week's Thursday. With no time part (00:00), a bare
 weekday on its own day rolls to next week (`friday` from a Friday base →
-+7 days).
++7 days). `eod` counts as "after the base time" in this comparison, `start`
+as "before": `thursday eod` from a Thursday base → today, `thursday start` →
+next week.
 
 ## Months
 
@@ -117,15 +124,19 @@ Without a year these are relative: they default to the current year and
 | expression | result | notes |
 | --- | --- | --- |
 | `3h` / `3 hours` | 2024-03-14 15:34:56 | seconds/minutes/hours: **keep base time-of-day** |
-| `3 hours ago` | 2024-03-14 09:34:56 | `ago` negates |
+| `3 hours ago` | 2024-03-14 09:34:56 | `ago` negates (case-insensitive) |
+| `3 hours later` | 2024-03-14 15:34:56 | `later`/`hence` = explicit future, keep sign |
 | `-3h` | 2024-03-14 09:34:56 | leading `-` negates |
 | `2d` / `2 days` | 2024-03-16 12:34:56 | days/weeks: **keep base time-of-day** when no time given |
 | `2 days 03:00` | 2024-03-16 03:00 | day/weeks may take an explicit time part |
 | `2 days ago 15:00` | 2024-03-12 15:00 | |
+| `2 days later 15:00` | 2024-03-16 15:00 | marker + time part |
+| `3 days hence` | 2024-03-17 12:34:56 | `hence` = `later` |
 | `-1 week` | 2024-03-07 12:34:56 | |
 | `3 weeks` | 2024-04-04 12:34:56 | |
 | `6 months` | 2024-09-14 00:00 | months/years: **snap to midnight** |
 | `6 months ago` | 2023-09-14 00:00 | |
+| `6 months hence` | 2024-09-14 00:00 | |
 | `8 years` | 2032-03-14 00:00 | 1 year = 12 months |
 | `15m` | 2024-03-14 12:49:56 | single-letter `m` = **minutes** |
 | `3mo` | 2024-03-14 12:37:56 | = 3 **minutes**! months need `mon`/`month(s)` |
@@ -149,7 +160,9 @@ else backs off to the last valid day — `2024-01-31 + 1 month` → **2024-02-29
 `2024-02-29 + 1 year` → 2025-02-28.
 
 Trailing time after second-class units is **ignored**: `3h 15:00` → 15:34:56.
-Compound intervals (`3 months 2 days`, `1 hour 30 minutes`) are **errors**.
+The sign marker is the sole sign control: `-2 days ago` and `-2 days hence`
+are **errors** (the leading `-` already consumed the sign). Compound intervals
+(`3 months 2 days`, `1 hour 30 minutes`) are **errors**.
 
 ## Times
 
@@ -161,8 +174,8 @@ Compound intervals (`3 months 2 days`, `1 hour 30 minutes`) are **errors**.
 | `6.03pm` | 18:03:00 | informal dot form |
 | `8pm` / `2am` | 20:00 / 02:00 | bare hour + am/pm |
 | `9.05am` / `9:05` | 09:05:00 | informal may carry am/pm |
-| `4pm` / `12am` | 16:00 / 12:00 | chrono-english quirk: `12am` stays 12:00 (noon); jiff-english fixes this to midnight |
-| `12pm` / `12:00pm` | **error** | 12+12 = 24h → invalid (jiff-english normalizes to 12:00) |
+| `4pm` / `12am` | 16:00 / 00:00 | `12am` = **midnight** (chrono-english left it as 12:00 noon) |
+| `12pm` / `12:00pm` | 12:00 | noon (chrono-english errored: 12+12 = 24h) |
 | `24:00` / `25:00` | error | hours must be 0–23 |
 | `2017-06-30 08:20:30 +02:00` | 2017-06-30 06:20:30 UTC | timezone offset `±HH[:MM]` or `±HHMM`; `Z` = UTC |
 | `2017-06-30 08:20:30 +0200` | 2017-06-30 06:20:30 UTC | no colon form |
@@ -171,6 +184,33 @@ Compound intervals (`3 months 2 days`, `1 hour 30 minutes`) are **errors**.
 A bare time (`8pm`, `18:03`) applies to **today**. An absolute date without a
 time part is midnight; a relative day/month interval without a time part uses
 the rules in the interval table above.
+
+## Day alignment (`eod` / `end` / `start`)
+
+`start` resolves to **00:00:00.000000000** of the computed date; `eod` and
+`end` to the **last moment of the day, 23:59:59.999999999** (the `Epoch`
+boundary in feeling truncates to whole seconds, i.e. 23:59:59 — same as
+`date::day_end`). All three are case-insensitive and usable as the time part
+of any date form, or bare (today).
+
+| expression | result (base 2024-03-14) | notes |
+| --- | --- | --- |
+| `eod` / `end` | 2024-03-14 23:59:59.999999999 | bare → today |
+| `start` | 2024-03-14 00:00:00.000000000 | bare → today |
+| `tomorrow eod` | 2024-03-15 23:59:59.999999999 | after keywords |
+| `yesterday start` | 2024-03-13 00:00:00 | |
+| `next friday eod` | 2024-03-22 23:59:59.999999999 | after weekdays |
+| `friday eod` | 2024-03-15 23:59:59.999999999 | |
+| `2 days eod` | 2024-03-16 23:59:59.999999999 | after day-class intervals |
+| `3 days hence eod` | 2024-03-17 23:59:59.999999999 | marker + alignment |
+| `6 months start` | 2024-09-14 00:00:00 | after month-class intervals |
+| `9/11 eod` | 2024-11-09 23:59:59.999999999 | after day-month forms |
+| `2024-03-15 eod` | 2024-03-15 23:59:59.999999999 | after absolute dates |
+| `8pm eod` | 20:00 — specifier **ignored** | trailing junk after bare am/pm is dropped (chrono-english parity) |
+| `18:03 eod` | error `expected am or pm` | a formal time rejects a trailing specifier; use one or the other |
+
+(The `8pm eod` row describes the lenient `parse_date_string`; through
+feeling's strict entry point it errors like every other trailing word.)
 
 ## Dialect: `Uk` vs `Us`
 
@@ -188,17 +228,42 @@ The dialect changes exactly two things; everything else parses identically:
 - Spelled-out numbers (`two days`), ordinals (`5th of may`, `2nd monday`), floats (`1.5 hours`)
 - Connectors / articles: `at`, `in`, `of`, `a/an` (`tomorrow at 9am`, `in 3 days`, `a week ago`)
 - Compound intervals (`3 months 2 days`), `month day year` without comma, `jan 2025`
-- Keywords `next week`, `noon`/`midnight`/`midday`/`eod` (note: `last month` and
+- Keywords `next week`, `noon`/`midnight`/`midday` (note: `last month` and
   `next month` **do not fail** — they parse as *last/next Monday*, because the
   first three letters of "month" match the Monday weekday)
-- `12pm` / `12:00pm`, hours > 23, `2023-02-29` (invalid calendar dates → "bad date")
+- Hours > 23 (`24:00`), `2023-02-29` (invalid calendar dates → "bad date"),
+  `-2 days ago` / `-2 days hence` (marker after a consumed sign)
 - `5 may 8pm` (ambiguous: `8` is consumed as the day) — but `April 1 8.30pm` works
+
+## Strict vs lenient entry points
+
+`jiff-english` exposes three entry points; feeling uses **`parse_strict`**:
+
+| entry point | trailing input after a valid expression |
+| --- | --- |
+| `parse_date_string` | **ignored** (chrono-english parity: `"10pm meeting"` → 22:00 today) |
+| `parse_strict` | **error** (`trailing characters after date expression`; trailing whitespace is fine) |
+| `parse_and_remainder` | ignored, and returns the leftover input as `(Zoned, &str)` — chrono-style, the core both above delegate to |
+
+Consequence for the CLI: a `@<time>` field must be **one complete date
+expression** — `feeling @10pm meeting` and `! @10pm meeting` are errors
+(use `:name` markers: `! @10pm :meeting`), while `@10pm` (with or without
+trailing whitespace) and multi-word forms like `@tomorrow eod` all work.
 
 ## Wiring in feeling
 
+- `crates/jiff-english` is a workspace member (path dependency of the root
+  crate). Its tests pin the exact behavior of every row above, including
+  DST transitions (jiff's compatible disambiguation) and month clamping.
 - `src/date/parse.rs`: `parse_datetime` (→ epoch seconds), `parse_date` (aligns
   to day start), `parse_datetime_end` (aligns to day end) — all delegate to
-  chrono-english with `crate::date::DATE_DIALECT` (`Dialect::Uk`), then bridge
-  chrono → jiff so no chrono types leak.
-- Every `@<time>` / `@<date>` CLI/TUI argument accepts these same expressions.
+  `jiff_english::parse_strict` with `crate::date::DATE_DIALECT`
+  (`Dialect::Uk`) and `jiff::Zoned::now()` as the anchor. Strict means the
+  whole field must be one complete expression (see the table above); the
+  lenient `parse_date_string` stays available inside jiff-english. The
+  result is a `Zoned`; epoch seconds are taken directly
+  (`timestamp().as_second()`), no chrono bridge. `chrono` remains only as a
+  dev-dependency for the integration tests.
+- Every `@<time>` / `@<date>` CLI/TUI argument accepts these same expressions,
+  so `feeling @eod`-style arguments work everywhere a time is accepted.
 - Interactive dates (e.g. due-date prompts) parse through the same entry point.

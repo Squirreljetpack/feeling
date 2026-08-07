@@ -28,7 +28,7 @@ pub type DbSpan = i64;
 ///
 /// `Us` uses month-first ordering (`Aug 6`); `Uk` uses day-first
 /// ordering (`6 Aug`).
-pub const DATE_DIALECT: chrono_english::Dialect = chrono_english::Dialect::Uk;
+pub const DATE_DIALECT: jiff_english::Dialect = jiff_english::Dialect::Uk;
 
 // Re-export sub-module functions at the crate::date level.
 pub use format::*;

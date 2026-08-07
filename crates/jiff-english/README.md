@@ -50,6 +50,19 @@ assert_eq!(date_time.time(), civil::time(20, 0, 0, 0));
 - Times: `18:03[:40[.25]]`, `6.03pm`, `8pm`, `±HH[:MM]` / `Z` offsets
 - Day alignment: `eod`, `end`, `start` (with any date form)
 
+## Entry points
+
+- `parse_date_string` — lenient (chrono-english parity): trailing words after
+a bare am/pm time are dropped (`"10pm meeting"` → 22:00 today).
+- `parse_strict` — errors on any trailing input (`trailing characters after
+date expression`; trailing whitespace is fine).
+- `parse_and_remainder` — like `parse_date_string` (and chrono's
+`NaiveDate::parse_and_remainder`), but also returns the leftover input as
+`(Zoned, &str)`, trailing whitespace included (the core the two above
+delegate to).
+- `parse_duration` — the relative part of `"N unit [ago|hence|later]"` as an
+`Interval`.
+
 ## License
 
 MIT — ported from [chrono-english](https://github.com/stevedonovan/chrono-english)

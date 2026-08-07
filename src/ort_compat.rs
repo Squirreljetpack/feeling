@@ -13,10 +13,6 @@
 //! the already-trimmed buffers ONNX Runtime passes in. On systems with a
 //! newer glibc the symbols are simply never referenced, so the shims are
 //! dead code there.
-//!
-//! (Linking additionally needs a libstdc++ from GCC >= 13 for
-//! `_M_replace_cold`; the `model/.pixi` environment provides one — see
-//! NOTES.md.)
 
 use std::os::raw::{c_char, c_int, c_long, c_longlong};
 

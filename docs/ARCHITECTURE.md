@@ -65,8 +65,8 @@ src/
     views.rs    today/task-view query composition
     embeddings.rs embedding cache
 
-  date/         all date/time usage lives here (jiff internally; chrono only
-                 via the chrono-english parsing bridge)
+  date/         all date/time usage lives here (jiff internally; English
+                 parsing via the jiff-english subcrate, a chrono-english port)
     mod.rs      Epoch type and time boundaries
     parse.rs    datetime parsing
     parse_duration.rs  duration parsing (fixed seconds + calendar spans)
@@ -269,7 +269,7 @@ reassigned**. The user-facing id is the separate `short_id` column:
 
 All date and duration parsing is encapsulated in the `date/` sub-module so callers work exclusively with `Epoch` (i64 Unix epoch seconds), duration seconds (`i64`), packed `DbSpan`s, or `jiff::Span`s. Internal calendar math runs on jiff with the local system time zone.
 
-- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: chrono_english::Dialect) -> Result<Epoch>` uses `chrono-english` (`chrono_english::parse_date_string`) with `chrono::Local::now()` as the anchor, then bridges the result to a `jiff::Timestamp` (DateTime → SystemTime → Timestamp). Callers pass the compile-time-fixed `crate::date::DATE_DIALECT` constant (no config knob); it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
+- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: jiff_english::Dialect) -> Result<Epoch>` uses the `jiff-english` subcrate (`jiff_english::parse_date_string`, a chrono-english port on jiff) with `jiff::Zoned::now()` as the anchor, returning a `jiff::Zoned` whose epoch seconds are taken directly — no chrono bridge. Callers pass the compile-time-fixed `crate::date::DATE_DIALECT` constant (no config knob); it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. jiff-english adds the `eod`/`end`/`start` time specifiers and the `hence`/`later` interval markers (see `docs/date.md`). `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
 - **Duration parsing (`date/parse_duration.rs`)**: `parse_duration_secs(s: &str) -> Result<i64>` uses `humantime` for fixed durations (availability windows). `parse_span(s) -> Result<jiff::Span>` parses calendar-aware intervals ("1 day", "1 month", "1 week 2 days") for recurring-task and tracker intervals; `format_span` renders them back.
 - **Intervals (`date/span.rs`)**: `DbSpan` packs a `jiff::Span` (years/months/weeks/days/hours/minutes/seconds) into one `i64` for database storage (`span_to_db`/`db_to_span`). `current_interval_start_zoned(anchor, now, span)` computes the calendar interval boundary (estimate + fine-tune; DST-safe); `interval_index(anchor, t, span)` numbers intervals (negative before the anchor); `interval_slot_unix_secs` gives `[start, end)` replacement slots.
 - **Formatting (`date/format.rs`)**: jiff strtime: `format_time` (HH:MM), `format_date` (ISO), `format_datetime` (ISO + HH:MM), `format_datetime_short`, `format_day_time`, `format_duration` (humantime).

@@ -7,6 +7,12 @@ repository.workspace = true
 homepage.workspace = true
 license = "MIT"
 
+[features]
+# Serde impls for jiff-english types (jiff's own types have no serde impl;
+# e.g. the `Weekday` wrapper in `serde`).
+serde = ["dep:serde"]
+
 [dependencies]
-jiff = "0.2"
+jiff = { workspace = true }
 scanlex = "0.1"
+serde = { version = "1", features = ["derive"], optional = true }

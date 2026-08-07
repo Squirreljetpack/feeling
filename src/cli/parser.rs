@@ -422,19 +422,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_task_scheduled_date_with_extra_words_is_all_date() {
+    fn test_parse_task_scheduled_date_with_extra_words_is_rejected() {
         // `! @10pm meeting` (no markers) keeps the whole first field as the
-        // date — resolved to an epoch at parse time (chrono-english
-        // ignores trailing non-date words), never becoming a name.
-        let cmd = parse_from(args(&["!", "@10pm", "meeting"])).unwrap();
-        match cmd {
-            Command::Task(task) => {
-                assert_eq!(task.task_type, TaskKind::Scheduled);
-                assert_eq!(task.name, None);
-                assert_eq!(task.date, Some(ts("10pm meeting")));
-            }
-            _ => panic!("Expected Task command"),
-        }
+        // date — and the date field is parsed strictly (a trailing word
+        // after `10pm` would parse leniently in jiff-english, but the main
+        // crate rejects it), so the field errors instead of silently
+        // becoming a name.
+        let err = parse_from(args(&["!", "@10pm", "meeting"])).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Invalid scheduled task start time"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

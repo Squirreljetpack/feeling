@@ -97,6 +97,9 @@ mod errors;
 mod parser;
 mod types;
 
+#[cfg(feature = "serde")]
+pub mod serde;
+
 use errors::*;
 use types::*;
 
@@ -109,7 +112,20 @@ pub enum Dialect {
     Us,
 }
 
-pub fn parse_date_string(s: &str, now: &Zoned, dialect: Dialect) -> DateResult<Zoned> {
+/// Like [`parse_date_string`] but also returning the remainder of the input
+/// after the date expression, in the style of
+/// `chrono::NaiveDate::parse_and_remainder` (which returns the leftover
+/// input verbatim, trailing whitespace included).
+///
+/// The parser is *lenient*: input after the last meaningful token is
+/// ignored — e.g. the `"meeting"` in `"10pm meeting"` parses as `10pm`,
+/// matching chrono-english, and the remainder is `" meeting"`. Use
+/// [`parse_strict`] to reject non-whitespace trailing input.
+pub fn parse_and_remainder<'a>(
+    s: &'a str,
+    now: &Zoned,
+    dialect: Dialect,
+) -> DateResult<(Zoned, &'a str)> {
     let mut dp = parser::DateParser::new(s);
     if let Dialect::Us = dialect {
         dp = dp.american_date();
@@ -128,7 +144,25 @@ pub fn parse_date_string(s: &str, now: &Zoned, dialect: Dialect) -> DateResult<Z
             .to_date_time(now.date(), now.time_zone())
             .or_err("bad time")?
     };
-    Ok(date_time)
+    let remainder = &s[s.len() - dp.rest().len()..];
+    Ok((date_time, remainder))
+}
+
+/// Lenient entry point: like [`parse_and_remainder`] but discarding the
+/// remainder — trailing non-date input is ignored.
+pub fn parse_date_string(s: &str, now: &Zoned, dialect: Dialect) -> DateResult<Zoned> {
+    parse_and_remainder(s, now, dialect).map(|(date_time, _)| date_time)
+}
+
+/// Strict entry point: like [`parse_date_string`] but errors if any
+/// non-whitespace input remains after the date expression.
+pub fn parse_strict(s: &str, now: &Zoned, dialect: Dialect) -> DateResult<Zoned> {
+    let (date_time, remainder) = parse_and_remainder(s, now, dialect)?;
+    if remainder.trim().is_empty() {
+        Ok(date_time)
+    } else {
+        date_result("trailing characters after date expression")
+    }
 }
 
 pub fn parse_duration(s: &str) -> DateResult<Interval> {
@@ -499,6 +533,46 @@ mod tests {
         // they parse as last/next Monday (chrono-english parity).
         expect("last month", utc(2024, 3, 11, 0, 0, 0, NOON));
         expect("next month", utc(2024, 3, 25, 0, 0, 0, NOON));
+    }
+
+    #[test]
+    fn lenient_vs_strict() {
+        // Lenient (chrono-english parity): trailing words after a bare
+        // am/pm time are dropped.
+        expect("10pm meeting", utc(2024, 3, 14, 22, 0, 0, NOON));
+
+        // parse_and_remainder reports the leftover input, chrono-style.
+        let (zdt, rest) = parse_and_remainder("10pm meeting", &base(), Dialect::Uk).unwrap();
+        assert_eq!(zdt.timestamp(), utc(2024, 3, 14, 22, 0, 0, NOON));
+        assert_eq!(rest, " meeting");
+        let (zdt, rest) = parse_and_remainder("2 days 15:00", &base(), Dialect::Uk).unwrap();
+        assert_eq!(zdt.timestamp(), utc(2024, 3, 16, 15, 0, 0, NOON));
+        assert_eq!(rest, "");
+        let (_, rest) = parse_and_remainder("10pm  ", &base(), Dialect::Uk).unwrap();
+        assert_eq!(rest, "  "); // trailing whitespace stays in the remainder
+        let (_, rest) = parse_and_remainder("next friday eod", &base(), Dialect::Uk).unwrap();
+        assert_eq!(rest, "");
+
+        // Strict: any trailing non-whitespace input is an error.
+        assert_eq!(
+            parse_strict("10pm meeting", &base(), Dialect::Uk)
+                .unwrap_err()
+                .to_string(),
+            "trailing characters after date expression"
+        );
+        // ...but whitespace-only trailing is fine, and complete expressions
+        // pass across all the grammar's shapes.
+        assert!(parse_strict("10pm ", &base(), Dialect::Uk).is_ok());
+        assert!(parse_strict("10pm", &base(), Dialect::Uk).is_ok());
+        assert!(parse_strict("2 days 15:00", &base(), Dialect::Uk).is_ok());
+        assert!(parse_strict("2024-03-15 08:20:30 +02:00", &base(), Dialect::Uk).is_ok());
+        assert!(parse_strict("next friday eod", &base(), Dialect::Uk).is_ok());
+        assert!(parse_strict("3 days ago", &base(), Dialect::Uk).is_ok());
+        assert!(parse_strict("eod", &base(), Dialect::Uk).is_ok());
+        assert!(parse_strict("April 1 8.30pm", &base(), Dialect::Uk).is_ok());
+        // an offset that the lenient parser would silently drop is trailing
+        // input to the strict parser
+        assert!(parse_strict("8pm +02:00", &base(), Dialect::Uk).is_err());
     }
 
     #[test]

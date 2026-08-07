@@ -8,6 +8,9 @@ edition = "2021"
 repository = "https://github.com/Squirreljetpack/feeling"
 homepage = "https://github.com/Squirreljetpack/feeling"
 
+[workspace.dependencies]
+jiff = "0.2"
+
 [package]
 name = "feeling"
 version.workspace = true
@@ -34,10 +37,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 
 # Date/time
-chrono = { version = "0.4", features = ["serde"] }
-chrono-english = "0.1"
 humantime = "2"
-jiff = "0.2"
+jiff = { workspace = true }
+jiff-english = { path = "crates/jiff-english", features = ["serde"] }
 
 # Paths
 dirs = "6"
@@ -77,6 +79,11 @@ tempfile = "3"
 cliclack = "0.5"
 ratatui = "0.30"
 mimalloc = "0.1"
+
+[dev-dependencies]
+# Integration tests still compute expected dates with chrono; the library
+# itself only uses jiff (+ jiff-english).
+chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 default = ["download-binaries"]

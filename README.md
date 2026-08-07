@@ -122,4 +122,5 @@ $env:ORT_DYLIB_PATH = "C:\path\to\onnxruntime.dll"
 
 ## See also
 
-Inspired by <https://github.com/qiz-li/feeling>
+- https://github.com/qiz-li/feeling
+- https://docs.rs/jiff/latest/jiff/

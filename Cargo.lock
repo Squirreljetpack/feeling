@@ -317,16 +317,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono-english"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38a56613410c9249673f4676ab8d27c70949814accb27b6b738009e2ff1034a1"
-dependencies = [
- "chrono",
- "scanlex",
-]
-
-[[package]]
 name = "cli_boilerplate_automation"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -972,7 +962,6 @@ dependencies = [
  "anyhow",
  "atty",
  "chrono",
- "chrono-english",
  "cli_boilerplate_automation",
  "cliclack",
  "crokey",
@@ -982,6 +971,7 @@ dependencies = [
  "futures",
  "humantime",
  "jiff",
+ "jiff-english",
  "log",
  "mimalloc",
  "oklab",
@@ -1564,6 +1554,7 @@ version = "0.2.3"
 dependencies = [
  "jiff",
  "scanlex",
+ "serde",
 ]
 
 [[package]]

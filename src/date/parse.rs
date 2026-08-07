@@ -4,8 +4,7 @@
 //! need to touch chrono or jiff types.
 
 use anyhow::{Context, Result};
-use chrono_english::{parse_date_string, Dialect};
-use jiff::Timestamp;
+use jiff_english::{parse_strict, Dialect};
 
 use crate::date::Epoch;
 
@@ -21,24 +20,23 @@ use crate::date::Epoch;
 /// March 5) — ISO dates and relative phrases ("yesterday", "3 days ago")
 /// parse identically under both.
 ///
-/// Natural-language parsing stays on chrono-english; the result is bridged
-/// to jiff (`DateTime<Utc>` → `SystemTime` → `jiff::Timestamp`) so the rest
-/// of the crate never touches chrono types.
+/// Natural-language parsing is delegated to `jiff-english` (a port of
+/// chrono-english on jiff); `parse_strict` resolves into a `jiff::Zoned` in
+/// the local time zone and we take the epoch seconds directly. Strict means
+/// the whole field must be one complete date expression — `"10pm meeting"`
+/// is an error, not `10pm` (the lenient `parse_date_string` is still
+/// available in jiff-english for callers that want chrono-english's
+/// trailing-word tolerance). The parser also accepts the `eod` / `end` /
+/// `start` time specifiers and the `hence` / `later` interval markers (see
+/// `docs/date.md`).
 pub fn parse_datetime(s: &str, dialect: Dialect) -> Result<Epoch> {
-    let dt = parse_date_string(s, chrono::Local::now(), dialect)
+    let zdt = parse_strict(s, &jiff::Zoned::now(), dialect)
         .with_context(|| format!("Failed to parse datetime: '{}'", s))?;
-
-    // Chrono -> Jiff
-    let utc: chrono::DateTime<chrono::Utc> = dt.with_timezone(&chrono::Utc);
-    let sys_time: std::time::SystemTime = utc.into();
-    let jiff_ts: Timestamp = Timestamp::try_from(sys_time)
-        .with_context(|| format!("Failed to convert datetime: '{}'", s))?;
-
-    Ok(jiff_ts.as_second())
+    Ok(zdt.timestamp().as_second())
 }
 
 /// Parse a date string and align to the start of that day (for the
-/// `feeling @<date>` today view). Defers to [`parse_datetime`] for now.
+/// `feeling @<date>` today view).
 pub fn parse_date(s: &str, dialect: Dialect) -> Result<Epoch> {
     Ok(crate::date::day_start(parse_datetime(s, dialect)?))
 }
@@ -80,6 +78,30 @@ mod tests {
         assert!(parse_datetime("tomorrow 9am", crate::date::DATE_DIALECT).is_ok());
         assert!(parse_datetime("3 days ago", crate::date::DATE_DIALECT).is_ok());
         assert!(parse_datetime("invalid date text 12345", crate::date::DATE_DIALECT).is_err());
+    }
+
+    #[test]
+    fn test_parse_datetime_jiff_english_extensions() {
+        // eod/end/start and hence/later are available everywhere a
+        // @<time>/@<date> argument is accepted.
+        assert!(parse_datetime("eod", crate::date::DATE_DIALECT).is_ok());
+        assert!(parse_datetime("tomorrow end", crate::date::DATE_DIALECT).is_ok());
+        assert!(parse_datetime("next friday start", crate::date::DATE_DIALECT).is_ok());
+        assert!(parse_datetime("3 days hence", crate::date::DATE_DIALECT).is_ok());
+        assert!(parse_datetime("2 hours later", crate::date::DATE_DIALECT).is_ok());
+        // ...and the 12-hour clock is normalized: 12am is midnight, 12pm noon.
+        let midnight = parse_datetime("12am", crate::date::DATE_DIALECT).unwrap();
+        assert_eq!(midnight, crate::date::day_start(midnight));
+    }
+
+    #[test]
+    fn test_parse_datetime_is_strict() {
+        // Trailing words after a bare am/pm time would parse leniently
+        // (chrono-english drops them), but the main crate is strict: the
+        // whole field must be one date expression.
+        assert!(parse_datetime("10pm meeting", crate::date::DATE_DIALECT).is_err());
+        assert!(parse_datetime("10pm", crate::date::DATE_DIALECT).is_ok());
+        assert!(parse_datetime("10pm ", crate::date::DATE_DIALECT).is_ok());
     }
 
     #[test]
