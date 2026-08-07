@@ -593,7 +593,7 @@ async fn display_recurring_tracker<W: Write>(
             let count = completion.count;
             let idx = ((ctime - start_epoch) / interval) as usize;
             if idx < num_intervals {
-                interval_sums[idx] += count;
+                interval_sums[idx] += i64::from(count);
             }
         }
 
@@ -629,7 +629,7 @@ async fn display_recurring_tracker<W: Write>(
 
         for completion in &completions {
             let count = completion.count;
-            let (ch, color) = completion_badge(config, count, target_count);
+            let (ch, color) = completion_badge(config, i64::from(count), target_count);
             if color == CtColor::Reset {
                 write!(out, "{}", ch)?;
             } else {

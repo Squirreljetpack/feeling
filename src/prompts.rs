@@ -137,6 +137,18 @@ pub fn prompt_parent_id() -> Result<Option<i64>> {
     Ok(raw.trim().parse::<i64>().ok())
 }
 
+/// Confirm attaching the new task under `name` as its parent. The parent id
+/// was typed explicitly, so the default is yes — this is a double-check
+/// that the id names the intended task.
+pub fn prompt_attach_parent(name: &str) -> Result<bool> {
+    use cliclack::confirm;
+
+    confirm(format!("Attach to task: {}?", name))
+        .initial_value(true)
+        .interact()
+        .map_err(|e| anyhow::anyhow!("Prompt cancelled: {}", e))
+}
+
 /// Prompt for a task name (required, no tabs, trimmed). The duplicate-name
 /// check against the database is the caller's responsibility (it needs the
 /// pool); `prefill` seeds the input for `feeling ! @ <name>`.

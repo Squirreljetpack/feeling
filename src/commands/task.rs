@@ -8,16 +8,22 @@ use crate::db::TaskObject;
 use crate::editor::open_editor_for_body;
 use crate::types::{Task, TaskKind};
 
+/// Resolve a `-<parent_id>` short id to its stable row id plus the parent's
+/// name; errors when no task holds that short id (a completed oneshot holds
+/// `NULL` and is never resolvable).
+async fn resolve_parent_named(pool: &SqlitePool, short_id: i64) -> Result<(i64, String)> {
+    crate::db::fetch_task_id_by_short_id(pool, short_id)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!("No task with short id {short_id} exists (cannot attach it as parent)")
+        })
+}
+
 /// Resolve a `-<parent_id>` short id to a stable row id; errors when no
 /// task holds that short id (a completed oneshot holds `NULL` and is
 /// never resolvable).
 async fn resolve_parent(pool: &SqlitePool, short_id: i64) -> Result<Option<i64>> {
-    match crate::db::fetch_task_id_by_short_id(pool, short_id).await? {
-        Some(id) => Ok(Some(id)),
-        None => {
-            anyhow::bail!("No task with short id {short_id} exists (cannot attach it as parent)")
-        }
-    }
+    Ok(Some(resolve_parent_named(pool, short_id).await?.0))
 }
 
 pub(super) async fn create_task_command(
@@ -53,13 +59,23 @@ pub(super) async fn create_task_command(
                 // (Optional) Parent id: prompted only when no `-<parent_id>`
                 // flag was given; blank input means no parent. The short id
                 // is resolved to a row id here, so an unknown id fails
-                // before anything is created.
+                // before anything is created. Before accepting a typed id
+                // the parent's task name is confirmed — a "no" re-prompts
+                // for the parent id.
                 let parent_id = if let Some(short_id) = parent {
                     resolve_parent(pool, short_id).await?
                 } else {
-                    match crate::prompts::prompt_parent_id()? {
-                        Some(short_id) => resolve_parent(pool, short_id).await?,
-                        None => None,
+                    loop {
+                        match crate::prompts::prompt_parent_id()? {
+                            None => break None,
+                            Some(short_id) => {
+                                let (id, name) = resolve_parent_named(pool, short_id).await?;
+                                if crate::prompts::prompt_attach_parent(&name)? {
+                                    break Some(id);
+                                }
+                                // Declined — loop and re-prompt the id.
+                            }
+                        }
                     }
                 };
 

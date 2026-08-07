@@ -352,16 +352,21 @@ pub async fn fetch_task_short_id(pool: &SqlitePool, id: i64) -> Result<Option<i6
     Ok(short_id)
 }
 
-/// Resolve a user-facing `short_id` to a stable row id (task-tree parent
-/// lookup for `! -<parent_id>`). `None` when no task holds that short id
-/// — completed oneshot tasks hold `NULL`, so they are never resolvable.
-pub async fn fetch_task_id_by_short_id(pool: &SqlitePool, short_id: i64) -> Result<Option<i64>> {
-    let row = sqlx::query("SELECT id FROM todos WHERE short_id = ?")
+/// Resolve a user-facing `short_id` to the stable row id plus the name of
+/// the task holding it (task-tree parent lookup for `! -<parent_id>`, where
+/// the name backs the attach confirmation prompt). `None` when no task holds
+/// that short id — completed oneshot tasks hold `NULL`, so they are never
+/// resolvable.
+pub async fn fetch_task_id_by_short_id(
+    pool: &SqlitePool,
+    short_id: i64,
+) -> Result<Option<(i64, String)>> {
+    let row = sqlx::query("SELECT id, name FROM todos WHERE short_id = ?")
         .bind(short_id)
         .fetch_optional(pool)
         .await
         .context("Failed to fetch task by short id")?;
-    Ok(row.map(|r| r.get("id")))
+    Ok(row.map(|r| (r.get("id"), r.get("name"))))
 }
 
 /// Whether a task with the given name already exists. `task_type` scopes

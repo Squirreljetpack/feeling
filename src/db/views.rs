@@ -234,7 +234,7 @@ pub async fn fetch_recurring_windows_for_period(
         let completions = fetch_completions_between(pool, task.id, wins[0].0, span_end).await?;
         let k_first = (wins[0].0 - st) / interval;
         for (wi, (w_start, w_end)) in wins.iter().enumerate() {
-            let mut count = 0i64;
+            let mut count = 0i32;
             let mut last_time: Option<i64> = None;
             for c in &completions {
                 if (c.time - st).div_euclid(interval) == k_first + wi as i64 {
@@ -243,7 +243,7 @@ pub async fn fetch_recurring_windows_for_period(
                 }
             }
             let mut task = task.clone();
-            task.completions = Some(count as i32);
+            task.completions = Some(count);
             task.last_time = last_time;
             // The window row's `end_time` carries the task's unscoped last
             // completion (the today view doesn't use the expiry; the window

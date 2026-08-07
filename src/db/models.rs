@@ -197,11 +197,13 @@ pub struct RecurringTaskMeta {
     pub target_count: i32,
 }
 
-/// A completion event (time, count) for a task.
+/// A completion event (time, count) for a task. `count` mirrors the i32
+/// type of the `todo_completions.count` column (every writer binds an i32
+/// value — see `update_task` and `set_scheduled_completion`).
 #[derive(Debug, Clone)]
 pub struct CompletionRow {
     pub time: i64,
-    pub count: i64,
+    pub count: i32,
 }
 
 /// A task deleted by `prune_tasks`, with the reason it was pruned. The

@@ -8,7 +8,7 @@ pub(super) async fn update_task_command(
     pool: &SqlitePool,
     opts: &CliOpts,
     target: UpdateTarget,
-    count: Option<i64>,
+    count: Option<i32>,
 ) -> Result<()> {
     match target {
         UpdateTarget::OneShot(short_id) => {
@@ -64,9 +64,9 @@ async fn update_oneshot(
     pool: &SqlitePool,
     opts: &CliOpts,
     info: &TaskUpdateInfo,
-    count: Option<i64>,
+    count: Option<i32>,
 ) -> Result<()> {
-    let increment = count.unwrap_or(1) as i32;
+    let increment = count.unwrap_or(1);
     let new_completions = crate::db::update_task(pool, info.id, increment).await?;
     let is_done = crate::task::is_task_done(info.target_count, Some(new_completions));
 

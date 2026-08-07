@@ -19,6 +19,8 @@ Don't update help.txt
 
 use macros from cba crate (_ebog, ebog!) for logging **when outside the TUI loop**, for calls made while the tui is running, use log (i.e. log::error) for logging.
 
+Day/horizon/interval computation intentionally fixed second arithmetic, oos for now.
+
 ## 1. Crate layout
 
 The crate is a **library + thin binary** so that integration tests can import it
@@ -104,7 +106,7 @@ src/
 
 ### main.rs flow
 
-```text
+````text
 bog::init_bogger
 cmd     = parse_args()                                          // feeling::cli
 init_logger([q, 1+v], log_path())                               // q/v from cli.opts
@@ -665,7 +667,7 @@ saliency-gated (`Seff = 1 + P·(S − 1)` with P =
 ```text
 L = L_neutral + Seff·(L_blended − L_neutral)
 a = Seff·a_blended,  b = Seff·b_blended
-```
+````
 
 `None` maps to the neutral baseline (`(L=baseline_oklab_l, a=0, b=0)`).
 

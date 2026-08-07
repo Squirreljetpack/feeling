@@ -48,7 +48,7 @@ pub enum Command {
     Task(Task),
     Update {
         target: UpdateTarget,
-        count: Option<i64>,
+        count: Option<i32>,
     },
     Embed,
     Score {

@@ -29,12 +29,12 @@ pub(crate) fn parse_dash_command(args: &[String]) -> anyhow::Result<Command> {
     // Otherwise the query form: `- <words…> [count]`, where a trailing
     // numeric word is the count and the rest is the word query.
     let mut words: Vec<String> = args.to_vec();
-    let count = if words.len() > 1 && words.last().is_some_and(|w| w.parse::<i64>().is_ok()) {
+    let count = if words.len() > 1 && words.last().is_some_and(|w| w.parse::<i32>().is_ok()) {
         Some(
             words
                 .pop()
                 .expect("len > 1 checked above")
-                .parse::<i64>()
+                .parse::<i32>()
                 .context("Count must be a number")?,
         )
     } else {
@@ -54,9 +54,9 @@ pub(crate) fn parse_dash_command(args: &[String]) -> anyhow::Result<Command> {
 }
 
 /// Parse an optional trailing count for the id update form.
-fn parse_count(arg: Option<&String>) -> anyhow::Result<Option<i64>> {
+fn parse_count(arg: Option<&String>) -> anyhow::Result<Option<i32>> {
     match arg {
-        Some(s) => Ok(Some(s.parse::<i64>().context("Count must be a number")?)),
+        Some(s) => Ok(Some(s.parse::<i32>().context("Count must be a number")?)),
         None => Ok(None),
     }
 }

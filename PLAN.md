@@ -55,12 +55,7 @@ pre-existing dead-code warning for `IoStream::Stdout`.
 - `db/tasks.rs::update_task` still performs completion mutation and short-ID
   synchronization without one transaction. Concurrent CLI processes could
   race; transactional mutation should be a follow-up.
-- Several color-producing APIs assume `Config::moods.color_axes` was initialized
-  and use `unwrap()`. Top-level command dispatch establishes that invariant, but
-  direct library callers can still panic instead of receiving an error.
-- Date/horizon logic still uses fixed 86,400-second arithmetic in places such as
-  `types::TodayHorizon` and today day-label handling. Calendar-day arithmetic
-  should be added for DST-safe behavior.
+
 - Duration parsing/formatting still uses unchecked `u64`/`i64` conversions for
   extreme or negative values. Add range validation if those inputs need robust
   error handling.
