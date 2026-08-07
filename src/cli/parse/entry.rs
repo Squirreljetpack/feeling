@@ -43,8 +43,9 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
         match arg.as_str() {
             s if s.starts_with('-') && s != "-" => {
                 // Tracker entry: -type value (e.g., -sleep 8, -accomplishment "fixed 2 bugs").
-                // A trailing -type with no value parses as a valueless tracker
-                // (Null trackers — `-sleep` with no value); the handler
+                // A -type followed by another dash token (or by the end of
+                // the line) parses as a valueless tracker (Null trackers —
+                // `-sleep -xyz -withvalue abc` chains work); the handler
                 // rejects empty values for text/number/float trackers. A
                 // purely numeric -<id> is a task short-id link: a single
                 // token (resolved to a row id at write time).
@@ -61,7 +62,7 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
                         anyhow::anyhow!("Invalid task short id '{}'", tracker_type)
                     })?);
                     i += 1;
-                } else if i + 1 < args.len() {
+                } else if i + 1 < args.len() && !args[i + 1].starts_with('-') {
                     if !feeling_parts.is_empty() {
                         after_mood_tracker = true;
                     }

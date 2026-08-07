@@ -1041,6 +1041,71 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_tracker_valueless_chains() {
+        // `good -sleep -xyz -withvalue abc -null3`: valueless trackers may
+        // be chained, and a dash token is never consumed as the previous
+        // tracker's value.
+        let cmd = parse_from(args(&[
+            "good",
+            "-sleep",
+            "-xyz",
+            "-withvalue",
+            "abc",
+            "-null3",
+        ]))
+        .unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(
+                    entry.trackers,
+                    vec![
+                        ("sleep".to_string(), String::new()),
+                        ("xyz".to_string(), String::new()),
+                        ("withvalue".to_string(), "abc".to_string()),
+                        ("null3".to_string(), String::new()),
+                    ]
+                );
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // A valueless tracker before the mood followed by a bare word still
+        // consumes it as the value (config-free parser).
+        let cmd = parse_from(args(&["-sleep", "-xyz", "good"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "");
+                assert_eq!(
+                    entry.trackers,
+                    vec![
+                        ("sleep".to_string(), String::new()),
+                        ("xyz".to_string(), "good".to_string()),
+                    ]
+                );
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // Links interleave with valueless trackers after the mood.
+        let cmd = parse_from(args(&["good", "-sleep", "-1", "-xyz"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.task_links, vec![1]);
+                assert_eq!(
+                    entry.trackers,
+                    vec![
+                        ("sleep".to_string(), String::new()),
+                        ("xyz".to_string(), String::new()),
+                    ]
+                );
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
     fn test_parse_tracker_in_final_position() {
         // feeling <mood> [-tracker value] — trackers after the mood
         let cmd = parse_from(args(&["good", "-sleep", "8"])).unwrap();

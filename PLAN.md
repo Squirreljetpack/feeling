@@ -126,10 +126,13 @@ checkpoint commit (`cargo fmt -- --check`, `cargo check`, `cargo test`,
 
 ## Known interpretation risks (see NOTES.md)
 
-1. Null time-of-day coloring: the TODO example ("1pm is red") conflicts
-   with its own midpoint formula; the formula + "measured from span end"
-   reading is implemented and documented.
-2. Valueless `-<name>` parses only at end-of-line (config-free parser);
-   `-sleep good` for a Null tracker consumes `good` as the value.
+1. Null time-of-day coloring: user clarified 2026-08-07 — "1am is red";
+   range `[min, max]` circular with binning inside, first/last by circular
+   proximity outside (closer to min → last/blue, closer to max → first/red).
+   Implemented in `badge::null_tracker_color`.
+2. Valueless `-<name>` parses when followed by another dash token or EOL
+   (config-free parser); chained valueless trackers work
+   (`good -sleep -xyz -withvalue abc -null3`); `-sleep good` still consumes
+   `good` as the value.
 3. `interval_secs` column name retained (now packed DbSpan); existing DBs
    must be deleted (project precedent).

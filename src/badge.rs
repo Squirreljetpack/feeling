@@ -111,19 +111,23 @@ pub(crate) fn tracker_color(
 /// Color for a Null tracker entry.
 ///
 /// With an interval and **both** min/max set, the entry is a time marker:
-/// min/max are seconds-from-interval-start/end offsets that split the
-/// interval into a "red" zone (everything except the tail just before `min`)
-/// and a "blue" zone. Per the TODO spec (see NOTES.md for the full
-/// interpretation of the ambiguous example):
+/// min/max are seconds-from-interval-start offsets (times of day within the
+/// interval) that define a circular color range traversed **forward** from
+/// `min`, wrapping the interval boundary when `max < min`:
 ///
-/// - `max` is measured from the span end: effective `max' = interval_end - max`;
-/// - cycle-back point `mid = (min + max') / 2`;
-/// - blue (last palette color) for times in `[mid, min)` circular;
-/// - red (first palette color) everywhere else.
+/// - inside the range `[min, max)` circular — e.g. 23:00→02:00 for a
+///   sleep tracker — the color is **binned** by position: `min` maps to the
+///   last palette color (blue), `max` to the first (red), so the later the
+///   entry the redder;
+/// - outside the range, the first/last palette color is picked by which
+///   range endpoint the entry is **circularly closer** to — closer to `min`
+///   → last color ("before 23:00 is blue"), closer to `max` → first color.
+///   This is the same split as the TODO's cycle-back midpoint of the
+///   outside zone.
 ///
-/// So a sleep tracker with `min = 23:00`, `max = 2h` on a midnight-anchored
-/// day colors 23:00→22:30 red and 22:30→23:00 blue: 1pm is red, and only the
-/// half-hour before 23:00 is blue.
+/// So a sleep tracker with `min = 23:00`, `max = 02:00` on a
+/// midnight-anchored day colors 23:00→02:00 (e.g. 1am) red-ish, 22:45 blue,
+/// and 03:00 red (closer to 02:00).
 ///
 /// With a single bound (or none — count mode), the score is binned like any
 /// numeric tracker. Without an interval the tracker is unsupported → Reset.
@@ -148,17 +152,23 @@ pub(crate) fn null_tracker_color(
     if len <= 0.0 {
         return tracker_color(colors, score, tracker.min, tracker.max);
     }
-    let max_prime = len - max;
-    let mid = (min.min(max_prime) + min.max(max_prime)) / 2.0;
-    // Circular position of `time` within the interval, measured from the
-    // interval start.
+    // Both bounds are seconds from the interval start; the range is
+    // traversed forward from min, wrapping when max < min.
     let pos = (time - interval_start) as f64;
-    // In the blue zone `[mid, min)` circular?
-    let blue = ((pos - mid).rem_euclid(len)) < ((min - mid).rem_euclid(len));
-    if blue {
-        *colors.last().unwrap_or(&CtColor::Reset)
-    } else {
+    let zone_len = (max - min).rem_euclid(len);
+    let in_zone = ((pos - min).rem_euclid(len)) < zone_len;
+    if in_zone {
+        // Binning: min → last color, max → first color (continuous with the
+        // outside proximity rule).
+        let p = ((pos - min).rem_euclid(len)) / zone_len;
+        let idx = ((1.0 - p) * (colors.len() as f64 - 1.0)).round() as usize;
+        colors[idx.min(colors.len() - 1)]
+    } else if ((pos - max).rem_euclid(len)) < ((min - pos).rem_euclid(len)) {
+        // Outside, circularly closer to max (the range's red end).
         *colors.first().unwrap_or(&CtColor::Reset)
+    } else {
+        // Outside, circularly closer to min (the range's blue end).
+        *colors.last().unwrap_or(&CtColor::Reset)
     }
 }
 
@@ -543,25 +553,32 @@ mod tests {
         }
     }
 
-    /// Null time-marker coloring: with min=23:00 and max=2h before the span
-    /// end, the blue zone is `[mid, min)` = 22:30→23:00 and everything else
-    /// is red (1pm is red; only the half-hour before 23:00 is blue).
+    /// Null time-marker coloring, corrected spec (user clarification):
+    /// the range is `[min, max]` circular — both offsets from the interval
+    /// start — traversed forward (23:00→02:00 for the fixture). Inside the
+    /// range: binning (min → last color, max → first). Outside: first/last
+    /// by circular proximity to the nearer range endpoint (closer to min →
+    /// last/blue — "before 23:00 is blue"; closer to max → first/red).
     #[test]
     fn test_null_tracker_color_time_of_day() {
         let colors = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
         let tracker = day_interval_tracker();
         // Midnight-anchored interval: t is seconds from the interval start.
         let color_at = |secs: i64| null_tracker_color(&colors, &tracker, secs, 0.0);
-        // 13:00 → red zone.
-        assert_eq!(color_at(13 * 3600), CtColor::DarkRed);
-        // 22:15 → red (the formula's split leaves [22:00, 22:30) red).
-        assert_eq!(color_at(22 * 3600 + 15 * 60), CtColor::DarkRed);
-        // 22:45 → blue.
+        // Inside the range, binned: 23:30 is 0.167 in → last color; 01:00 is
+        // 2/3 in → middle; 02:00 (range end) → first (red).
+        assert_eq!(color_at(23 * 3600 + 30 * 60), CtColor::DarkGreen);
+        assert_eq!(color_at(3600), CtColor::DarkYellow); // 01:00
+        assert_eq!(color_at(2 * 3600), CtColor::DarkRed); // 02:00
+                                                          // Outside, closer to min (23:00) → last color ("before 23:00 is
+                                                          // blue"): 22:45, 22:15, and 13:00 are all closer to 23:00 than 02:00.
         assert_eq!(color_at(22 * 3600 + 45 * 60), CtColor::DarkGreen);
-        // 23:30 → red (the wrap segment).
-        assert_eq!(color_at(23 * 3600 + 30 * 60), CtColor::DarkRed);
-        // 01:00 → red.
-        assert_eq!(color_at(3600), CtColor::DarkRed);
+        assert_eq!(color_at(22 * 3600 + 15 * 60), CtColor::DarkGreen);
+        assert_eq!(color_at(13 * 3600), CtColor::DarkGreen);
+        // Outside, closer to max (02:00) → first color (red): 03:00 and
+        // 12:00 (12:00 is 10h from 02:00 vs 11h from 23:00).
+        assert_eq!(color_at(3 * 3600), CtColor::DarkRed);
+        assert_eq!(color_at(12 * 3600), CtColor::DarkRed);
     }
 
     /// Null trackers without an interval (or with a single bound) fall back

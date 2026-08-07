@@ -74,12 +74,14 @@ pub struct TrackerSetting {
     pub kind: TrackerKind,
     /// Upper bound for the tracker's values, used to pick the entry's color
     /// in tracker grids (`number`/`float` trackers only; for `null` trackers
-    /// with an interval it is a seconds-from-span-end time offset — see
+    /// with an interval both bounds are seconds-from-interval-start time
+    /// offsets defining the circular color range — see
     /// `badge::null_tracker_color`).
     pub max: Option<f64>,
     /// Lower bound for the tracker's values, used to pick the entry's color
     /// in tracker grids (`number`/`float` trackers only; for `null` trackers
-    /// with an interval it is a seconds-from-interval-start time offset).
+    /// with an interval both bounds are seconds-from-interval-start time
+    /// offsets defining the circular color range).
     pub min: Option<f64>,
     /// Override color palette for this tracker's binning in grid/today views.
     /// When `Some`, takes precedence over `config.tasks.colors`.

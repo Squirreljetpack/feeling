@@ -335,9 +335,12 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   keep one entry per interval slot — re-logging the same tracker inside the
   same slot replaces the previous entry; `number` trackers and interval-less
   trackers are plain inserts that accumulate (the views sum per-slot scores).
-  `null` trackers (valueless `-<name>` timestamps) with an interval either
-  move the slot's entry to now (both min/max set — color by time of day) or
-  increment its score (count mode); without an interval they are unsupported.
+  `null` trackers (valueless `-<name>` timestamps, chainable:
+  `-sleep -prouds -water 5`) with an interval either move the slot's entry
+  to now (both min/max set — color by time of day: circular range `[min,
+  max]` from the interval start, binned inside, first/last palette color by
+  circular proximity outside) or increment its score (count mode); without
+  an interval they are unsupported.
   `-<short id>` tokens link the mood entry to a task in `task_moods`. When the mood is
   non-empty it is embedded **before** the transaction opens, and its emotional
   saliency is computed (`color::predict_saliency`) and stored in `feeling.score`

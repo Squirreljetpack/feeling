@@ -4,31 +4,34 @@ Progress log, decisions, and uncertainties. Updated as stages complete.
 
 ## Design decisions & interpretation risks
 
-### Null tracker time-of-day coloring (Stage 2) — AMBIGUOUS SPEC
+### Null tracker time-of-day coloring (Stage 2) — CORRECTED BY USER (2026-08-07)
 
-TODO.md: "min/max represent epoch seconds from interval start/end (endpoints
-are span end)... if [r, g, b] then 1pm is red, before 23:00 is blue. The
-cycle back point ... is the midpoint of (config.min.min(config.max),
-config.max.max(config.max))."
+My first implementation read the TODO example "1pm is red" literally and
+derived an inconsistent spec (max measured from the span end, blue zone
+`[mid, min)`). The user clarified:
 
-The worked example is internally inconsistent (for min=23:00, max=02:00 the
-"1pm is red" example and the midpoint formula cannot both hold — tried every
-reading). Implemented interpretation, the only one satisfying both example
-sentences *and* the midpoint formula:
+> I meant **1am** is red. Within the range 23:00-02:00 circular, we do
+> binning. Outside that range, if we pick first or last depends on which one
+> we are closer to, circular.
 
-- `max` is measured from the **span end**: effective `max' = span - max`
-  ("24:00 - 2:00" = 22:00 in the example).
-- Red zone = circular `[min, max')` (23:00 → 22:00 in the example, wrapping
-  the interval boundary); blue zone = `[max', min)`.
-- Cycle-back point = `(min + max') / 2`; the blue zone is split at it:
-  `[mid, min)` → blue (last palette color), everything else (`[max', mid)`
-  plus the wrap segment) → red (first palette color). Palette middle colors
-  are unused by this mode.
-- Consequences for a sleep tracker (min=23:00, max=2h): 1pm → red, 22:45 →
-  blue, 22:15 → red (oddity of the formula), 00:30 → red.
+Final spec (implemented in `badge::null_tracker_color`):
 
-If the user intended something else, it's one isolated function to change
-(`null_tracker_color`).
+- `min`/`max` are **seconds from the interval start** (times of day), not
+  from the span end.
+- The color range is `[min, max]` circular, traversed **forward** from min
+  (wrapping the interval boundary when `max < min`).
+- Inside the range: **binning** by position — `min` → last palette color,
+  `max` → first color (continuous with the outside rule; the later the
+  entry, the redder).
+- Outside the range: **first/last by circular proximity** to the nearer
+  endpoint — closer to `min` → last color ("before 23:00 is blue"), closer
+  to `max` → first color. This is exactly the TODO's cycle-back midpoint
+  split of the outside zone (both the `(a+b)/2` and the "right side"
+  formulas reduce to the circular midpoint).
+- Sleep example (min=23:00, max=02:00): 01:00 → in range (binned yellow),
+  22:45 → blue, 03:00 → red (closer to 02:00), 13:00 → blue (closer to
+  23:00; "before 23:00 is blue" — this is why the example said 1am, not
+  1pm), 12:00 → red (closer to 02:00).
 
 ### Valueless `-<name>` parsing (Stage 2) — parser is config-free
 
