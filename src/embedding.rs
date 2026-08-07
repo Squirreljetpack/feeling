@@ -22,10 +22,7 @@ use tokenizers::Tokenizer;
 /// Dimensionality of nomic-embed-text-v1.5 sentence embeddings.
 pub const EMBED_DIM: usize = 768;
 /// Tokenizer truncation cap. The model's native context length is 2048; inputs
-/// longer than this are truncated before tokenization. (Unlike the old
-/// burn-onnx build, the ONNX graph keeps dynamic input shapes — ort runs the
-/// actual token count, so short moods do not pay a fixed 512-token forward
-/// pass.)
+/// longer than this are truncated before tokenization.
 const MAX_SEQ_LEN: usize = 2048;
 
 static EMBED_ONNX: &[u8] = include_bytes!(concat!(

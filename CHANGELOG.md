@@ -1,3 +1,9 @@
+## [0.2.2] - 2026-08-07
+
+### 🚀 Features
+
+- Show name of attached parent during interactive task creation
+
 ## [0.2.1] - 2026-08-06
 
 - Release pipeline updates

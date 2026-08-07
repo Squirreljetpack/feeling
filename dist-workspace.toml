@@ -1,5 +1,5 @@
 [workspace]
-members = ["cargo:.", "cargo:crates/feeling-dynamic"]
+members = ["cargo:."]
 
 # Config for 'dist'
 [dist]

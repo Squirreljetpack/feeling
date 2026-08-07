@@ -80,6 +80,28 @@ npm install -g @squirreljetpack/feeling
 
 Run `feeling :config` to open the configuration file in your `$VISUAL` or `$EDITOR`. If no configuration exists, default settings will be written to `~/.config/feeling/config.toml`.
 
+## FAQ
+
+### What is the difference between `feeling` and `feeling-dynamic`?
+
+- **`feeling`** (default): Statically links ONNX Runtime (`ort`) at build time. It is a self-contained binary with no external library dependencies.
+- **`feeling-dynamic`**: Dynamically loads the ONNX Runtime shared library (`libonnxruntime`) at runtime. Use this variant if you prefer linking against a system-installed or custom-built ONNX Runtime.
+
+### How do I specify the library path for `feeling-dynamic`?
+
+Set the `ORT_DYLIB_PATH` environment variable to point to your `libonnxruntime` shared library:
+
+```sh
+# macOS
+export ORT_DYLIB_PATH=/opt/homebrew/lib/libonnxruntime.dylib
+
+# Linux
+export ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
+
+# Windows (PowerShell)
+$env:ORT_DYLIB_PATH = "C:\path\to\onnxruntime.dll"
+```
+
 ## See also
 
 Inspired by <https://github.com/qiz-li/feeling>
