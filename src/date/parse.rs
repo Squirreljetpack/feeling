@@ -1,10 +1,11 @@
 //! Date and datetime string parsing.
 //!
 //! Returns [`crate::date::Epoch`] (Unix seconds) directly — callers never
-//! need to touch chrono types.
+//! need to touch chrono or jiff types.
 
 use anyhow::{Context, Result};
 use chrono_english::{parse_date_string, Dialect};
+use jiff::Timestamp;
 
 use crate::date::Epoch;
 
@@ -19,10 +20,21 @@ use crate::date::Epoch;
 /// matters for ambiguous slash forms like `3/5/2024` (UK: 5 March, US:
 /// March 5) — ISO dates and relative phrases ("yesterday", "3 days ago")
 /// parse identically under both.
+///
+/// Natural-language parsing stays on chrono-english; the result is bridged
+/// to jiff (`DateTime<Utc>` → `SystemTime` → `jiff::Timestamp`) so the rest
+/// of the crate never touches chrono types.
 pub fn parse_datetime(s: &str, dialect: Dialect) -> Result<Epoch> {
     let dt = parse_date_string(s, chrono::Local::now(), dialect)
         .with_context(|| format!("Failed to parse datetime: '{}'", s))?;
-    Ok(dt.timestamp())
+
+    // Chrono -> Jiff
+    let utc: chrono::DateTime<chrono::Utc> = dt.with_timezone(&chrono::Utc);
+    let sys_time: std::time::SystemTime = utc.into();
+    let jiff_ts: Timestamp = Timestamp::try_from(sys_time)
+        .with_context(|| format!("Failed to convert datetime: '{}'", s))?;
+
+    Ok(jiff_ts.as_second())
 }
 
 /// Parse a date string and align to the start of that day (for the

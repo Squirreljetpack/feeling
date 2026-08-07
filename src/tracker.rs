@@ -73,14 +73,17 @@ pub async fn write_tracker_grid<W: Write>(
                 (start, date::today_end())
             } else {
                 // Calendar week so far: from week_start through today.
-                let ws = date::week_start(gv.week_start);
+                let ws = date::week_start(gv.week_start.into());
                 (ws, date::today_end())
             }
         }
         TrackerPeriod::Month => {
             if gv.month_rolling {
                 // Rolling 4-week window ending today, aligned to week_start.
-                (date::rolling_month_start(gv.week_start), date::today_end())
+                (
+                    date::rolling_month_start(gv.week_start.into()),
+                    date::today_end(),
+                )
             } else {
                 // Month so far: from the month start through today.
                 (date::month_start(), date::today_end())
@@ -91,7 +94,10 @@ pub async fn write_tracker_grid<W: Write>(
                 // Calendar year aligned to week_start: start from the week_start on
                 // or before Jan 1, through today. The grid never opens with blank
                 // cells in the first column.
-                (date::aligned_year_start(gv.week_start), date::today_end())
+                (
+                    date::aligned_year_start(gv.week_start.into()),
+                    date::today_end(),
+                )
             } else {
                 // Calendar year (January 1 through today). First column may have
                 // blank rows if Jan 1 doesn't fall on week_start.
@@ -313,28 +319,26 @@ fn render_year_heatmap<W: Write>(
     start_epoch: i64,
     config: &Config,
 ) -> Result<()> {
-    use chrono::{Datelike, Duration, TimeZone, Weekday};
+    use jiff::civil::{Date, Weekday};
 
-    let week_start = config.grid.week_start;
-    let start_date = chrono::Local
-        .timestamp_opt(start_epoch, 0)
-        .earliest()
-        .map(|dt| dt.date_naive())
+    let week_start: Weekday = config.grid.week_start.into();
+    let start_date = crate::date::zoned_from_unix_secs(start_epoch)
+        .map(|z| z.date())
         .context("year heatmap: start_epoch is not a valid local date")?;
-    let today = chrono::Local::now().date_naive();
-    let jan1 = today.with_ordinal(1).unwrap(); // Jan 1 of current year
+    let today = jiff::Zoned::now().date();
+    let jan1 = Date::new(today.year(), 1, 1).context("year heatmap: failed to build Jan 1")?; // Jan 1 of current year
 
     // Row = weekday offset from week_start; a week ends the day before
     // week_start (mirrors the subrepo's week_end_day).
     let weekday_row = |wd: Weekday| -> usize {
-        let start_num = week_start.num_days_from_monday();
-        let wd_num = wd.num_days_from_monday();
+        let start_num = week_start.to_monday_zero_offset();
+        let wd_num = wd.to_monday_zero_offset();
         ((wd_num + 7 - start_num) % 7) as usize
     };
     let week_end = match week_start {
-        Weekday::Mon => Weekday::Sun,
-        Weekday::Sun => Weekday::Sat,
-        other => other.pred(),
+        Weekday::Monday => Weekday::Sunday,
+        Weekday::Sunday => Weekday::Saturday,
+        other => other.previous(),
     };
 
     // One column per real week; None marks days outside Jan 1..=today.
@@ -349,14 +353,18 @@ fn render_year_heatmap<W: Write>(
             week = [None; 7];
         }
         day += 1;
-        date += Duration::days(1);
+        date = date
+            .checked_add(jiff::Span::new().days(1))
+            .context("year heatmap: date overflow")?;
     }
 
     for row in 0..7 {
         for w in &weeks {
             match w[row] {
                 Some(day) => {
-                    let day_date = start_date + Duration::days(day as i64);
+                    let day_date = start_date
+                        .checked_add(jiff::Span::new().days(day as i64))
+                        .context("year heatmap: date overflow")?;
                     if day_date < jan1 {
                         // Day is before Jan 1 (previous year), render as space
                         write!(out, " ")?;

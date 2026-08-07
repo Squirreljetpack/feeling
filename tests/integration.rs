@@ -3063,7 +3063,7 @@ async fn test_config_view_sections_deserialize() {
     assert_eq!(config.today_view.journal_badge, Some('•'));
     assert!(config.grid.week_rolling);
     assert!(!config.grid.month_rolling);
-    assert_eq!(config.grid.week_start, chrono::Weekday::Sun);
+    assert_eq!(config.grid.week_start, feeling::config::Weekday::Sunday);
 
     // Unknown sections are rejected (serde deny_unknown_fields on Config).
     let err = toml::from_str::<Config>("[unknown.accomplishment]\n").unwrap_err();
@@ -3084,7 +3084,7 @@ async fn test_config_view_sections_deserialize() {
         default.grid.month_rolling,
         "month_rolling must default to true"
     );
-    assert_eq!(default.grid.week_start, chrono::Weekday::Mon);
+    assert_eq!(default.grid.week_start, feeling::config::Weekday::Monday);
     assert_eq!(default.tracker.get("accomplishment").map(|t| t.kind), None);
 }
 
@@ -3250,7 +3250,7 @@ async fn test_mood_tracker_grid_week_default_non_rolling() {
 async fn test_mood_tracker_grid_week_start_config() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    config.grid.week_start = chrono::Weekday::Sun;
+    config.grid.week_start = feeling::config::Weekday::Sunday;
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
     execute_command(

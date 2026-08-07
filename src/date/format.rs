@@ -1,6 +1,7 @@
 //! Formatting helpers for epoch timestamps and durations.
 
 use crate::date::Epoch;
+use jiff::civil::Weekday;
 
 /// Format seconds as a human-readable duration string (e.g. "1 day", "2 hours").
 pub fn format_duration(secs: i64) -> String {
@@ -9,83 +10,59 @@ pub fn format_duration(secs: i64) -> String {
 
 /// Format an epoch timestamp as `HH:MM`.
 pub fn format_time(ts: Epoch) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .earliest()
-        .map(|dt| dt.format("%H:%M").to_string())
+    crate::date::zoned_from_unix_secs(ts)
+        .ok()
+        .and_then(|z| jiff::fmt::strtime::format("%H:%M", &z).ok())
         .unwrap_or_else(|| "--:--".to_string())
 }
 
 /// Two-letter local weekday abbreviation for an epoch ("Mo".."Su").
 pub fn format_weekday(ts: Epoch) -> String {
-    use chrono::{Datelike, TimeZone};
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .earliest()
-        .map(|dt| {
-            match dt.weekday() {
-                chrono::Weekday::Mon => "Mo",
-                chrono::Weekday::Tue => "Tu",
-                chrono::Weekday::Wed => "We",
-                chrono::Weekday::Thu => "Th",
-                chrono::Weekday::Fri => "Fr",
-                chrono::Weekday::Sat => "Sa",
-                chrono::Weekday::Sun => "Su",
-            }
-            .to_string()
+    crate::date::zoned_from_unix_secs(ts)
+        .ok()
+        .map(|z| match z.weekday() {
+            Weekday::Monday => "Mo",
+            Weekday::Tuesday => "Tu",
+            Weekday::Wednesday => "We",
+            Weekday::Thursday => "Th",
+            Weekday::Friday => "Fr",
+            Weekday::Saturday => "Sa",
+            Weekday::Sunday => "Su",
         })
         .unwrap_or_default()
+        .to_string()
 }
 
 /// Format an epoch timestamp as `DD-MM-YY`.
 pub fn format_date(ts: Epoch) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .earliest()
-        .map(|dt| dt.format("%d-%m-%y").to_string())
+    crate::date::zoned_from_unix_secs(ts)
+        .ok()
+        .and_then(|z| jiff::fmt::strtime::format("%d-%m-%y", &z).ok())
         .unwrap_or_else(|| "--".to_string())
 }
 
 /// Format an epoch timestamp as `YYYY-MM-DD HH:MM`.
 pub fn format_datetime(ts: Epoch) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .earliest()
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+    crate::date::zoned_from_unix_secs(ts)
+        .ok()
+        .and_then(|z| jiff::fmt::strtime::format("%Y-%m-%d %H:%M", &z).ok())
         .unwrap_or_else(|| "--".to_string())
 }
 
 /// Short datetime form for per-entry annotations (e.g. the text-tracker
 /// `> value [timestamp]` lines); M-D HH:MM (hour/minute zero-padded)
 pub fn format_datetime_short(ts: Epoch) -> String {
-    use chrono::{Datelike, TimeZone, Timelike};
-
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .earliest()
-        .map(|dt| {
-            format!(
-                "{}-{} {:02}:{:02}",
-                dt.month(),
-                dt.day(),
-                dt.hour(),
-                dt.minute()
-            )
-        })
+    crate::date::zoned_from_unix_secs(ts)
+        .ok()
+        .and_then(|z| jiff::fmt::strtime::format("%-m-%-d %H:%M", &z).ok())
         .unwrap_or_else(|| "--".to_string())
 }
 
 /// DD HH:MM
 pub fn format_day_time(ts: Epoch) -> String {
-    use chrono::TimeZone;
-
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .earliest()
-        .map(|dt| dt.format("%d %H:%M").to_string())
+    crate::date::zoned_from_unix_secs(ts)
+        .ok()
+        .and_then(|z| jiff::fmt::strtime::format("%d %H:%M", &z).ok())
         .unwrap_or_else(|| "--".to_string())
 }
 

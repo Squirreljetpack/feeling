@@ -8,6 +8,7 @@ pub mod db;
 pub mod editor;
 pub mod embedding;
 pub mod logger;
+pub mod ort_compat;
 pub mod output;
 pub mod paths;
 pub mod percentage;
