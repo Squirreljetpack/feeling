@@ -8,7 +8,7 @@ use crate::config::Config;
 /// `:embed` — read one text line at a time from stdin, print the embedding
 /// vector for each line as space-separated floats.
 ///
-/// Diagnostic tool: uses raw text (no `feeling ` prefix) so users can probe
+/// Diagnostic tool: uses raw text (no `im ` prefix) so users can probe
 /// arbitrary strings independent of the runtime mood encoding.
 pub fn print_embeddings<R: BufRead, W: Write>(reader: &mut R, out: &mut W) -> Result<()> {
     let embedder = crate::embedding::global_embedder();
@@ -24,7 +24,7 @@ pub fn print_embeddings<R: BufRead, W: Write>(reader: &mut R, out: &mut W) -> Re
     Ok(())
 }
 
-/// `:color <feeling>` — diagnostic: embed the mood string with the
+/// `:color <mood>` — diagnostic: embed the mood string with the
 /// configured `moods.prefix_string`, run it through the full three-step mood-color
 /// pipeline, and print intermediate values at each stage plus the final
 /// Oklab / sRGB colour (with a terminal swatch of the final colour).

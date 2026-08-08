@@ -5,9 +5,9 @@ use super::super::{Command, UpdateTarget};
 pub(crate) fn parse_dash_command(args: &[String]) -> anyhow::Result<Command> {
     // The leading "-" has already been stripped by the caller — `args` holds
     // everything after it:
-    //   feeling -                  → TasksEdit (stub; task editing entry point)
-    //   feeling - <id> [count]     → Update a oneshot task by id
-    //   feeling - <words…> [count] → Update the unique task whose name
+    //   im -                  → TasksEdit (stub; task editing entry point)
+    //   im - <id> [count]     → Update a oneshot task by id
+    //   im - <words…> [count] → Update the unique task whose name
     //                                contains the words in their order
     if args.is_empty() {
         return Ok(Command::TasksEdit);
@@ -18,7 +18,7 @@ pub(crate) fn parse_dash_command(args: &[String]) -> anyhow::Result<Command> {
     // Numeric first arg → oneshot short id (`- <id> [count]` form).
     if let Ok(id) = first.parse::<i64>() {
         if args.len() > 2 {
-            anyhow::bail!("Too many arguments. Usage: feeling - <id> [count]");
+            anyhow::bail!("Too many arguments. Usage: im - <id> [count]");
         }
         return Ok(Command::Update {
             target: UpdateTarget::OneShot(id),

@@ -1,12 +1,12 @@
 [workspace]
-members = [".", "crates/feeling-dynamic", "crates/jiff-english"]
+members = [".", "crates/im-dynamic", "crates/jiff-english"]
 default-members = [".", "crates/jiff-english"]
 
 [workspace.package]
 version = "0.2.4"
 edition = "2024"
-repository = "https://github.com/Squirreljetpack/feeling"
-homepage = "https://github.com/Squirreljetpack/feeling"
+repository = "https://github.com/Squirreljetpack/im"
+homepage = "https://github.com/Squirreljetpack/im"
 
 [workspace.dependencies]
 jiff = "0.2"
@@ -15,7 +15,7 @@ jiff = "0.2"
 allow_branch = "main"
 
 [package]
-name = "feeling"
+name = "im"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

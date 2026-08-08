@@ -19,7 +19,7 @@ pub fn parse_args() -> anyhow::Result<Cli> {
 pub fn parse_cli(args: Vec<String>) -> anyhow::Result<Cli> {
     // Flags are only recognized in the initial position: once a non-flag
     // token shows up, everything after it is the command's own arguments
-    // (so `feeling ok -q` treats `-q` as entry text, not a flag). A flag
+    // (so `im ok -q` treats `-q` as entry text, not a flag). A flag
     // token is `-` followed by flag characters only (`-q`, `-v`, `-qv`, …);
     // each character increments the matching count in `opts.qv`.
     let mut opts = CliOpts::default();
@@ -65,7 +65,7 @@ pub fn parse_cli(args: Vec<String>) -> anyhow::Result<Cli> {
 /// Parse a command from a pre-collected argument list (flags already
 /// stripped). Used by tests and internally by [`parse_cli`].
 pub fn parse_from(args: Vec<String>) -> anyhow::Result<Command> {
-    // No args → Today view (bare `feeling`). Help is handled one level up in
+    // No args → Today view (bare `im`). Help is handled one level up in
     // parse_cli (`-h` / `--help`, initial position only) — parse_from treats
     // a `-h`-style token as entry text.
     if args.is_empty() {
@@ -120,11 +120,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_feeling_simple() {
+    fn test_parse_mood_simple() {
         let cmd = parse_from(args(&["ok"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.mood, "ok");
                 assert!(entry.trackers.is_empty());
                 assert!(!entry.open_editor);
             }
@@ -133,11 +133,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_feeling_with_editor() {
+    fn test_parse_mood_with_editor() {
         let cmd = parse_from(args(&["ok", ".."])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.mood, "ok");
                 assert!(entry.open_editor);
             }
             _ => panic!("Expected Entry command"),
@@ -145,11 +145,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_feeling_with_trackers() {
+    fn test_parse_mood_with_trackers() {
         let cmd = parse_from(args(&["-sleep", "8", "-water", "5", "good"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(entry.trackers.len(), 2);
                 assert_eq!(entry.trackers[0], ("sleep".to_string(), "8".to_string()));
                 assert_eq!(entry.trackers[1], ("water".to_string(), "5".to_string()));
@@ -159,11 +159,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_feeling_multiline() {
+    fn test_parse_mood_multiline() {
         let cmd = parse_from(args(&["comfortably", "numb"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "comfortably numb");
+                assert_eq!(entry.mood, "comfortably numb");
             }
             _ => panic!("Expected Entry command"),
         }
@@ -174,7 +174,7 @@ mod tests {
         let cmd = parse_from(args(&["-sleep", "10"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "");
+                assert_eq!(entry.mood, "");
                 assert_eq!(entry.trackers.len(), 1);
                 assert_eq!(entry.trackers[0], ("sleep".to_string(), "10".to_string()));
             }
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn test_parse_tracker_first_arg_rejected() {
         // `:foo` with no space is rejected in the dispatcher; the safe
-        // entry is `feeling : foo` with a space.
+        // entry is `im : foo` with a space.
         let cmd = parse_from(args(&[":", "foo"])).unwrap();
         match cmd {
             Command::Tracker { period, items } => {
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn test_parse_dash_alone_is_tasks_edit() {
-        // `feeling -` (bare) → TasksEdit (stub); `- <id> [count]` and
+        // `im -` (bare) → TasksEdit (stub); `- <id> [count]` and
         // `- <words…> [count]` remain the update forms (tested below).
         let cmd = parse_from(args(&["-"])).unwrap();
         assert_eq!(cmd, Command::TasksEdit);
@@ -987,7 +987,7 @@ mod tests {
 
     #[test]
     fn test_parse_update_query_words() {
-        // feeling - buy milk
+        // im - buy milk
         let cmd = parse_from(args(&["-", "buy", "milk"])).unwrap();
         match cmd {
             Command::Update { target, count } => {
@@ -1005,7 +1005,7 @@ mod tests {
 
     #[test]
     fn test_parse_update_query_words_with_count() {
-        // feeling - buy milk 2 — trailing numeric word is the count
+        // im - buy milk 2 — trailing numeric word is the count
         let cmd = parse_from(args(&["-", "buy", "milk", "2"])).unwrap();
         match cmd {
             Command::Update { target, count } => {
@@ -1055,7 +1055,7 @@ mod tests {
         .unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(
                     entry.trackers,
                     vec![
@@ -1074,7 +1074,7 @@ mod tests {
         let cmd = parse_from(args(&["-sleep", "-xyz", "good"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "");
+                assert_eq!(entry.mood, "");
                 assert_eq!(
                     entry.trackers,
                     vec![
@@ -1090,7 +1090,7 @@ mod tests {
         let cmd = parse_from(args(&["good", "-sleep", "-1", "-xyz"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(entry.task_links, vec![1]);
                 assert_eq!(
                     entry.trackers,
@@ -1106,11 +1106,11 @@ mod tests {
 
     #[test]
     fn test_parse_tracker_in_final_position() {
-        // feeling <mood> [-tracker value] — trackers after the mood
+        // im <mood> [-tracker value] — trackers after the mood
         let cmd = parse_from(args(&["good", "-sleep", "8"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
                 assert!(!entry.open_editor);
             }
@@ -1121,7 +1121,7 @@ mod tests {
         let cmd = parse_from(args(&["good", "-sleep", "8", "-water", "5", "..", "later"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(
                     entry.trackers,
                     vec![
@@ -1141,11 +1141,11 @@ mod tests {
         // Trackers are parsed only at the beginning (before any mood word)
         // and at the end (after the mood); mood words must be contiguous.
 
-        // Beginning trackers then mood: feeling -sleep 8 good.
+        // Beginning trackers then mood: im -sleep 8 good.
         let cmd = parse_from(args(&["-sleep", "8", "good"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
             }
             _ => panic!("Expected Entry command"),
@@ -1155,7 +1155,7 @@ mod tests {
         let cmd = parse_from(args(&["-sleep", "8", "good", "-water", "5"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(
                     entry.trackers,
                     vec![
@@ -1171,7 +1171,7 @@ mod tests {
         let cmd = parse_from(args(&["-sleep", "8", "but", "not", "great"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "but not great");
+                assert_eq!(entry.mood, "but not great");
                 assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
             }
             _ => panic!("Expected Entry command"),
@@ -1180,7 +1180,7 @@ mod tests {
 
     #[test]
     fn test_parse_tracker_embedded_in_mood_rejected() {
-        // feeling pretty ok -sleep 8 but not great: after the tracker pair
+        // im pretty ok -sleep 8 but not great: after the tracker pair
         // the word "but" is not another valid tracker pattern, `..`, or the
         // end of the line → the line is rejected.
         assert!(parse_from(args(&[
@@ -1198,7 +1198,7 @@ mod tests {
         let cmd = parse_from(args(&["good", "-sleep", "8"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "good");
+                assert_eq!(entry.mood, "good");
                 assert_eq!(entry.trackers, vec![("sleep".to_string(), "8".to_string())]);
             }
             _ => panic!("Expected Entry command"),
@@ -1213,7 +1213,7 @@ mod tests {
         assert_eq!(
             cli.cmd,
             Command::Entry(Entry {
-                feeling: "ok".to_string(),
+                mood: "ok".to_string(),
                 trackers: vec![],
                 task_links: vec![],
                 body: String::new(),
@@ -1325,7 +1325,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty_returns_today() {
-        // `feeling` with no args → Today view (All, Today horizon).
+        // `im` with no args → Today view (All, Today horizon).
         let today = Command::Today {
             date: None,
             show: ViewVariant::All,
@@ -1341,7 +1341,7 @@ mod tests {
 
     #[test]
     fn test_parse_today_with_date() {
-        // `feeling @2024-03-20` → today view anchored to that date
+        // `im @2024-03-20` → today view anchored to that date
         // (All, Today horizon).
         let cmd = parse_from(args(&["@2024-03-20"])).unwrap();
         assert_eq!(
@@ -1487,9 +1487,9 @@ mod tests {
 
     #[test]
     fn test_parse_color_multword() {
-        let cmd = parse_from(args(&[":color", "feeling", "drained"])).unwrap();
+        let cmd = parse_from(args(&[":color", "mood", "drained"])).unwrap();
         match cmd {
-            Command::Color { mood } => assert_eq!(mood, "feeling drained"),
+            Command::Color { mood } => assert_eq!(mood, "mood drained"),
             _ => panic!("Expected Color command"),
         }
     }
@@ -1514,7 +1514,7 @@ mod tests {
         let cmd = parse_from(args(&["ok", ".."])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.mood, "ok");
                 assert_eq!(entry.body, "");
                 assert!(entry.open_editor);
             }
@@ -1526,7 +1526,7 @@ mod tests {
         let cmd = parse_from(args(&["ok", "..", "later", "thoughts"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.mood, "ok");
                 assert_eq!(entry.body, "later thoughts");
                 assert!(!entry.open_editor);
             }
@@ -1539,7 +1539,7 @@ mod tests {
         let cmd = parse_from(args(&["..", "ok"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "");
+                assert_eq!(entry.mood, "");
                 assert_eq!(entry.body, "ok");
                 assert!(!entry.open_editor);
             }
@@ -1551,7 +1551,7 @@ mod tests {
         let cmd = parse_from(args(&["ok", "more", "..", "journal", "entry"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "ok more");
+                assert_eq!(entry.mood, "ok more");
                 assert_eq!(entry.body, "journal entry");
                 assert!(!entry.open_editor);
             }
@@ -1562,7 +1562,7 @@ mod tests {
         let cmd = parse_from(args(&["ok"])).unwrap();
         match cmd {
             Command::Entry(entry) => {
-                assert_eq!(entry.feeling, "ok");
+                assert_eq!(entry.mood, "ok");
                 assert_eq!(entry.body, "");
                 assert!(!entry.open_editor);
             }

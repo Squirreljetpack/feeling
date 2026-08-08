@@ -15,7 +15,7 @@ pub(super) async fn record_entry(
     opts: &CliOpts,
     entry: Entry,
 ) -> Result<()> {
-    let feeling = entry.feeling;
+    let mood = entry.mood;
     let trackers = entry.trackers;
     let task_links = entry.task_links;
     let body = entry.body;
@@ -31,7 +31,7 @@ pub(super) async fn record_entry(
         body
     };
 
-    if feeling.is_empty() && trackers.is_empty() && body.is_empty() {
+    if mood.is_empty() && trackers.is_empty() && body.is_empty() {
         anyhow::bail!("Nothing to log");
     }
 
@@ -123,20 +123,20 @@ pub(super) async fn record_entry(
     // embedding rather than losing the entry. The score is computed here so
     // color passes later skip the ONNX saliency prediction.
     let embedder = crate::embedding::global_embedder();
-    let (embedding_blob, score) = if feeling.is_empty() {
+    let (embedding_blob, score) = if mood.is_empty() {
         (None, None)
     } else {
-        match embedder.embed(&feeling, &config.moods.axes.prefix_string) {
+        match embedder.embed(&mood, &config.moods.axes.prefix_string) {
             Ok(v) => (
                 Some(crate::embedding::embedding_to_blob(&v)),
-                Some(crate::color::predict_saliency(embedder, &feeling)),
+                Some(crate::color::predict_saliency(embedder, &mood)),
             ),
             Err(_) => (None, None),
         }
     };
 
     let entry_obj = EntryObject {
-        mood: feeling,
+        mood,
         body,
         time: time_epoch,
         embedding: embedding_blob,
@@ -144,14 +144,14 @@ pub(super) async fn record_entry(
         trackers: tracker_objects,
     };
 
-    let feeling_id = crate::db::create_entry(pool, &entry_obj).await?;
-    log::debug!("Inserted feeling with id={:?}", feeling_id);
+    let mood_id = crate::db::create_entry(pool, &entry_obj).await?;
+    log::debug!("Inserted mood with id={:?}", mood_id);
 
     // Task links: `-<short id>` tokens resolved to row ids and recorded in
-    // the link table — a plain link, not a completion. They need a feeling
+    // the link table — a plain link, not a completion. They need a mood
     // row to attach to, so a tracker-only entry cannot carry links.
     if !task_links.is_empty() {
-        let Some(feeling_id) = feeling_id else {
+        let Some(mood_id) = mood_id else {
             anyhow::bail!("Task links (-<id>) require a mood or journal entry to attach to");
         };
         let mut resolved = Vec::with_capacity(task_links.len());
@@ -163,7 +163,7 @@ pub(super) async fn record_entry(
             };
             resolved.push(task_id);
         }
-        crate::db::link_feeling_to_tasks(pool, feeling_id, &resolved).await?;
+        crate::db::link_mood_to_tasks(pool, mood_id, &resolved).await?;
     }
 
     crate::output::display_entry(&entry_obj, opts)?;

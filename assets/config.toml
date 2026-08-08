@@ -1,6 +1,6 @@
 [moods]
 
-# Mood-to-color anchors live in this file. Generate it by calling `feeling :moods`.
+# Mood-to-color anchors live in this file. Generate it by calling `im :moods`.
 # source = "moods.toml"
 
 # Instruction prefix for embedding model
@@ -73,7 +73,7 @@ hint = true
 #    with min/max interpreted as seconds-from-interval-start
 #    defining a circular time-of-day color range
 #  - With either min/min omitted, this simply counts occurrences with an interval
-#  - null trackers don't accept a payload, and cannot be _followed by_ a mood (log with `feeling -<name>`).
+#  - null trackers don't accept a payload, and cannot be _followed by_ a mood (log with `im -<name>`).
 # float | number:
 #  - Values and min/max bounds accept a plain number or a duration string
 #    (e.g. "6.5", "4h", "30m") — durations convert to seconds.

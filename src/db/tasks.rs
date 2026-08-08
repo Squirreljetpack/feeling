@@ -515,7 +515,7 @@ pub async fn fetch_oneshot_task_for_update(
 
 /// Oneshot tasks whose names contain all `words` in order (a subsequence
 /// match over whitespace-split words), with prior completion counts — the
-/// candidates for the `feeling - <words…> [count]` update form. The
+/// candidates for the `im - <words…> [count]` update form. The
 /// subsequence test is done here in Rust: SQL `LIKE` can't express
 /// "in order, with gaps allowed".
 pub async fn fetch_oneshot_matching_words(

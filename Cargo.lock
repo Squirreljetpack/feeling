@@ -956,47 +956,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
-name = "feeling"
-version = "0.2.4"
-dependencies = [
- "anyhow",
- "atty",
- "chrono",
- "cli_boilerplate_automation",
- "cliclack",
- "crokey",
- "crossterm",
- "dirs",
- "env_logger",
- "futures",
- "humantime",
- "jiff",
- "jiff-english",
- "log",
- "mimalloc",
- "oklab",
- "ort",
- "ratatui",
- "serde",
- "sqlx",
- "tempfile",
- "thiserror 2.0.19",
- "tokenizers",
- "tokio",
- "toml",
- "ureq",
-]
-
-[[package]]
-name = "feeling-dynamic"
-version = "0.2.4"
-dependencies = [
- "feeling",
- "mimalloc",
- "tokio",
-]
-
-[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1454,6 +1413,47 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "im"
+version = "0.2.4"
+dependencies = [
+ "anyhow",
+ "atty",
+ "chrono",
+ "cli_boilerplate_automation",
+ "cliclack",
+ "crokey",
+ "crossterm",
+ "dirs",
+ "env_logger",
+ "futures",
+ "humantime",
+ "jiff",
+ "jiff-english",
+ "log",
+ "mimalloc",
+ "oklab",
+ "ort",
+ "ratatui",
+ "serde",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokenizers",
+ "tokio",
+ "toml",
+ "ureq",
+]
+
+[[package]]
+name = "im-dynamic"
+version = "0.2.4"
+dependencies = [
+ "im",
+ "mimalloc",
+ "tokio",
 ]
 
 [[package]]

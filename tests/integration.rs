@@ -1,8 +1,8 @@
-//! Integration tests for the feeling CLI.
+//! Integration tests for the mood CLI.
 //!
 //! These tests verify the full flow from CLI parsing through database operations.
 
-use feeling::{
+use im::{
     cli::{parse_from, CliOpts},
     commands::execute_command,
     config::{Config, TrackerKind},
@@ -33,7 +33,7 @@ async fn create_oneshot_task(pool: &SqlitePool, name: &str) -> i64 {
 }
 
 /// Helper: insert a completion entry with an explicit time and count.
-/// Unlike `feeling::db::update_task` (which stamps `now()` and applies
+/// Unlike `im::db::update_task` (which stamps `now()` and applies
 /// interval logic), this writes the row directly.
 async fn update_task(pool: &SqlitePool, todo_id: i64, time: i64, count: i32) {
     sqlx::query("INSERT INTO todo_completions (todo_id, time, count) VALUES (?, ?, ?)")
@@ -46,16 +46,16 @@ async fn update_task(pool: &SqlitePool, todo_id: i64, time: i64, count: i32) {
 }
 
 /// A day-long tracker interval anchored at local midnight 2020-01-01.
-fn day_interval() -> feeling::config::TrackerInterval {
-    feeling::config::TrackerInterval {
-        anchor: feeling::date::parse_datetime("2020-01-01 00:00", feeling::date::DATE_DIALECT)
+fn day_interval() -> im::config::TrackerInterval {
+    im::config::TrackerInterval {
+        anchor: im::date::parse_datetime("2020-01-01 00:00", im::date::DATE_DIALECT)
             .unwrap(),
         span: jiff::Span::new().days(1),
     }
 }
 
 #[tokio::test]
-async fn test_create_feeling_entry() {
+async fn test_create_mood_entry() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
@@ -71,7 +71,7 @@ async fn test_create_feeling_entry() {
     .await
     .unwrap();
 
-    let row = sqlx::query("SELECT mood, body FROM feeling")
+    let row = sqlx::query("SELECT mood, body FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -81,12 +81,12 @@ async fn test_create_feeling_entry() {
 }
 
 #[tokio::test]
-async fn test_create_feeling_with_trackers() {
+async fn test_create_mood_with_trackers() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -96,7 +96,7 @@ async fn test_create_feeling_with_trackers() {
     );
     config.tracker.insert(
         "water".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -125,16 +125,16 @@ async fn test_create_feeling_with_trackers() {
     .await
     .unwrap();
 
-    let feeling = sqlx::query("SELECT id, mood FROM feeling")
+    let mood = sqlx::query("SELECT id, mood FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
 
-    let feeling_id: i64 = feeling.get("id");
-    assert_eq!(feeling.get::<String, _>("mood"), "good");
+    let mood_id: i64 = mood.get("id");
+    assert_eq!(mood.get::<String, _>("mood"), "good");
 
     // Verify tracker trackers were inserted and linked
-    let rows = sqlx::query("SELECT type, score, feeling FROM tracker ORDER BY type")
+    let rows = sqlx::query("SELECT type, score, mood FROM tracker ORDER BY type")
         .fetch_all(&pool)
         .await
         .unwrap();
@@ -142,10 +142,10 @@ async fn test_create_feeling_with_trackers() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].get::<String, _>("type"), "sleep");
     assert_eq!(rows[0].get::<f64, _>("score"), 8.0);
-    assert_eq!(rows[0].get::<Option<i64>, _>("feeling"), Some(feeling_id));
+    assert_eq!(rows[0].get::<Option<i64>, _>("mood"), Some(mood_id));
     assert_eq!(rows[1].get::<String, _>("type"), "water");
     assert_eq!(rows[1].get::<f64, _>("score"), 5.0);
-    assert_eq!(rows[1].get::<Option<i64>, _>("feeling"), Some(feeling_id));
+    assert_eq!(rows[1].get::<Option<i64>, _>("mood"), Some(mood_id));
 }
 
 #[tokio::test]
@@ -154,7 +154,7 @@ async fn test_create_tracker_only() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -175,22 +175,22 @@ async fn test_create_tracker_only() {
     .await
     .unwrap();
 
-    // No feeling should be inserted
-    let feeling_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+    // No mood should be inserted
+    let mood_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(feeling_count, 0);
+    assert_eq!(mood_count, 0);
 
-    // Tracker entry inserted without feeling link
-    let tracker = sqlx::query("SELECT type, score, feeling FROM tracker")
+    // Tracker entry inserted without mood link
+    let tracker = sqlx::query("SELECT type, score, mood FROM tracker")
         .fetch_one(&pool)
         .await
         .unwrap();
 
     assert_eq!(tracker.get::<String, _>("type"), "sleep");
     assert_eq!(tracker.get::<f64, _>("score"), 10.0);
-    assert_eq!(tracker.get::<Option<i64>, _>("feeling"), None);
+    assert_eq!(tracker.get::<Option<i64>, _>("mood"), None);
 }
 
 #[tokio::test]
@@ -200,7 +200,7 @@ async fn test_tracker_interval_insert_strategies() {
     // text + interval: re-logging replaces the previous entry in the slot
     config.tracker.insert(
         "affirmation".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: Some(day_interval()),
             min: None,
             max: None,
@@ -211,7 +211,7 @@ async fn test_tracker_interval_insert_strategies() {
     // float + interval: re-logging replaces the previous entry in the slot
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: Some(day_interval()),
             min: None,
             max: None,
@@ -222,7 +222,7 @@ async fn test_tracker_interval_insert_strategies() {
     // number + interval: plain insert, accumulates
     config.tracker.insert(
         "runs".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: Some(day_interval()),
             min: None,
             max: None,
@@ -289,9 +289,9 @@ async fn test_tracker_interval_insert_strategies() {
     // in two different slots, so both entries are kept.
     config.tracker.insert(
         "water".to_string(),
-        feeling::config::TrackerSetting {
-            interval: Some(feeling::config::TrackerInterval {
-                anchor: feeling::date::now(),
+        im::config::TrackerSetting {
+            interval: Some(im::config::TrackerInterval {
+                anchor: im::date::now(),
                 span: jiff::Span::new().seconds(1),
             }),
             min: None,
@@ -525,7 +525,7 @@ async fn test_create_oneshot_task_with_date() {
     let end_time: i64 = task.get("end_time");
     assert_eq!(
         end_time,
-        feeling::date::parse_datetime("2024-03-20", feeling::date::DATE_DIALECT).unwrap()
+        im::date::parse_datetime("2024-03-20", im::date::DATE_DIALECT).unwrap()
     );
     let start_time: i64 = task.get("start_time");
     assert!(start_time > 0);
@@ -538,7 +538,7 @@ async fn test_tracker_range_not_enforced() {
 
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: Some(4.0),
             max: Some(10.0),
@@ -571,12 +571,12 @@ async fn test_tracker_range_not_enforced() {
 }
 
 #[tokio::test]
-async fn test_multiple_trackers_same_feeling() {
+async fn test_multiple_trackers_same_mood() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -586,7 +586,7 @@ async fn test_multiple_trackers_same_feeling() {
     );
     config.tracker.insert(
         "water".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -596,7 +596,7 @@ async fn test_multiple_trackers_same_feeling() {
     );
     config.tracker.insert(
         "exercise".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -627,11 +627,11 @@ async fn test_multiple_trackers_same_feeling() {
     .await
     .unwrap();
 
-    let feeling_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+    let mood_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(feeling_count, 1);
+    assert_eq!(mood_count, 1);
 
     let tracker_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
@@ -640,7 +640,7 @@ async fn test_multiple_trackers_same_feeling() {
     assert_eq!(tracker_count, 3);
 
     let linked_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM tracker c JOIN feeling f ON c.feeling = f.id")
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracker c JOIN mood f ON c.mood = f.id")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -958,12 +958,12 @@ async fn test_update_by_query_words_multiple_matches_fail() {
 }
 
 #[tokio::test]
-async fn test_create_feeling_tracker_in_final_position() {
+async fn test_create_mood_tracker_in_final_position() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -973,7 +973,7 @@ async fn test_create_feeling_tracker_in_final_position() {
     );
     config.tracker.insert(
         "water".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -982,7 +982,7 @@ async fn test_create_feeling_tracker_in_final_position() {
         },
     );
 
-    // Trackers after the mood: `feeling good -sleep 8 -water 5`.
+    // Trackers after the mood: `im good -sleep 8 -water 5`.
     let cmd = parse_from(vec![
         "good".to_string(),
         "-sleep".to_string(),
@@ -1002,22 +1002,22 @@ async fn test_create_feeling_tracker_in_final_position() {
     .await
     .unwrap();
 
-    let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'good'")
+    let mood_id: i64 = sqlx::query_scalar("SELECT id FROM mood WHERE mood = 'good'")
         .fetch_one(&pool)
         .await
         .unwrap();
 
-    let rows = sqlx::query("SELECT type, score, feeling FROM tracker ORDER BY type")
+    let rows = sqlx::query("SELECT type, score, mood FROM tracker ORDER BY type")
         .fetch_all(&pool)
         .await
         .unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].get::<String, _>("type"), "sleep");
     assert_eq!(rows[0].get::<f64, _>("score"), 8.0);
-    assert_eq!(rows[0].get::<Option<i64>, _>("feeling"), Some(feeling_id));
+    assert_eq!(rows[0].get::<Option<i64>, _>("mood"), Some(mood_id));
     assert_eq!(rows[1].get::<String, _>("type"), "water");
     assert_eq!(rows[1].get::<f64, _>("score"), 5.0);
-    assert_eq!(rows[1].get::<Option<i64>, _>("feeling"), Some(feeling_id));
+    assert_eq!(rows[1].get::<Option<i64>, _>("mood"), Some(mood_id));
 }
 
 #[tokio::test]
@@ -1027,7 +1027,7 @@ async fn test_out_of_range_tracker_still_inserts() {
 
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: Some(4.0),
             max: Some(10.0),
@@ -1037,7 +1037,7 @@ async fn test_out_of_range_tracker_still_inserts() {
     );
 
     // sleep=2 is below min=4, but min/max only affect binning:
-    // the feeling and its tracker entry are still inserted.
+    // the mood and its tracker entry are still inserted.
     let cmd = parse_from(vec![
         "-sleep".to_string(),
         "2".to_string(),
@@ -1056,11 +1056,11 @@ async fn test_out_of_range_tracker_still_inserts() {
     .await
     .unwrap();
 
-    let feeling_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+    let mood_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(feeling_count, 1);
+    assert_eq!(mood_count, 1);
 
     let tracker_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
@@ -1072,7 +1072,7 @@ async fn test_out_of_range_tracker_still_inserts() {
 #[test]
 fn test_tab_in_mood_rejected() {
     // Mood with tab is rejected at parse time (view output uses tab separators)
-    let result = parse_from(vec!["ok\tfeeling".to_string()]);
+    let result = parse_from(vec!["ok\tmood".to_string()]);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("tab characters"));
 }
@@ -1109,17 +1109,17 @@ async fn test_today_view_no_data() {
     // this before dispatching, so the direct call must too.
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
     // write_today_view should succeed even with no data
     let mut out = Vec::new();
-    let result = feeling::today::write_today_view(
+    let result = im::today::write_today_view(
         &pool,
         &config,
         None,
-        feeling::types::ViewVariant::All,
-        feeling::types::TodayHorizon::Today,
+        im::types::ViewVariant::All,
+        im::types::TodayHorizon::Today,
         &CliOpts::default(),
         &mut out,
     )
@@ -1134,7 +1134,7 @@ async fn test_today_view_no_data() {
 
 #[tokio::test]
 async fn test_today_view_with_data() {
-    use feeling::config::{TrackerKind, TrackerSetting};
+    use im::config::{TrackerKind, TrackerSetting};
 
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -1161,7 +1161,7 @@ async fn test_today_view_with_data() {
         },
     );
 
-    // Create a feeling entry via the CLI path
+    // Create a mood entry via the CLI path
     execute_command(
         parse_from(vec!["good".to_string()]).unwrap(),
         &pool,
@@ -1177,7 +1177,7 @@ async fn test_today_view_with_data() {
     // this before dispatching, so the direct call must too.
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
 
@@ -1213,12 +1213,12 @@ async fn test_today_view_with_data() {
 
     // write_today_view should succeed with data and emit tab-separated rows
     let mut out = Vec::new();
-    let result = feeling::today::write_today_view(
+    let result = im::today::write_today_view(
         &pool,
         &config,
         None,
-        feeling::types::ViewVariant::All,
-        feeling::types::TodayHorizon::Today,
+        im::types::ViewVariant::All,
+        im::types::TodayHorizon::Today,
         &CliOpts::default(),
         &mut out,
     )
@@ -1235,9 +1235,9 @@ async fn test_today_view_with_data() {
 /// section).
 #[tokio::test]
 async fn test_today_view_linked_trackers_and_tasks() {
-    use feeling::config::TrackerSetting;
-    use feeling::today::EntryKind;
-    use feeling::types::{TodayHorizon, ViewVariant};
+    use im::config::TrackerSetting;
+    use im::today::EntryKind;
+    use im::types::{TodayHorizon, ViewVariant};
 
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -1297,12 +1297,12 @@ async fn test_today_view_linked_trackers_and_tasks() {
     // path does this before dispatching, so the direct call must too.
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
         TodayHorizon::Today,
@@ -1331,9 +1331,9 @@ async fn test_today_view_linked_trackers_and_tasks() {
 /// the same kind.
 #[tokio::test]
 async fn test_today_view_null_labels_relog_and_prev() {
-    use feeling::config::TrackerSetting;
-    use feeling::today::EntryKind;
-    use feeling::types::{TodayHorizon, ViewVariant};
+    use im::config::TrackerSetting;
+    use im::today::EntryKind;
+    use im::types::{TodayHorizon, ViewVariant};
 
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -1421,12 +1421,12 @@ async fn test_today_view_null_labels_relog_and_prev() {
     // path does this before dispatching, so the direct call must too.
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
         TodayHorizon::Today,
@@ -1451,7 +1451,7 @@ async fn test_today_view_null_labels_relog_and_prev() {
         .expect("expected the sit entry");
     assert_eq!(
         sit.label,
-        format!("sit: {}", feeling::date::format_datetime_short(sit.time))
+        format!("sit: {}", im::date::format_datetime_short(sit.time))
     );
 
     // prev: the later sleep entry points at the earlier one (row id is the
@@ -1474,12 +1474,12 @@ async fn test_today_view_null_labels_relog_and_prev() {
     // increments (count mode).
     let water_id = water.id.expect("tracker entry id");
     let t0 = water.time;
-    feeling::db::relog_null_tracker(&pool, water_id, t0 + 1000, true)
+    im::db::relog_null_tracker(&pool, water_id, t0 + 1000, true)
         .await
         .unwrap();
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
         TodayHorizon::Today,
@@ -1497,27 +1497,27 @@ async fn test_today_view_null_labels_relog_and_prev() {
     assert_eq!(water.time, t0 + 1000);
 }
 
-/// `feeling @<date>` anchors the today view to an arbitrary day.
+/// `im @<date>` anchors the today view to an arbitrary day.
 #[tokio::test]
 async fn test_today_view_with_date() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
 
-    // Seed a feeling on a fixed past date directly.
+    // Seed a mood on a fixed past date directly.
     let target =
-        feeling::date::parse_datetime("2024-03-15 09:00", feeling::date::DATE_DIALECT).unwrap();
-    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('ancient', '', ?)")
+        im::date::parse_datetime("2024-03-15 09:00", im::date::DATE_DIALECT).unwrap();
+    sqlx::query("INSERT INTO mood (mood, body, time) VALUES ('ancient', '', ?)")
         .bind(target)
         .execute(&pool)
         .await
         .unwrap();
 
-    // `feeling @2024-03-15` lists it.
+    // `im @2024-03-15` lists it.
     let cmd = parse_from(vec!["@2024-03-15".to_string()]).unwrap();
     let mut out = Vec::new();
     execute_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
@@ -1526,7 +1526,7 @@ async fn test_today_view_with_date() {
     let output = String::from_utf8(out).unwrap();
     assert!(output.contains("ancient"), "output: {output:?}");
 
-    // Plain `feeling` (today) does not.
+    // Plain `im` (today) does not.
     let cmd = parse_from(vec![]).unwrap();
     let mut out = Vec::new();
     execute_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
@@ -1536,22 +1536,22 @@ async fn test_today_view_with_date() {
     assert!(!output.contains("ancient"), "output: {output:?}");
 }
 
-/// The today view fetches feelings and tracker entries across the whole
+/// The today view fetches moods and tracker entries across the whole
 /// horizon (`[day start, horizon end]`), not just the anchored day — the
 /// +tomorrow / +this week horizons must surface tomorrow's moods and
 /// tracker values, matching the task fetches.
 #[tokio::test]
-async fn test_today_view_horizon_includes_feelings_and_trackers() {
+async fn test_today_view_horizon_includes_moods_and_trackers() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -1560,27 +1560,27 @@ async fn test_today_view_horizon_includes_feelings_and_trackers() {
         },
     );
 
-    let anchored_day = feeling::date::today_start() - 2 * 86_400;
+    let anchored_day = im::date::today_start() - 2 * 86_400;
     let tomorrow = anchored_day + 86_400;
 
-    // A feeling + tracker entry on the anchored day, and one of each on
+    // A mood + tracker entry on the anchored day, and one of each on
     // the next day (inside the +tomorrow horizon, outside the day one).
-    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('today mood', '', ?)")
+    sqlx::query("INSERT INTO mood (mood, body, time) VALUES ('today mood', '', ?)")
         .bind(anchored_day + 9 * 3600)
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('tomorrow mood', '', ?)")
+    sqlx::query("INSERT INTO mood (mood, body, time) VALUES ('tomorrow mood', '', ?)")
         .bind(tomorrow + 9 * 3600)
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tracker (type, score, time, feeling) VALUES ('sleep', 7, ?, NULL)")
+    sqlx::query("INSERT INTO tracker (type, score, time, mood) VALUES ('sleep', 7, ?, NULL)")
         .bind(anchored_day + 10 * 3600)
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tracker (type, score, time, feeling) VALUES ('sleep', 8, ?, NULL)")
+    sqlx::query("INSERT INTO tracker (type, score, time, mood) VALUES ('sleep', 8, ?, NULL)")
         .bind(tomorrow + 10 * 3600)
         .execute(&pool)
         .await
@@ -1589,12 +1589,12 @@ async fn test_today_view_horizon_includes_feelings_and_trackers() {
     let mut color_cache = std::collections::HashMap::new();
     macro_rules! labels {
         ($horizon:expr) => {{
-            let entries = feeling::today::fetch_today_entries(
+            let entries = im::today::fetch_today_entries(
                 &pool,
                 &config,
                 $horizon,
                 Some(anchored_day),
-                feeling::types::ViewVariant::All,
+                im::types::ViewVariant::All,
                 &mut color_cache,
             )
             .await
@@ -1609,14 +1609,14 @@ async fn test_today_view_horizon_includes_feelings_and_trackers() {
 
     // Day horizon: only the anchored-day entries.
     assert_eq!(
-        labels!(feeling::types::TodayHorizon::Today),
+        labels!(im::types::TodayHorizon::Today),
         ["today mood".to_string(), "sleep: 7".to_string()]
     );
 
     // +tomorrow horizon: tomorrow's entries are fetched too (sorted by
     // time, so each day's pair keeps its order).
     assert_eq!(
-        labels!(feeling::types::TodayHorizon::Tomorrow),
+        labels!(im::types::TodayHorizon::Tomorrow),
         [
             "today mood".to_string(),
             "sleep: 7".to_string(),
@@ -1626,9 +1626,9 @@ async fn test_today_view_horizon_includes_feelings_and_trackers() {
     );
 }
 
-/// `feeling.score` round-trips through the sql layer (nullable REAL column).
+/// `mood.score` round-trips through the sql layer (nullable REAL column).
 #[tokio::test]
-async fn test_feeling_score_roundtrip() {
+async fn test_mood_score_roundtrip() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
@@ -1644,7 +1644,7 @@ async fn test_feeling_score_roundtrip() {
     )
     .await
     .unwrap();
-    let rows = feeling::db::fetch_feelings_between(&pool, 0, i64::MAX)
+    let rows = im::db::fetch_moods_between(&pool, 0, i64::MAX)
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -1654,35 +1654,35 @@ async fn test_feeling_score_roundtrip() {
     );
 
     // Rows without a score (e.g. seed_db inserts) read back as None and
-    // round-trip through update_feeling_score.
+    // round-trip through update_mood_score.
     let id = rows[0].id;
-    sqlx::query("UPDATE feeling SET score = NULL WHERE id = ?")
+    sqlx::query("UPDATE mood SET score = NULL WHERE id = ?")
         .bind(id)
         .execute(&pool)
         .await
         .unwrap();
-    let rows = feeling::db::fetch_feelings_between(&pool, 0, i64::MAX)
+    let rows = im::db::fetch_moods_between(&pool, 0, i64::MAX)
         .await
         .unwrap();
     assert_eq!(rows[0].score, None);
-    feeling::db::update_feeling_score(&pool, id, 0.42)
+    im::db::update_mood_score(&pool, id, 0.42)
         .await
         .unwrap();
-    let rows = feeling::db::fetch_feelings_between(&pool, 0, i64::MAX)
+    let rows = im::db::fetch_moods_between(&pool, 0, i64::MAX)
         .await
         .unwrap();
     assert!((rows[0].score.unwrap() - 0.42).abs() < 1e-6);
 }
 
-/// The first render pass backfills `feeling.score` (mood saliency); a
+/// The first render pass backfills `mood.score` (mood saliency); a
 /// pre-seeded score is left untouched (read-back path).
 #[tokio::test]
-async fn test_today_view_backfills_feeling_score() {
+async fn test_today_view_backfills_mood_score() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
 
@@ -1709,19 +1709,19 @@ async fn test_today_view_backfills_feeling_score() {
     )
     .await
     .unwrap();
-    let glum_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'glum'")
+    let glum_id: i64 = sqlx::query_scalar("SELECT id FROM mood WHERE mood = 'glum'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    feeling::db::update_feeling_score(&pool, glum_id, 0.5)
+    im::db::update_mood_score(&pool, glum_id, 0.5)
         .await
         .unwrap();
 
     // A directly-inserted row (no score) exercises the no-backfill path:
     // rendering must NOT write the score anymore (`mood_color_cached` is
     // sync and backfill-free; `:db backfill` persists it).
-    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('dull', '', ?)")
-        .bind(feeling::date::now())
+    sqlx::query("INSERT INTO mood (mood, body, time) VALUES ('dull', '', ?)")
+        .bind(im::date::now())
         .execute(&pool)
         .await
         .unwrap();
@@ -1729,19 +1729,19 @@ async fn test_today_view_backfills_feeling_score() {
     // A fresh render pass (new color cache) runs the pipeline but leaves
     // the database untouched.
     let mut out = Vec::new();
-    feeling::today::write_today_view(
+    im::today::write_today_view(
         &pool,
         &config,
         None,
-        feeling::types::ViewVariant::All,
-        feeling::types::TodayHorizon::Today,
+        im::types::ViewVariant::All,
+        im::types::TodayHorizon::Today,
         &CliOpts::default(),
         &mut out,
     )
     .await
     .unwrap();
 
-    let scores: Vec<Option<f32>> = sqlx::query_scalar("SELECT score FROM feeling ORDER BY id")
+    let scores: Vec<Option<f32>> = sqlx::query_scalar("SELECT score FROM mood ORDER BY id")
         .fetch_all(&pool)
         .await
         .unwrap();
@@ -1848,7 +1848,7 @@ fn pack_interval(secs: i64) -> i64 {
         .hours((secs % 86_400) / 3600)
         .minutes((secs % 3600) / 60)
         .seconds(secs % 60);
-    feeling::date::span_to_db(&span)
+    im::date::span_to_db(&span)
 }
 
 /// The calendar span for a seconds-denominated interval (fixture helper).
@@ -1900,8 +1900,8 @@ async fn run_view(pool: &SqlitePool, config: &Config, args: &[&str]) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// Task↔mood links: `feeling <mood> -<short id>` records a link between
-/// the new feeling entry and the task (no completion). The task preview
+/// Task↔mood links: `im <mood> -<short id>` records a link between
+/// the new mood entry and the task (no completion). The task preview
 /// then shows the linked moods.
 #[tokio::test]
 async fn test_task_mood_links() {
@@ -1924,8 +1924,8 @@ async fn test_task_mood_links() {
         "INSERT INTO todos (name, body, priority, start_time, interval_secs, target_count, optional, short_id) \
          VALUES ('recur link', '', 5, ?, ?, 0, 0, 2)",
     )
-    .bind(feeling::date::now())
-    .bind(feeling::date::span_to_db(&jiff::Span::new().days(1)))
+    .bind(im::date::now())
+    .bind(im::date::span_to_db(&jiff::Span::new().days(1)))
     .execute(&pool)
     .await
     .unwrap();
@@ -1949,17 +1949,17 @@ async fn test_task_mood_links() {
     .await
     .unwrap();
 
-    let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'felt good'")
+    let mood_id: i64 = sqlx::query_scalar("SELECT id FROM mood WHERE mood = 'felt good'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    let links: Vec<(i64, i64)> = sqlx::query_as("SELECT todo_id, feeling_id FROM task_moods")
+    let links: Vec<(i64, i64)> = sqlx::query_as("SELECT todo_id, mood_id FROM task_moods")
         .fetch_all(&pool)
         .await
         .unwrap();
     assert_eq!(links.len(), 2, "both links recorded");
-    assert!(links.contains(&(1, feeling_id)));
-    assert!(links.contains(&(2, feeling_id)));
+    assert!(links.contains(&(1, mood_id)));
+    assert!(links.contains(&(2, mood_id)));
 
     // A link with an unknown short id errors and records nothing.
     let cmd = parse_from(vec!["ok".to_string(), "-99".to_string()]).unwrap();
@@ -1979,7 +1979,7 @@ async fn test_task_mood_links() {
         .unwrap();
     assert_eq!(count, 2, "failed link must not add rows");
 
-    // Links without a feeling entry are rejected.
+    // Links without a mood entry are rejected.
     let cmd = parse_from(vec!["-1".to_string()]).unwrap();
     let result = execute_command(
         cmd,
@@ -1993,7 +1993,7 @@ async fn test_task_mood_links() {
     assert!(result.is_err());
 
     // The task preview data source lists the linked moods.
-    let moods = feeling::db::fetch_linked_moods(&pool, 1).await.unwrap();
+    let moods = im::db::fetch_linked_moods(&pool, 1).await.unwrap();
     assert_eq!(moods.len(), 1);
     assert_eq!(moods[0].mood, "felt good");
 }
@@ -2006,40 +2006,40 @@ async fn test_task_mood_links() {
 async fn test_null_tracker_semantics() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    let day_interval = feeling::config::TrackerInterval {
-        anchor: feeling::date::today_start() - 86_400,
+    let day_interval = im::config::TrackerInterval {
+        anchor: im::date::today_start() - 86_400,
         span: jiff::Span::new().days(1),
     };
     // Count mode: no min/max.
     config.tracker.insert(
         "prouds".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: Some(day_interval),
             min: None,
             max: None,
-            kind: feeling::config::TrackerKind::Null,
+            kind: im::config::TrackerKind::Null,
             colors: None,
         },
     );
     // Time-marker mode: both bounds (23:00 / 2h before the span end).
     config.tracker.insert(
         "sleep_start".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: Some(day_interval),
             min: Some(23.0 * 3600.0),
             max: Some(2.0 * 3600.0),
-            kind: feeling::config::TrackerKind::Null,
+            kind: im::config::TrackerKind::Null,
             colors: None,
         },
     );
     // Without an interval: unsupported.
     config.tracker.insert(
         "unsupported".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
-            kind: feeling::config::TrackerKind::Null,
+            kind: im::config::TrackerKind::Null,
             colors: None,
         },
     );
@@ -2152,7 +2152,7 @@ async fn test_view_done_b_recurring_history() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
     let interval = 86_400i64;
-    let now = feeling::date::now();
+    let now = im::date::now();
 
     // Recurring with completions only in the FIRST interval: unscoped sum 2
     // (history), current-interval sum 0 (not done now).
@@ -2210,7 +2210,7 @@ async fn test_done_b_partial_history_sorts_by_last_completion() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
     let interval = 86_400i64;
-    let now = feeling::date::now();
+    let now = im::date::now();
 
     // Partial history: target 3, one entry 2 days ago. Its availability
     // window end is in the future — the buggy sort key.
@@ -2273,7 +2273,7 @@ async fn test_view_pending_b_not_availability_filtered() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
     let interval = 86_400i64;
-    let now = feeling::date::now();
+    let now = im::date::now();
 
     // Availability window [now-2h, now-1h) — passed, but not expired.
     let id = insert_recurring_task(
@@ -2307,11 +2307,11 @@ async fn test_view_pending_b_not_availability_filtered() {
 async fn test_today_view_completed_today_inclusion_and_time_label() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    let embedder = feeling::embedding::global_embedder();
+    let embedder = im::embedding::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
 
     let interval = 86_400i64;
-    let anchored_day = feeling::date::today_start() - 2 * 86_400;
+    let anchored_day = im::date::today_start() - 2 * 86_400;
 
     // A: always available (no duration); completion at 10:30 on the anchored
     // day, outside the current interval.
@@ -2345,12 +2345,12 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
     update_task(&pool, b, b_time, 1).await;
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
-        feeling::types::TodayHorizon::Today,
+        im::types::TodayHorizon::Today,
         Some(anchored_day),
-        feeling::types::ViewVariant::All,
+        im::types::ViewVariant::All,
         &mut color_cache,
     )
     .await
@@ -2375,12 +2375,12 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
     // The A variant filters completed windows out (per-window done state):
     // both anchored-day windows are done — the 10:30 / 10:00 completions
     // fall inside their windows' intervals — so neither task appears in A.
-    let entries_a = feeling::today::fetch_today_entries(
+    let entries_a = im::today::fetch_today_entries(
         &pool,
         &config,
-        feeling::types::TodayHorizon::Today,
+        im::types::TodayHorizon::Today,
         Some(anchored_day),
-        feeling::types::ViewVariant::A,
+        im::types::ViewVariant::A,
         &mut color_cache,
     )
     .await
@@ -2402,11 +2402,11 @@ async fn test_today_view_completed_today_inclusion_and_time_label() {
 async fn test_today_view_per_window_recurring_rows() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    let embedder = feeling::embedding::global_embedder();
+    let embedder = im::embedding::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
 
     let interval = 6 * 3600i64;
-    let anchored_day = feeling::date::today_start() - 2 * 86_400;
+    let anchored_day = im::date::today_start() - 2 * 86_400;
 
     // 1-hour availability windows every 6 hours starting 02:00 on the
     // anchored day: 02:00, 08:00, 14:00, 20:00 (all in the past by the
@@ -2428,10 +2428,10 @@ async fn test_today_view_per_window_recurring_rows() {
     let mut color_cache = std::collections::HashMap::new();
     macro_rules! get_labels {
         ($show:expr) => {{
-            let entries = feeling::today::fetch_today_entries(
+            let entries = im::today::fetch_today_entries(
                 &pool,
                 &config,
-                feeling::types::TodayHorizon::Today,
+                im::types::TodayHorizon::Today,
                 Some(anchored_day),
                 $show,
                 &mut color_cache,
@@ -2449,15 +2449,15 @@ async fn test_today_view_per_window_recurring_rows() {
     // All: every intersecting window. Passed windows show the last
     // completion within their interval, else the window end.
     assert_eq!(
-        get_labels!(feeling::types::ViewVariant::All),
+        get_labels!(im::types::ViewVariant::All),
         ["03:00", "08:30", "15:00", "21:00"]
     );
     // B: only the next (earliest) window per task.
-    assert_eq!(get_labels!(feeling::types::ViewVariant::B), ["03:00"]);
+    assert_eq!(get_labels!(im::types::ViewVariant::B), ["03:00"]);
     // A: completed windows filtered out — the done 08:00 window is gone,
     // the other three stay.
     assert_eq!(
-        get_labels!(feeling::types::ViewVariant::A),
+        get_labels!(im::types::ViewVariant::A),
         ["03:00", "15:00", "21:00"]
     );
 }
@@ -2470,10 +2470,10 @@ async fn test_today_view_per_window_recurring_rows() {
 async fn test_today_view_open_done_window_shows_completion() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    let embedder = feeling::embedding::global_embedder();
+    let embedder = im::embedding::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
 
-    let anchored_day = feeling::date::today_start() - 2 * 86_400;
+    let anchored_day = im::date::today_start() - 2 * 86_400;
     // 24-hour availability window every 48h starting yesterday 23:00:
     // the only window intersecting the anchored-day horizon runs
     // [yesterday 23:00, today 23:00) — still open whenever the suite runs
@@ -2494,17 +2494,17 @@ async fn test_today_view_open_done_window_shows_completion() {
     update_task(&pool, t, completion, 1).await;
     let expected_label = format!(
         "{} {}",
-        feeling::date::format_weekday(completion),
-        feeling::date::format_time(completion)
+        im::date::format_weekday(completion),
+        im::date::format_time(completion)
     );
 
     let mut color_cache = std::collections::HashMap::new();
     macro_rules! get_labels {
         ($show:expr) => {{
-            let entries = feeling::today::fetch_today_entries(
+            let entries = im::today::fetch_today_entries(
                 &pool,
                 &config,
-                feeling::types::TodayHorizon::Today,
+                im::types::TodayHorizon::Today,
                 Some(anchored_day),
                 $show,
                 &mut color_cache,
@@ -2521,14 +2521,14 @@ async fn test_today_view_open_done_window_shows_completion() {
 
     // All and B show the row at the completion time, not the window start
     // (the window is still open).
-    let all = get_labels!(feeling::types::ViewVariant::All);
+    let all = get_labels!(im::types::ViewVariant::All);
     assert_eq!(all.len(), 1);
     assert_eq!(all[0], expected_label);
     assert_eq!(
-        get_labels!(feeling::types::ViewVariant::B),
+        get_labels!(im::types::ViewVariant::B),
         [expected_label]
     );
-    assert!(get_labels!(feeling::types::ViewVariant::A).is_empty());
+    assert!(get_labels!(im::types::ViewVariant::A).is_empty());
 }
 
 /// D9: a just-completed task stays visible in `@` (All) within
@@ -2592,7 +2592,7 @@ async fn test_persist_pending_variant_scoping() {
 
     // A completed recurring task, also just completed.
     let interval = 86_400i64;
-    let now = feeling::date::now();
+    let now = im::date::now();
     let recurring = insert_recurring_task(
         &pool,
         "just finished recurring",
@@ -2603,7 +2603,7 @@ async fn test_persist_pending_variant_scoping() {
         None,
     )
     .await;
-    feeling::db::update_task(&pool, recurring, 1).await.unwrap();
+    im::db::update_task(&pool, recurring, 1).await.unwrap();
 
     // @:o holds the oneshot (D9, oneshot scope) but not the recurring.
     let a = run_view(&pool, &config, &["@:o"]).await;
@@ -2634,7 +2634,7 @@ async fn test_persist_pending_variant_scoping() {
 async fn test_pending_b_window_open_scheduled() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
-    let now = feeling::date::now();
+    let now = im::date::now();
 
     // Ongoing: window open, no entry.
     let ongoing = insert_scheduled(&pool, "ongoing task", now - 7200, 3 * 3600, None).await;
@@ -2670,10 +2670,10 @@ async fn test_pending_b_window_open_scheduled() {
 async fn test_today_view_interval_aware_recurring_overlap() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    let embedder = feeling::embedding::global_embedder();
+    let embedder = im::embedding::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
 
-    let today_start = feeling::date::today_start();
+    let today_start = im::date::today_start();
 
     // Started 60 days ago at 06:00, daily, window 06:00-07:00 each day:
     // active today, even though start_time + duration is far in the past
@@ -2703,12 +2703,12 @@ async fn test_today_view_interval_aware_recurring_overlap() {
     .await;
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
-        feeling::types::TodayHorizon::Today,
+        im::types::TodayHorizon::Today,
         None,
-        feeling::types::ViewVariant::All,
+        im::types::ViewVariant::All,
         &mut color_cache,
     )
     .await
@@ -2724,13 +2724,13 @@ async fn test_today_view_interval_aware_recurring_overlap() {
     // 60 daily intervals), so the expectation has no phase dependence on
     // the run time: before 07:00 the open window shows its start, at or
     // after 07:00 the passed window shows its end.
-    let now = feeling::date::now();
+    let now = im::date::now();
     let window_start = today_start + 6 * 3600;
     let window_end = window_start + 3600;
     let expected_label = if now >= window_end {
-        feeling::date::format_time(window_end)
+        im::date::format_time(window_end)
     } else {
-        feeling::date::format_time(window_start)
+        im::date::format_time(window_start)
     };
     assert_eq!(active_row.time_label, expected_label);
     assert!(
@@ -2748,10 +2748,10 @@ async fn test_today_view_interval_aware_recurring_overlap() {
 async fn test_today_view_done_time_label_and_b_filter() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    let embedder = feeling::embedding::global_embedder();
+    let embedder = im::embedding::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
 
-    let yesterday_start = feeling::date::today_start() - 86_400;
+    let yesterday_start = im::date::today_start() - 86_400;
 
     // Scheduled window [10:00, 16:00) on the anchored day, completed at
     // 14:30 on that day.
@@ -2777,12 +2777,12 @@ async fn test_today_view_done_time_label_and_b_filter() {
     .await;
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
-        feeling::types::TodayHorizon::Today,
+        im::types::TodayHorizon::Today,
         Some(yesterday_start),
-        feeling::types::ViewVariant::All,
+        im::types::ViewVariant::All,
         &mut color_cache,
     )
     .await
@@ -2800,7 +2800,7 @@ async fn test_today_view_done_time_label_and_b_filter() {
     // task completed a minute ago in a window that is still open today
     // stays, with its completion-time label. The yesterday-anchored tasks
     // don't overlap today, so they don't show.
-    let now = feeling::date::now();
+    let now = im::date::now();
     let completed_today =
         insert_scheduled(&pool, "completed today", now - 2 * 3600, 4 * 3600, None).await;
     update_task(&pool, completed_today, now - 60, 1).await;
@@ -2809,7 +2809,7 @@ async fn test_today_view_done_time_label_and_b_filter() {
         due.contains("completed today"),
         "@due (B) shows completed tasks like All: {due:?}"
     );
-    let expected = feeling::date::format_time(now - 60);
+    let expected = im::date::format_time(now - 60);
     let line = due
         .lines()
         .find(|l| l.contains("completed today"))
@@ -2851,7 +2851,7 @@ async fn test_embed_utility() {
     use std::io::Cursor;
     let mut input = Cursor::new(b"happy day\nsad night\n");
     let mut out = Vec::new();
-    feeling::commands::print_embeddings(&mut input, &mut out).unwrap();
+    im::commands::print_embeddings(&mut input, &mut out).unwrap();
 
     let output = String::from_utf8(out).unwrap();
     let mut lines = output.lines();
@@ -2867,8 +2867,8 @@ async fn test_embed_utility() {
         .split_whitespace()
         .map(|s| s.parse().unwrap())
         .collect();
-    assert_eq!(v1.len(), feeling::embedding::EMBED_DIM);
-    assert_eq!(v2.len(), feeling::embedding::EMBED_DIM);
+    assert_eq!(v1.len(), im::embedding::EMBED_DIM);
+    assert_eq!(v2.len(), im::embedding::EMBED_DIM);
     assert!(lines.next().is_none(), "expected exactly two lines");
 }
 
@@ -2877,7 +2877,7 @@ async fn test_tracker_mood_dots() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
-    // Create a feeling entry (with a mood and body so it gets a dot)
+    // Create a mood entry (with a mood and body so it gets a dot)
     let cmd = parse_from(vec!["happy".to_string()]).unwrap();
     execute_command(
         cmd,
@@ -2937,7 +2937,7 @@ async fn test_tracker_mood_dots() {
 
 #[tokio::test]
 async fn test_tracker_dots() {
-    use feeling::config::{TrackerKind, TrackerSetting};
+    use im::config::{TrackerKind, TrackerSetting};
 
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
@@ -3022,7 +3022,7 @@ async fn test_tracker_recurring_dots() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    feeling::db::update_task(&pool, task_id, 1).await.unwrap();
+    im::db::update_task(&pool, task_id, 1).await.unwrap();
 
     // : @exercise should show the task with a success dot
     let cmd = parse_from(vec![":".to_string(), format!("@{name}")]).unwrap();
@@ -3121,7 +3121,7 @@ async fn test_recurring_negative_delta_does_not_touch_previous_intervals() {
     // A recurring task with a 1-day interval that started 3 days and 500s ago.
     // The current interval therefore began at now - 500s.
     let interval = 86_400i64;
-    let now = feeling::date::now();
+    let now = im::date::now();
     let start_time = now - 3 * interval - 500;
     let name = "water plants";
     sqlx::query(
@@ -3148,7 +3148,7 @@ async fn test_recurring_negative_delta_does_not_touch_previous_intervals() {
     // The boundary between the previous and current intervals, computed with
     // the same helper the update path uses.
     let interval_start =
-        feeling::task::current_interval_start(start_time, interval_span(interval), now);
+        im::task::current_interval_start(start_time, interval_span(interval), now);
 
     // One completion in the previous interval (count 2), one in the current
     // interval (count 3).
@@ -3158,7 +3158,7 @@ async fn test_recurring_negative_delta_does_not_touch_previous_intervals() {
     // Apply -5 via the sql API (the CLI `- @name` form was removed): the
     // current interval only holds 3, so the remaining 2 must NOT reach back
     // into the previous interval.
-    feeling::db::update_task(&pool, task_id, -5).await.unwrap();
+    im::db::update_task(&pool, task_id, -5).await.unwrap();
 
     // Previous-interval completion is untouched.
     let prev_sum: i64 = sqlx::query_scalar(
@@ -3183,7 +3183,7 @@ async fn test_recurring_negative_delta_does_not_touch_previous_intervals() {
     assert_eq!(cur_sum, 0, "current interval should be consumed");
 
     // The interval-scoped total returned by the shared helper is 0.
-    let total = feeling::task::apply_completion_delta(&pool, task_id, 0)
+    let total = im::task::apply_completion_delta(&pool, task_id, 0)
         .await
         .unwrap();
     assert_eq!(total, 0, "interval-scoped total must be 0");
@@ -3197,7 +3197,7 @@ async fn test_recurring_previous_interval_completions_still_shown() {
     // Its only completions live in the FIRST interval, so the current-interval
     // sum is 0 even though the all-time sum already reaches the target.
     let interval = 86_400i64;
-    let now = feeling::date::now();
+    let now = im::date::now();
     let start_time = now - 2 * interval - 500;
     let name = "brush teeth";
     sqlx::query(
@@ -3246,7 +3246,7 @@ async fn test_recurring_previous_interval_completions_still_shown() {
     // Completing it in the current interval: D9 keeps it visible in @ within
     // persist_pending_seconds (done ✓ badge); once the completion is outside
     // the persist window it disappears from the CLI @ view.
-    feeling::db::update_task(&pool, task_id, 2).await.unwrap();
+    im::db::update_task(&pool, task_id, 2).await.unwrap();
 
     let mut out = Vec::new();
     let cmd = parse_from(vec!["@".to_string()]).unwrap();
@@ -3294,7 +3294,7 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
     let mut config = Config::default();
     config.tracker.insert(
         "accomplishment".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -3303,7 +3303,7 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
         },
     );
 
-    // feeling -accomplishment "fixed 2 bugs" via the CLI path
+    // im -accomplishment "fixed 2 bugs" via the CLI path
     let cmd = parse_from(vec![
         "-accomplishment".to_string(),
         "fixed 2 bugs".to_string(),
@@ -3330,7 +3330,7 @@ async fn test_text_tracker_entry_today_badge_and_listing() {
     assert_eq!(row.get::<String, _>("t"), "text");
 
     // Today view: text entries use the ◆ badge with the text as label
-    // (bare `feeling` → Today; `-` alone is the TasksEdit stub).
+    // (bare `im` → Today; `-` alone is the TasksEdit stub).
     let cmd = parse_from(vec![]).unwrap();
     let mut out = Vec::new();
     execute_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
@@ -3367,7 +3367,7 @@ async fn test_text_tracker_lists_all_entries_in_range() {
     let mut config = Config::default();
     config.tracker.insert(
         "accomplishment".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -3410,7 +3410,7 @@ async fn test_tracker_parse_errors() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -3440,7 +3440,7 @@ async fn test_tracker_parse_errors() {
     // Number tracker: non-integer argument must error
     config.tracker.insert(
         "bugs".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -3482,7 +3482,7 @@ async fn test_number_tracker_stored_as_integer() {
     let mut config = Config::default();
     config.tracker.insert(
         "bugs".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: Some(0.0),
             max: Some(10.0),
@@ -3531,7 +3531,7 @@ async fn test_number_tracker_stored_as_integer() {
     assert_eq!(row.get::<i64, _>("score"), 11);
     assert_eq!(row.get::<String, _>("t"), "integer");
 
-    // Today view shows the integer value (bare `feeling` → Today).
+    // Today view shows the integer value (bare `im` → Today).
     let cmd = parse_from(vec![]).unwrap();
     let mut out = Vec::new();
     execute_command(cmd, &pool, &config, &CliOpts::default(), &mut out, false)
@@ -3549,7 +3549,7 @@ async fn test_today_view_include_overdue() {
     let name = "overdue chore";
     sqlx::query("INSERT INTO todos (name, body, priority, start_time) VALUES (?, '', 5, ?)")
         .bind(name)
-        .bind(feeling::date::now() - 2 * 86400)
+        .bind(im::date::now() - 2 * 86400)
         .execute(&pool)
         .await
         .unwrap();
@@ -3607,7 +3607,7 @@ async fn test_config_view_sections_deserialize() {
     assert_eq!(config.today_view.journal_badge, Some('•'));
     assert!(config.grid.week_rolling);
     assert!(!config.grid.month_rolling);
-    assert_eq!(config.grid.week_start, feeling::config::Weekday::Sunday);
+    assert_eq!(config.grid.week_start, im::config::Weekday::Sunday);
 
     // Unknown sections are rejected (serde deny_unknown_fields on Config).
     let err = toml::from_str::<Config>("[unknown.accomplishment]\n").unwrap_err();
@@ -3628,7 +3628,7 @@ async fn test_config_view_sections_deserialize() {
         default.grid.month_rolling,
         "month_rolling must default to true"
     );
-    assert_eq!(default.grid.week_start, feeling::config::Weekday::Monday);
+    assert_eq!(default.grid.week_start, im::config::Weekday::Monday);
     assert_eq!(default.tracker.get("accomplishment").map(|t| t.kind), None);
 }
 
@@ -3639,13 +3639,13 @@ async fn test_priority_capped_at_max_priority_constant() {
     // cliclack `validate` closure in `prompt_priority` — used by the
     // oneshot and recurring creation flows — all read this constant.
     assert_eq!(
-        feeling::prompts::MAX_PRIORITY,
+        im::prompts::MAX_PRIORITY,
         999,
         "TODO.md requires priority capped to 999 — update ingestion if this changes"
     );
     // And the inclusive range used by validation (1..=999) accepts both
     // boundaries but rejects 0 and 1000.
-    let range = 1..=feeling::prompts::MAX_PRIORITY;
+    let range = 1..=im::prompts::MAX_PRIORITY;
     assert!(range.contains(&1), "lower bound must accept 1");
     assert!(range.contains(&999), "upper bound must accept 999");
     assert!(!range.contains(&0), "zero must be rejected");
@@ -3705,11 +3705,11 @@ async fn test_tracker_grid_uses_colors_override() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     use crossterm::style::Color as CtColor;
-    use feeling::config::ColorBins;
+    use im::config::ColorBins;
     let override_palette: ColorBins = vec![CtColor::Red, CtColor::White, CtColor::Blue].into();
     config.tracker.insert(
         "run".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: Some(day_interval()),
             min: Some(0.0),
             max: Some(10.0),
@@ -3719,7 +3719,7 @@ async fn test_tracker_grid_uses_colors_override() {
     );
     config.tracker.insert(
         "feel".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: Some(0.0),
             max: Some(10.0),
@@ -3794,7 +3794,7 @@ async fn test_mood_tracker_grid_week_default_non_rolling() {
 async fn test_mood_tracker_grid_week_start_config() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
-    config.grid.week_start = feeling::config::Weekday::Sunday;
+    config.grid.week_start = im::config::Weekday::Sunday;
 
     let cmd = parse_from(vec!["good".to_string()]).unwrap();
     execute_command(
@@ -4237,7 +4237,7 @@ async fn test_reset_reassigns_short_id_to_completed_task() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    feeling::db::reset_task_completions(&pool, row_id, None)
+    im::db::reset_task_completions(&pool, row_id, None)
         .await
         .unwrap();
 
@@ -4273,13 +4273,13 @@ async fn test_db_backfill_persists_scores_and_embeddings() {
     )
     .await
     .unwrap();
-    let now = feeling::date::now();
-    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('dull', '', ?)")
+    let now = im::date::now();
+    sqlx::query("INSERT INTO mood (mood, body, time) VALUES ('dull', '', ?)")
         .bind(now)
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO feeling (mood, body, time) VALUES ('', 'journal only', ?)")
+    sqlx::query("INSERT INTO mood (mood, body, time) VALUES ('', 'journal only', ?)")
         .bind(now)
         .execute(&pool)
         .await
@@ -4298,7 +4298,7 @@ async fn test_db_backfill_persists_scores_and_embeddings() {
     .unwrap();
 
     let rows: Vec<(String, Option<f32>, Option<Vec<u8>>)> =
-        sqlx::query_as("SELECT mood, score, embedding FROM feeling ORDER BY id")
+        sqlx::query_as("SELECT mood, score, embedding FROM mood ORDER BY id")
             .fetch_all(&pool)
             .await
             .unwrap();
@@ -4408,7 +4408,7 @@ async fn test_prune_deletes_expired_recurring_task() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
-    let past = feeling::date::now() - 3600;
+    let past = im::date::now() - 3600;
     sqlx::query(
         "INSERT INTO todos (name, body, priority, start_time, interval_secs, target_count, optional, end_time) \
          VALUES ('expired', '', 5, ?, ?, 1, 0, ?)",
@@ -4566,7 +4566,7 @@ async fn test_delete_task_cascades_completions() {
     // let config = Config::default();
 
     let id = create_oneshot_task(&pool, "to cull").await;
-    update_task(&pool, id, feeling::date::now(), 1).await;
+    update_task(&pool, id, im::date::now(), 1).await;
     let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM todo_completions WHERE todo_id = ?")
         .bind(id)
         .fetch_one(&pool)
@@ -4598,11 +4598,11 @@ async fn test_bundled_config_defaults_load_through_serde() {
     // `assets/moods.toml` without updating the anchors). It deliberately
     // does NOT assert exact RGB values — tweak those freely for palette
     // work without breaking the contract.
-    let cfg: Config = toml::from_str(feeling::config::DEFAULT_CONFIG)
+    let cfg: Config = toml::from_str(im::config::DEFAULT_CONFIG)
         .expect("bundled DEFAULT_CONFIG must deserialize");
 
-    let moods: feeling::config::MoodsFile =
-        toml::from_str(feeling::config::DEFAULT_MOODS).expect("bundled DEFAULT_MOODS must parse");
+    let moods: im::config::MoodsFile =
+        toml::from_str(im::config::DEFAULT_MOODS).expect("bundled DEFAULT_MOODS must parse");
     assert!(!moods.pairs.is_empty());
 
     // The default config points `source` at the moods file.
@@ -4619,12 +4619,12 @@ async fn test_bundled_config_defaults_load_through_serde() {
 /// tests pin the semantics the action handlers rely on.
 
 #[tokio::test]
-async fn test_delete_feeling_removes_linked_tracker_rows() {
+async fn test_delete_mood_removes_linked_tracker_rows() {
     let pool = test_pool().await.unwrap();
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -4633,7 +4633,7 @@ async fn test_delete_feeling_removes_linked_tracker_rows() {
         },
     );
 
-    // Insert a feeling with a linked tracker row (like `feeling ok -sleep 8`).
+    // Insert a mood with a linked tracker row (like `mood ok -sleep 8`).
     let cmd = parse_from(vec![
         "ok".to_string(),
         "-sleep".to_string(),
@@ -4651,37 +4651,37 @@ async fn test_delete_feeling_removes_linked_tracker_rows() {
     .await
     .unwrap();
 
-    let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'ok'")
+    let mood_id: i64 = sqlx::query_scalar("SELECT id FROM mood WHERE mood = 'ok'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    let linked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker WHERE feeling = ?")
-        .bind(feeling_id)
+    let linked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker WHERE mood = ?")
+        .bind(mood_id)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(linked, 1);
 
     // The today TUI delete path: delete tracker rows first (FK, no cascade),
-    // then the feeling row, in a transaction.
+    // then the mood row, in a transaction.
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query("DELETE FROM tracker WHERE feeling = ?")
-        .bind(feeling_id)
+    sqlx::query("DELETE FROM tracker WHERE mood = ?")
+        .bind(mood_id)
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM feeling WHERE id = ?")
-        .bind(feeling_id)
+    sqlx::query("DELETE FROM mood WHERE id = ?")
+        .bind(mood_id)
         .execute(&mut *tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
-    let feelings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+    let moods: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(feelings, 0);
+    assert_eq!(moods, 0);
     let trackers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracker")
         .fetch_one(&pool)
         .await
@@ -4697,7 +4697,7 @@ async fn test_delete_tracker_row() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -4706,7 +4706,7 @@ async fn test_delete_tracker_row() {
         },
     );
 
-    // Two tracker entries, one linked to a feeling.
+    // Two tracker entries, one linked to a mood.
     let cmd = parse_from(vec![
         "ok".to_string(),
         "-sleep".to_string(),
@@ -4741,8 +4741,8 @@ async fn test_delete_tracker_row() {
         .unwrap();
     assert_eq!(ids.len(), 2);
 
-    // Delete the unlinked row; the linked one (and its feeling) survive.
-    let affected = feeling::db::delete_tracker_entry(&pool, ids[1])
+    // Delete the unlinked row; the linked one (and its mood) survive.
+    let affected = im::db::delete_tracker_entry(&pool, ids[1])
         .await
         .unwrap();
     assert_eq!(affected, 1);
@@ -4751,16 +4751,16 @@ async fn test_delete_tracker_row() {
         .await
         .unwrap();
     assert_eq!(remaining, 1);
-    let feelings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+    let moods: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(feelings, 1);
+    assert_eq!(moods, 1);
 }
 
 #[tokio::test]
-async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
-    // The tracker.feeling FK has no ON DELETE CASCADE, so deleting a feeling
+async fn test_delete_mood_without_cascade_fails_with_fk_enforced() {
+    // The tracker.mood FK has no ON DELETE CASCADE, so deleting a mood
     // row while linked tracker rows still exist must fail under PRAGMA
     // foreign_keys = ON. This is why the today delete path deletes tracker
     // rows first.
@@ -4768,7 +4768,7 @@ async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -4793,18 +4793,18 @@ async fn test_delete_feeling_without_cascade_fails_with_fk_enforced() {
     )
     .await
     .unwrap();
-    let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'ok'")
+    let mood_id: i64 = sqlx::query_scalar("SELECT id FROM mood WHERE mood = 'ok'")
         .fetch_one(&pool)
         .await
         .unwrap();
 
-    let r = sqlx::query("DELETE FROM feeling WHERE id = ?")
-        .bind(feeling_id)
+    let r = sqlx::query("DELETE FROM mood WHERE id = ?")
+        .bind(mood_id)
         .execute(&pool)
         .await;
     assert!(
         r.is_err(),
-        "FK must block deleting a feeling with linked trackers"
+        "FK must block deleting a mood with linked trackers"
     );
 }
 
@@ -4865,7 +4865,7 @@ async fn test_edit_tracker_text_payload() {
     let mut config = Config::default();
     config.tracker.insert(
         "note".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -4911,7 +4911,7 @@ async fn test_edit_tracker_float_payload() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -4953,7 +4953,7 @@ async fn test_edit_tracker_float_payload() {
 }
 
 #[tokio::test]
-async fn test_edit_feeling_body() {
+async fn test_edit_mood_body() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
@@ -4973,20 +4973,20 @@ async fn test_edit_feeling_body() {
     )
     .await
     .unwrap();
-    let feeling_id: i64 = sqlx::query_scalar("SELECT id FROM feeling WHERE mood = 'calm'")
+    let mood_id: i64 = sqlx::query_scalar("SELECT id FROM mood WHERE mood = 'calm'")
         .fetch_one(&pool)
         .await
         .unwrap();
 
-    sqlx::query("UPDATE feeling SET body = ? WHERE id = ?")
+    sqlx::query("UPDATE mood SET body = ? WHERE id = ?")
         .bind("revised note")
-        .bind(feeling_id)
+        .bind(mood_id)
         .execute(&pool)
         .await
         .unwrap();
 
-    let body: String = sqlx::query_scalar("SELECT body FROM feeling WHERE id = ?")
-        .bind(feeling_id)
+    let body: String = sqlx::query_scalar("SELECT body FROM mood WHERE id = ?")
+        .bind(mood_id)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -4998,7 +4998,7 @@ async fn test_reset_progress_oneshot_clears_all_completions() {
     let pool = test_pool().await.unwrap();
 
     let task_id = create_oneshot_task(&pool, "reset me").await;
-    update_task(&pool, task_id, feeling::date::now(), 1).await;
+    update_task(&pool, task_id, im::date::now(), 1).await;
 
     // The @done reset path for a oneshot task: delete all completions.
     sqlx::query("DELETE FROM todo_completions WHERE todo_id = ?")
@@ -5007,7 +5007,7 @@ async fn test_reset_progress_oneshot_clears_all_completions() {
         .await
         .unwrap();
 
-    let total = feeling::task::apply_completion_delta(&pool, task_id, 0)
+    let total = im::task::apply_completion_delta(&pool, task_id, 0)
         .await
         .unwrap();
     assert_eq!(
@@ -5022,7 +5022,7 @@ async fn test_reset_progress_recurring_only_current_interval() {
 
     // Recurring task with a 1-day interval, started 3 days + 500s ago.
     let interval = 86_400i64;
-    let now = feeling::date::now();
+    let now = im::date::now();
     let start_time = now - 3 * interval - 500;
     let name = "daily reset";
     sqlx::query(
@@ -5046,7 +5046,7 @@ async fn test_reset_progress_recurring_only_current_interval() {
         .unwrap();
 
     let interval_start =
-        feeling::task::current_interval_start(start_time, interval_span(interval), now);
+        im::task::current_interval_start(start_time, interval_span(interval), now);
     update_task(&pool, task_id, interval_start - 100, 2).await;
     update_task(&pool, task_id, interval_start + 100, 3).await;
 
@@ -5069,7 +5069,7 @@ async fn test_reset_progress_recurring_only_current_interval() {
     .unwrap();
     assert_eq!(prev_sum, 2, "previous intervals must be preserved");
 
-    let total = feeling::task::apply_completion_delta(&pool, task_id, 0)
+    let total = im::task::apply_completion_delta(&pool, task_id, 0)
         .await
         .unwrap();
     assert_eq!(total, 0, "current interval must be empty after reset");
@@ -5083,7 +5083,7 @@ async fn test_fetch_today_entries_carries_tracker_ids() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -5104,23 +5104,23 @@ async fn test_fetch_today_entries_carries_tracker_ids() {
     .await
     .unwrap();
 
-    let embedder = feeling::embedding::global_embedder();
+    let embedder = im::embedding::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
-        feeling::types::TodayHorizon::Today,
+        im::types::TodayHorizon::Today,
         None,
-        feeling::types::ViewVariant::All,
+        im::types::ViewVariant::All,
         &mut color_cache,
     )
     .await
     .unwrap();
     let tracker = entries
         .iter()
-        .find(|e| e.kind == feeling::today::EntryKind::Tracker(TrackerKind::Float))
+        .find(|e| e.kind == im::today::EntryKind::Tracker(TrackerKind::Float))
         .expect("tracker entry must appear in today view");
     assert!(tracker.id.is_some(), "tracker entry must carry its row id");
 
@@ -5174,16 +5174,16 @@ async fn test_fetch_today_entries_completed_task_has_check_badge() {
     .unwrap();
 
     let mut config = config;
-    let embedder = feeling::embedding::global_embedder();
+    let embedder = im::embedding::global_embedder();
     config.moods.init_with(&pool, embedder).await.unwrap();
 
     let mut color_cache = std::collections::HashMap::new();
-    let entries = feeling::today::fetch_today_entries(
+    let entries = im::today::fetch_today_entries(
         &pool,
         &config,
-        feeling::types::TodayHorizon::Today,
+        im::types::TodayHorizon::Today,
         None,
-        feeling::types::ViewVariant::All,
+        im::types::ViewVariant::All,
         &mut color_cache,
     )
     .await
@@ -5208,11 +5208,11 @@ async fn test_today_view_journal_badge() {
     let mut config = Config::default();
     config
         .moods
-        .init_with(&pool, feeling::embedding::global_embedder())
+        .init_with(&pool, im::embedding::global_embedder())
         .await
         .unwrap();
 
-    // Journal-only entry: mood '' with a body (via CLI: `feeling .. text`).
+    // Journal-only entry: mood '' with a body (via CLI: `mood .. text`).
     let cmd = parse_from(vec!["..".to_string(), "a journal note".to_string()]).unwrap();
     execute_command(
         cmd,
@@ -5227,12 +5227,12 @@ async fn test_today_view_journal_badge() {
 
     // Default (no journal_badge): no badge at all.
     let mut out = Vec::new();
-    feeling::today::write_today_view(
+    im::today::write_today_view(
         &pool,
         &config,
         None,
-        feeling::types::ViewVariant::All,
-        feeling::types::TodayHorizon::Today,
+        im::types::ViewVariant::All,
+        im::types::TodayHorizon::Today,
         &CliOpts::default(),
         &mut out,
     )
@@ -5252,12 +5252,12 @@ async fn test_today_view_journal_badge() {
     // With a configured badge, the journal entry carries it.
     config.today_view.journal_badge = Some('•');
     let mut out = Vec::new();
-    feeling::today::write_today_view(
+    im::today::write_today_view(
         &pool,
         &config,
         None,
-        feeling::types::ViewVariant::All,
-        feeling::types::TodayHorizon::Today,
+        im::types::ViewVariant::All,
+        im::types::TodayHorizon::Today,
         &CliOpts::default(),
         &mut out,
     )
@@ -5280,8 +5280,8 @@ async fn test_clear_command() {
     let pool = test_pool().await.unwrap();
     let config = Config::default();
 
-    // Create a feeling entry for today
-    let cmd = parse_from(vec!["feeling".to_string(), "good".to_string()]).unwrap();
+    // Create a mood entry for today
+    let cmd = parse_from(vec!["mood".to_string(), "good".to_string()]).unwrap();
     execute_command(
         cmd,
         &pool,
@@ -5293,7 +5293,7 @@ async fn test_clear_command() {
     .await
     .unwrap();
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -5312,7 +5312,7 @@ async fn test_clear_command() {
     .await
     .unwrap();
 
-    let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feeling")
+    let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mood")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -5326,8 +5326,8 @@ fn test_db_doctor_parse() {
     let cmd = parse_from(vec![":db".to_string(), "doctor".to_string()]).unwrap();
     assert!(matches!(
         cmd,
-        feeling::cli::Command::Db {
-            sub: feeling::cli::DbSubcommand::Doctor
+        im::cli::Command::Db {
+            sub: im::cli::DbSubcommand::Doctor
         }
     ));
     assert!(parse_from(vec![
@@ -5350,7 +5350,7 @@ async fn test_db_doctor_noninteractive_reports_only() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -5409,7 +5409,7 @@ async fn test_db_doctor_buckets_and_prune() {
     let mut config = Config::default();
     config.tracker.insert(
         "sleep".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: Some(82800.0),
             max: Some(7200.0),
@@ -5419,7 +5419,7 @@ async fn test_db_doctor_buckets_and_prune() {
     );
     config.tracker.insert(
         "water".to_string(),
-        feeling::config::TrackerSetting {
+        im::config::TrackerSetting {
             interval: None,
             min: None,
             max: None,
@@ -5471,7 +5471,7 @@ async fn test_db_doctor_buckets_and_prune() {
         .await
         .unwrap();
 
-    let kinds = feeling::db::fetch_tracker_score_kinds(&pool).await.unwrap();
+    let kinds = im::db::fetch_tracker_score_kinds(&pool).await.unwrap();
     let buckets: Vec<(String, String, i64, i64)> = kinds
         .iter()
         .map(|r| {
@@ -5498,22 +5498,22 @@ async fn test_db_doctor_buckets_and_prune() {
     // (marker-mode null) = keep integers + drop nonzero; water = keep
     // integers; old = orphan, drop everything.
     let rules = vec![
-        feeling::db::TrackerPruneRule::Storage {
+        im::db::TrackerPruneRule::Storage {
             tracker_type: "sleep".to_string(),
             keep: "integer",
         },
-        feeling::db::TrackerPruneRule::NonzeroScore {
+        im::db::TrackerPruneRule::NonzeroScore {
             tracker_type: "sleep".to_string(),
         },
-        feeling::db::TrackerPruneRule::Storage {
+        im::db::TrackerPruneRule::Storage {
             tracker_type: "water".to_string(),
             keep: "integer",
         },
-        feeling::db::TrackerPruneRule::All {
+        im::db::TrackerPruneRule::All {
             tracker_type: "old".to_string(),
         },
     ];
-    let deleted = feeling::db::prune_tracker_rules(&pool, &rules)
+    let deleted = im::db::prune_tracker_rules(&pool, &rules)
         .await
         .unwrap();
     assert_eq!(deleted, 4, "1 nonzero + 1 text + 1 real + 1 orphan");

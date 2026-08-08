@@ -55,52 +55,52 @@ pub enum Command {
         start: String,
         end: String,
     },
-    /// `feeling` with no args — today view; `feeling @<date>` anchors it to
-    /// an arbitrary day (any date string that parses); `feeling @due[:t|:w]`
+    /// `im` with no args — today view; `im @<date>` anchors it to
+    /// an arbitrary day (any date string that parses); `im @due[:t|:w]`
     /// opens the today view at `ShowVariant::B` with the day/tomorrow/week
-    /// horizon. `feeling -` (bare) is TasksEdit.
+    /// horizon. `im -` (bare) is TasksEdit.
     Today {
         date: Option<String>,
         show: ViewVariant,
         horizon: TodayHorizon,
     },
-    /// `feeling -` (bare) — tasks-edit entry point. The handler is a stub
+    /// `im -` (bare) — tasks-edit entry point. The handler is a stub
     /// for now: `handle_tasks_edit` bails "not yet implemented" (interactive
     /// task editing is future work, see TODO.md).
     TasksEdit,
-    /// `feeling --help` / `feeling -h` in the initial position (handled in
+    /// `im --help` / `im -h` in the initial position (handled in
     /// `parse_cli`, before the command dispatchers — `parse_from` never sees
     /// a help token). Handlers print the contents of `assets/help.txt`.
     Help,
-    /// `feeling :config` — handlers open the active config file in
+    /// `im :config` — handlers open the active config file in
     /// $VISUAL/$EDITOR via [`crate::editor::open_editor_at`]. The bundled
     /// `assets/config.toml` is copied to the path first when missing.
     Config,
-    /// `feeling :moods` — like `:config`, but opens the moods file named by
+    /// `im :moods` — like `:config`, but opens the moods file named by
     /// `[moods] source` (relative to the config directory) in
     /// $VISUAL/$EDITOR. A missing file is created from the bundled moods
     /// defaults first; when `source` is unset the handler warns that it
     /// must be configured.
     Moods,
-    /// `feeling :db prune` — delete completed oneshot tasks and recurring
+    /// `im :db prune` — delete completed oneshot tasks and recurring
     /// tasks whose `end_time` has passed.
     Db {
         sub: DbSubcommand,
     },
-    /// `feeling :color <feeling>` — embed a mood string (with `"feeling "`
+    /// `im :color <mood>` — embed a mood string (with `"mood "`
     /// prefix) and print the projected Oklab / sRGB color plus intermediate
     /// pipeline values (raw scores, blend factors, per-axis colors).
     /// Diagnostic tool for debugging the mood-color pipeline.
     Color {
         mood: String,
     },
-    /// `feeling :clear [@date]` — clear all mood entries from that day.
+    /// `im :clear [@date]` — clear all mood entries from that day.
     Clear {
         date: Option<String>,
     },
 }
 
-/// Subcommands of `feeling :db`.
+/// Subcommands of `im :db`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbSubcommand {
     /// `:db prune` — delete completed oneshot tasks and expired recurring
@@ -117,10 +117,10 @@ pub enum DbSubcommand {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateTarget {
-    /// `feeling - <id> [count]` — the oneshot task with that user-facing
+    /// `im - <id> [count]` — the oneshot task with that user-facing
     /// short id. Completed tasks have no short id and are not addressable.
     OneShot(i64),
-    /// `feeling - <words…> [count]` — the task whose name contains all
+    /// `im - <words…> [count]` — the task whose name contains all
     /// `words` in order (whitespace-separated subsequence match). The
     /// handler requires the match to be unique.
     Query { words: Vec<String> },
@@ -133,7 +133,7 @@ pub enum TrackerPeriod {
     Year,
 }
 
-/// One item in a `feeling :` display list. `Mood` is a positional marker
+/// One item in a `im :` display list. `Mood` is a positional marker
 /// (a bare `:` token in the args) that renders the mood grid at that spot;
 /// `Tracker(name)` renders that tracker's grid (`@name` for recurring).
 #[derive(Debug, Clone, PartialEq, Eq)]

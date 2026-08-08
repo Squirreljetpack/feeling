@@ -32,7 +32,7 @@ pub struct TodayApp {
     /// Which task subset the view displays (All / A / B); cycled with
     /// Ctrl+d. `B` is tasks-only (no trackers/mood sections).
     show: ViewVariant,
-    /// Day the view is anchored to (`None` = today). `feeling @<date>`.
+    /// Day the view is anchored to (`None` = today). `im @<date>`.
     day_epoch: Option<i64>,
     /// Title label for the anchored day: "Today" / "Yesterday" / DD-MM-YY.
     day_label: String,
@@ -47,7 +47,7 @@ pub struct TodayApp {
     pub(crate) color_cache: std::collections::HashMap<String, oklab::Oklab>,
     /// The selected task's linked mood entries (for the preview `moods:`
     /// field), refreshed with the selection.
-    linked_moods: Vec<crate::db::FeelingRow>,
+    linked_moods: Vec<crate::db::MoodRow>,
 }
 
 /// Modal state for the today view. Common payloads live in `ui::modal`; the
@@ -726,7 +726,7 @@ impl TodayApp {
                 let Some(id) = entry.id else { return };
                 let body = entry.body.to_string();
                 if let Some(new_body) = edit_with_editor(tui, controller, rx, &body).await {
-                    self.update_feeling_body(id, &new_body).await;
+                    self.update_mood_body(id, &new_body).await;
                     self.refresh().await;
                 }
             } // Completions aren't editable.
@@ -737,8 +737,8 @@ impl TodayApp {
         let _ = crate::db::update_todo_body(&self.pool, id, body).await;
     }
 
-    async fn update_feeling_body(&self, id: i64, body: &str) {
-        let _ = crate::db::update_feeling_body(&self.pool, id, body).await;
+    async fn update_mood_body(&self, id: i64, body: &str) {
+        let _ = crate::db::update_mood_body(&self.pool, id, body).await;
     }
 
     async fn update_tracker_score(&self, id: i64, kind: crate::config::TrackerKind, value: &str) {
@@ -747,13 +747,13 @@ impl TodayApp {
 }
 
 impl TodayApp {
-    /// Delete a feeling row and any linked tracker rows in a
-    /// transaction. `tracker.feeling` has a FK to `feeling(id)` with no
+    /// Delete a mood row and any linked tracker rows in a
+    /// transaction. `tracker.mood` has a FK to `mood(id)` with no
     /// ON DELETE CASCADE, so linked tracker rows must be deleted first
-    /// (handled inside `sql::delete_feeling`).
-    async fn delete_feeling(&self, id: i64) {
-        if let Err(e) = crate::db::delete_feeling(&self.pool, id).await {
-            cba::ebog!("delete-feeling"; "{e:#}");
+    /// (handled inside `sql::delete_mood`).
+    async fn delete_mood(&self, id: i64) {
+        if let Err(e) = crate::db::delete_mood(&self.pool, id).await {
+            cba::ebog!("delete-mood"; "{e:#}");
         }
     }
 }
@@ -832,7 +832,7 @@ impl Render for TodayApp {
                     match entry.kind {
                         EntryKind::Mood | EntryKind::Journal => {
                             if let Some(id) = entry.id {
-                                self.delete_feeling(id).await;
+                                self.delete_mood(id).await;
                                 self.refresh().await;
                             }
                         }

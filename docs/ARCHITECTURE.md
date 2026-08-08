@@ -1,4 +1,4 @@
-# feeling — Architecture
+# im — Architecture
 
 A CLI + TUI journaling and task-tracking tool. Mood entries (optionally journal
 bodies), numeric trackers, oneshot/recurring/scheduled tasks, all stored
@@ -27,7 +27,7 @@ and variable month lengths are handled correctly; see "4. Date & duration".
 ## 1. Crate layout
 
 The crate is a **library + thin binary** so that integration tests can import it
-as `feeling::`.
+as `im::`.
 
 ```text
 src/
@@ -114,7 +114,7 @@ src/
 
 ````text
 bog::init_bogger
-cmd     = parse_args()                                          // feeling::cli
+cmd     = parse_args()                                          // im::cli
 init_logger([q, 1+v], log_path())                               // q/v from cli.opts
 config  = load_type_or_default(default_config_path(), toml)     // cba
          config.init()                                          // tracker-name validation, palette fallback
@@ -151,18 +151,18 @@ diagnostic to the caller's `out`.
 
 ## 2. Paths & config
 
-**paths.rs** — `BINARY_FULL = "feeling"`. `FEELING_CONFIG_DIR` env var overrides
-the config dir when it exists. Config path: `~/.config/feeling/dev.toml` in debug
+**paths.rs** — `BINARY_FULL = "im"`. `IM_CONFIG_DIR` env var overrides
+the config dir when it exists. Config path: `~/.config/im/dev.toml` in debug
 builds, `config.toml` in release (cba `expr_as_path_fn`). State dir:
-`dirs::state_dir()/feeling` (fallback `~/.local/state/feeling`). DB at
-`state_dir/feeling.db`, log at `state_dir/feeling.log`.
+`dirs::state_dir()/im` (fallback `~/.local/state/im`). DB at
+`state_dir/im.db`, log at `state_dir/im.log`.
 
 **config.rs** — `Config` (serde, every section `deny_unknown_fields` with
 per-field defaults). The mood anchors were moved out of the config into a
 separate moods file: `[moods] source` names it (relative to the config
 directory); the bundled `assets/moods.toml` (`moods.dev.toml` in debug) is
 embedded via `DEFAULT_MOODS` and deserialized as the default (`MoodsFile`).
-`feeling :moods` opens the imported file in $EDITOR, creating it from the
+`im :moods` opens the imported file in $EDITOR, creating it from the
 bundled default when missing.
 
 `Config::init` (called from main after load) drops tracker names that collide
@@ -188,11 +188,11 @@ WAL-mode db file, so the mode is deterministic regardless of the
 database's prior state.
 
 ```text
-feeling:  id, mood TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', time INTEGER (unixepoch),
+mood:  id, mood TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', time INTEGER (unixepoch),
           embedding BLOB, score REAL          -- cached saliency for the mood text; computed at
                                               -- entry creation; legacy rows get it via :db backfill
 tracker:  id, type TEXT, score BLOB NOT NULL CHECK (typeof(score) IN ('integer','text','real')),
-          time, feeling INTEGER → feeling(id)   -- nullable: tracker entries without a linked feeling are allowed
+          time, mood INTEGER → mood(id)   -- nullable: tracker entries without a linked mood are allowed
           -- score holds a text | integer | real payload per the tracker's declared kind;
           -- BLOB decltype (no affinity) preserves the storage class exactly
 todos:    id (AUTOINCREMENT), name TEXT NOT NULL, body, priority INTEGER DEFAULT 5,
@@ -208,8 +208,8 @@ todos:    id (AUTOINCREMENT), name TEXT NOT NULL, body, priority INTEGER DEFAULT
 todo_completions: id, todo_id → todos(id) ON DELETE CASCADE,
           -- row ids are stable (never reassigned), so no ON UPDATE CASCADE.
           time INTEGER, count INTEGER NOT NULL DEFAULT 1
-task_moods: todo_id → todos(id) ON DELETE CASCADE, feeling_id → feeling(id) ON DELETE CASCADE,
-          -- task ↔ mood links recorded by `feeling <mood> -<short id>`
+task_moods: todo_id → todos(id) ON DELETE CASCADE, mood_id → mood(id) ON DELETE CASCADE,
+          -- task ↔ mood links recorded by `im <mood> -<short id>`
 embedding_cache: text TEXT PRIMARY KEY, embedding BLOB
 ```text
 
@@ -273,7 +273,7 @@ reassigned**. The user-facing id is the separate `short_id` column:
 
 All date and duration parsing is encapsulated in the `date/` sub-module so callers work exclusively with `Epoch` (i64 Unix epoch seconds), duration seconds (`i64`), packed `DbSpan`s, or `jiff::Span`s. Internal calendar math runs on jiff with the local system time zone.
 
-- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: jiff_english::Dialect) -> Result<Epoch>` uses the `jiff-english` subcrate (`jiff_english::parse_date_string`, a chrono-english port on jiff) with `jiff::Zoned::now()` as the anchor, returning a `jiff::Zoned` whose epoch seconds are taken directly — no chrono bridge. Callers pass the compile-time-fixed `crate::date::DATE_DIALECT` constant (no config knob); it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. jiff-english adds the `eod`/`end`/`start` time specifiers and the `hence`/`later` interval markers (see `docs/date.md`). `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `feeling @<date>` today view.
+- **Datetime parsing (`date/parse.rs`)**: `parse_datetime(s: &str, dialect: jiff_english::Dialect) -> Result<Epoch>` uses the `jiff-english` subcrate (`jiff_english::parse_date_string`, a chrono-english port on jiff) with `jiff::Zoned::now()` as the anchor, returning a `jiff::Zoned` whose epoch seconds are taken directly — no chrono bridge. Callers pass the compile-time-fixed `crate::date::DATE_DIALECT` constant (no config knob); it only matters for ambiguous slash forms like `3/5/2024`. It handles both natural language expressions (e.g. `"yesterday"`, `"tomorrow 9am"`, `"3 days ago"`) and fixed format strings (e.g. `"2024-03-15"`, `"2024-03-15 14:30:00"`), returning epoch seconds directly. jiff-english adds the `eod`/`end`/`start` time specifiers and the `hence`/`later` interval markers (see `docs/date.md`). `parse_date(s, dialect)` additionally aligns to the start of that day — it backs the `im @<date>` today view.
 - **Duration parsing (`date/parse_duration.rs`)**: `parse_duration_secs(s: &str) -> Result<i64>` uses `humantime` for fixed durations (availability windows). `parse_span(s) -> Result<jiff::Span>` parses calendar-aware intervals ("1 day", "1 month", "1 week 2 days") for recurring-task and tracker intervals; `format_span` renders them back.
 - **Intervals (`date/span.rs`)**: `DbSpan` packs a `jiff::Span` (years/months/weeks/days/hours/minutes/seconds) into one `i64` for database storage (`span_to_db`/`db_to_span`). `current_interval_start_zoned(anchor, now, span)` computes the calendar interval boundary (estimate + fine-tune; DST-safe); `interval_index(anchor, t, span)` numbers intervals (negative before the anchor); `interval_slot_unix_secs` gives `[start, end)` replacement slots.
 - **Formatting (`date/format.rs`)**: jiff strtime: `format_time` (HH:MM), `format_date` (ISO), `format_datetime` (ISO + HH:MM), `format_datetime_short`, `format_day_time`, `format_duration` (humantime).
@@ -288,15 +288,15 @@ Manual parser, no clap crate. `parse_args()` (from `env::args`) and
 singly or combined like `-qv`) is stripped into `CliOpts { qv: [u8; 2] }`
 counts — order is not tracked (`-vq` ≡ `-qv`). `-h`/`--help` in the initial
 position short-circuits to `Command::Help`; after the first non-flag token
-everything is command text (so `feeling ok -q` treats `-q` as entry text).
+everything is command text (so `im ok -q` treats `-q` as entry text).
 `parse_from` dispatches on `args[0]`:
 
 | Input | Command |
 | --- | --- |
-| (no args) | `Today { date: None }` — today view (`feeling` with no subcommand) |
+| (no args) | `Today { date: None }` — today view (`mood` with no subcommand) |
 | `@<date>` | `Today { date: Some(date) }` — today view anchored to that day; the **handler** parses it with `DATE_DIALECT` (the parser has no config, so nothing is validated here) |
 | `--help` / `-h` | `Help` — bundled `assets/help.txt` printed via `include_str!` |
-| plain words (`happy`, `good ...`) | `Entry { feeling, trackers, .. }` — mood entry; trackers as `-type score` |
+| plain words (`happy`, `good ...`) | `Entry { mood, trackers, .. }` — mood entry; trackers as `-type score` |
 | `..` (bare, at the end) | opens the body editor — Entry via its `open_editor` flag; Task via the handler's `resolve_body` (the only case that does, in direct and interactive flows alike) |
 | `!` (bare) | `Task { OneShot, name: None, body: None }` — interactive oneshot creation (name prompted via `prompt_name`; body `None` → no body, no editor; a bare `..` opens the editor) |
 | `! <name> [@date] [..]` | `Task { OneShot, .. }` — `@YYYY-MM-DD` is the **due** time (stored in `end_time`; `start_time` records creation); a second `@`-word is rejected |
@@ -315,7 +315,7 @@ everything is command text (so `feeling ok -q` treats `-q` as entry text).
 | `:score "start" "end"` | `Score` — stub (`todo!()`) |
 | `:config` | `Config` — opens the live config in `$VISUAL`/`$EDITOR` |
 | `:db prune` | `Db { Prune }` — prunes expired/completed tasks, clears the embedding cache |
-| `:db backfill` | `Db { Backfill }` — computes and persists missing feeling embeddings + saliency scores |
+| `:db backfill` | `Db { Backfill }` — computes and persists missing mood embeddings + saliency scores |
 | `:db doctor` | `Db { Doctor }` — prunes tracker entries whose storage class no longer matches the configured kind (orphaned types and stale nonzero markers included; interactive confirm) |
 | `:color <mood>` | `Color` — full mood-color pipeline diagnostic |
 | `:clear [@date]` | `Clear` — deletes that day's mood entries (interactive confirm) |
@@ -331,8 +331,8 @@ recurring task names is allowed (the `@` prefix disambiguates).
 `execute_command<W: Write>(cmd, pool, config, opts: &CliOpts, out, tui)` matches
 the `Command` enum. `opts` gates confirmations and verbose output throughout.
 
-- **Entry** → `record_entry`: runs in a transaction; inserts `feeling` (+ optional
-  `tracker` rows with `feeling_id`). Each `-type value` is parsed against the
+- **Entry** → `record_entry`: runs in a transaction; inserts `mood` (+ optional
+  `tracker` rows with `mood_id`). Each `-type value` is parsed against the
   tracker's declared kind (text/number/float) with a clear error on mismatch;
   min/max apply to number/float, unknown tracker types are rejected. Insertion
   strategy is kind × interval: `text`/`float` trackers **with an interval**
@@ -349,7 +349,7 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
   an interval they are unsupported.
   `-<short id>` tokens link the mood entry to a task in `task_moods`. When the mood is
   non-empty it is embedded **before** the transaction opens, and its emotional
-  saliency is computed (`color::predict_saliency`) and stored in `feeling.score`
+  saliency is computed (`color::predict_saliency`) and stored in `mood.score`
   — so later color passes skip the saliency ONNX run for fresh rows. A wholly
   empty entry is aborted ("Nothing to log"). Confirmation output
   (`display::display_entry`) is quiet-gated.
@@ -363,7 +363,7 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
     triggers the flow. Body resolution (`resolve_body`) is the same in every
     flow: `.. text` is used as-is, a bare `..` opens the editor, and no `..`
     means no body.
-  - recurring: interactive flow (`feeling ! @ <name>`) — cliclack
+  - recurring: interactive flow (`im ! @ <name>`) — cliclack
     prompts for name (unique, pre-filled), priority, interval, available
     duration, target count, end time, optional. The flow
     bails when stdin is not interactive. Pre-filled values are logged at info
@@ -392,7 +392,7 @@ the `Command` enum. `opts` gates confirmations and verbose output throughout.
 - **Tracker** → `tracker::write_tracker_grid` (no TUI path yet).
 - **Db** → `:db prune` prunes expired/completed tasks and clears the
   **entire** `embedding_cache` (it is a cache — rows are lazily re-embedded);
-  `:db backfill` computes and persists missing feeling embeddings and
+  `:db backfill` computes and persists missing mood embeddings and
   saliency scores (rendering no longer backfills them inline). `:db doctor`
   groups tracker entries by `typeof(score)` and prunes the buckets that no
   longer match the tracker's configured kind (each kind fixes a storage
@@ -463,12 +463,12 @@ order only survives where the Rust keys tie (the sorts are stable).
 
 ### Today view — `fetch_today_entries` / `format_today_simple`
 
-`ts \t marker \t label \t detail` rows aggregated from feelings, tracker
+`ts \t marker \t label \t detail` rows aggregated from moods, tracker
 entries, due oneshot tasks, scheduled tasks whose window overlaps the horizon,
 and active recurring tasks (recurring availability filter:
 `(now - start_time) mod interval < available_duration`). **Rows are tasks
 only — completion events are not rendered**; a done task carries `✓` on its
-own row instead. Badges: `●` feeling + Oklab mood projection; `◆` numeric
+own row instead. Badges: `●` mood + Oklab mood projection; `◆` numeric
 tracker + `bin_score_color`; `·` text tracker; oneshot tasks use `○`
 (in-progress) / `✓` (done); recurring tasks use `↻` (in-progress) / `✓`
 (done); scheduled tasks render `✓` for done/auto-completed states and `◷`
@@ -480,7 +480,7 @@ Option<char>`) and a dynamic dot color (`TodayEntry.color`, type
 the same `TodayEntry`s, so both renderers share the exact badge/color logic.
 
 Horizons: Today / Tomorrow / Week — **Week is always the next 7 days** from
-the anchored day. `feeling @<date>` anchors the view to any parseable day
+the anchored day. `im @<date>` anchors the view to any parseable day
 (day-aligned, `DATE_DIALECT`; the TUI title shows Today / Yesterday /
 DD-MM-YY). The oneshot query has two orthogonal bounds on the due time
 (`COALESCE(end_time, start_time)`, where `end_time` is the `@<time>`
@@ -505,7 +505,7 @@ the weekday-rows heatmap. `write_tracker_grid` prints one section per item:
   The "No entries" / "No completions" / "not found" messages are
   unconditional.
 - **Mood tracker** (`display_mood_tracker`): per-day dot colored by the Oklab
-  mood projection (§11), preferring stored `feeling.embedding` blobs over
+  mood projection (§11), preferring stored `mood.embedding` blobs over
   on-the-fly embedding. Days without an entry render `◯`; days with an entry
   render `●`. Queries filter `mood != ''` so journal-only entries are excluded.
 - **Tracker** (`display_tracker`): per-interval dots binned with
@@ -600,7 +600,7 @@ Both TUIs route Enter through the same pure decision fn
 
 ### Item Editing (`Action::Edit`)
 
-`Ctrl+e` / `e` on the selected item: tasks and feeling entries open the
+`Ctrl+e` / `e` on the selected item: tasks and mood entries open the
 external editor pre-filled with the body (event loop suspended via
 `ControlEvent::Pause`); text trackers open the editor on their payload;
 `number`/`float` trackers use the in-TUI `EditTrackerModal` (validated against
@@ -628,7 +628,7 @@ the tracker kind on Enter).
   `sort_by_priority`, `modal`, `selected_task`, `color_cache`. Cycles horizons
   (Today → Tomorrow → Week) via `Tab`; the title shows the anchored day
   (`Today` / `Yesterday` / `DD-MM-YY`); handles mood/task body edits, tracker
-  edits, and deletion — `Delete` works on feeling / tracker / task
+  edits, and deletion — `Delete` works on mood / tracker / task
   entries with a confirm modal ("Delete journal entry?" for nameless rows).
 
 ---
@@ -709,10 +709,10 @@ a = Seff·a_blended,  b = Seff·b_blended
 
 `None` maps to the neutral baseline (`(L=baseline_oklab_l, a=0, b=0)`).
 
-**Render path (`mood_color_cached`)** — resolves a feeling row within a render
+**Render path (`mood_color_cached`)** — resolves a mood row within a render
 run: per-mood `HashMap<String, Oklab>` cache so repeated moods run the
 pipeline once; prefers the stored embedding BLOB (re-embeds + backfills
-`feeling.embedding` for legacy rows); passes `feeling.score` as the saliency
+`mood.embedding` for legacy rows); passes `mood.score` as the saliency
 override and backfills the score when absent. Journal-only rows (empty mood)
 return `None` and are never scored. `diagnose_color` (`:color <mood>`) runs the
 pipeline once and prints every intermediate value plus a terminal swatch.
@@ -752,7 +752,7 @@ real editor.
 - Recurring tasks are seeded via raw SQL INSERTs because the `! @` cliclack
   prompts bail on non-interactive stdin; completion updates still go through
   `execute_command`.
-- Embedding-dependent paths (today view colors, `feeling.score` backfill) run
+- Embedding-dependent paths (today view colors, `mood.score` backfill) run
   for real: the model is bundled into the test binary, so there is no download
   gate and no CI download.
 - `tui: false` is always passed, keeping TUI code out of tests.
@@ -775,6 +775,6 @@ real editor.
   `INCLUDE_COMPLETED` / `INCLUDE_SCHEDULED` env vars (previously applied in
   main.rs via `apply_envs`) were removed with them. No flags will be added.
 - **No DB migrations** — schema changes are CREATE TABLE edits only; the dev DB
-  (`~/.local/state/feeling/feeling.db`) must be deleted manually when the schema
+  (`~/.local/state/im/mood.db`) must be deleted manually when the schema
   changes.
 - Trackers have no TUI path; entry creation is CLI-only (no TUI input forms).

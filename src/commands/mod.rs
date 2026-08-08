@@ -79,7 +79,7 @@ pub async fn execute_command<W: Write>(
                 .moods
                 .init_with(pool, crate::embedding::global_embedder())
                 .await?;
-            // `feeling @<date>` anchors the view to that day; parse with
+            // `im @<date>` anchors the view to that day; parse with
             // the fixed `DATE_DIALECT`.
             let day_epoch = match &date {
                 Some(d) => Some(crate::date::parse_date(d, crate::date::DATE_DIALECT)?),

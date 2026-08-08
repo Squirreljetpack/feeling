@@ -1,15 +1,13 @@
 [package]
-name = "feeling-dynamic"
+name = "im-dynamic"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Dynamic ONNX Runtime variant of feeling CLI (requires system libonnxruntime)"
+description = "Dynamic ONNX Runtime variant of im CLI (requires system libonnxruntime)"
 
 [dependencies]
-feeling = { path = "../..", default-features = false, features = [
-  "load-dynamic",
-] }
+im = { path = "../..", default-features = false, features = ["load-dynamic"] }
 tokio = { version = "1", features = ["full"] }
 mimalloc = "0.1"
 

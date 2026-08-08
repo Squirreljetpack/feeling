@@ -11,7 +11,7 @@ pub fn display_entry(entry: &crate::db::EntryObject, opts: &CliOpts) -> Result<(
     }
     let mut rows: Vec<(String, String)> = Vec::new();
     if !entry.mood.is_empty() {
-        rows.push(("Feeling".to_string(), entry.mood.clone()));
+        rows.push(("Mood".to_string(), entry.mood.clone()));
     }
     for tracker in &entry.trackers {
         rows.push((tracker.tracker_type.clone(), tracker.value.to_string()));

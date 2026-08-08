@@ -151,7 +151,7 @@ pub fn prompt_attach_parent(name: &str) -> Result<bool> {
 
 /// Prompt for a task name (required, no tabs, trimmed). The duplicate-name
 /// check against the database is the caller's responsibility (it needs the
-/// pool); `prefill` seeds the input for `feeling ! @ <name>`.
+/// pool); `prefill` seeds the input for `im ! @ <name>`.
 pub fn prompt_name(prefill: Option<&str>) -> Result<String> {
     use cliclack::input;
 

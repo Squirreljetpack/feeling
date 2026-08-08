@@ -3,7 +3,7 @@ use crate::types::{TodayHorizon, ViewMode, ViewVariant};
 
 pub(crate) fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
     // Everything after the `@` token joins into the command text: multi-word
-    // datetimes work (`feeling @2024-03-20 14:30`), while a stray token
+    // datetimes work (`im @2024-03-20 14:30`), while a stray token
     // after `@`/`@due`/`@done` is rejected here (or by the handler's date
     // parse for `@ <words>`) — never silently ignored. Only the first word
     // can carry a variant/horizon suffix (`@:o`, `@due:t`); a colon later
@@ -62,8 +62,8 @@ pub(crate) fn parse_view_command(args: &[String]) -> anyhow::Result<Command> {
                 horizon,
             })
         }
-        // Any other @-word is a today-view date: `feeling @2024-03-20`
-        // (plus optional time words, `feeling @2024-03-20 14:30`).
+        // Any other @-word is a today-view date: `im @2024-03-20`
+        // (plus optional time words, `im @2024-03-20 14:30`).
         // Parsing happens in the handler with `DATE_DIALECT` (the CLI
         // parser has no config), so an unparseable date fails there with
         // a clear error rather than here.

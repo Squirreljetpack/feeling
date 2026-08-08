@@ -1,4 +1,4 @@
-//! Seed the feeling database with all variations of mood entries,
+//! Seed the im database with all variations of mood entries,
 //! tracker entries, oneshot tasks, recurring tasks, and
 //! scheduled tasks — constructed directly as `sql::EntryObject` /
 //! `sql::TaskObject` payloads (no CLI, no interactive prompts, no
@@ -18,13 +18,13 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use feeling::config::{Config, TrackerKind};
+use im::config::{Config, TrackerKind};
 use mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-use feeling::date;
-use feeling::db::{
+use im::date;
+use im::db::{
     create_entry, create_task, set_scheduled_completion, update_task, EntryObject, TaskObject,
     TrackerObject, TrackerValue,
 };
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     // Create the pool, run migrations, and populate.
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
     rt.block_on(async {
-        let pool = feeling::db::init_database(&PathBuf::from(&db_path))
+        let pool = im::db::init_database(&PathBuf::from(&db_path))
             .await
             .context("Failed to open DB")?;
 

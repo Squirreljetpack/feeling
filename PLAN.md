@@ -88,17 +88,17 @@ checkpoint commit (`cargo fmt -- --check`, `cargo check`, `cargo test`,
 
 ## Stage 3 — task↔mood links, preview moods, sync mood color cache
 
-- `db/mod.rs`: new `task_moods` link table (task id, feeling id, FKs
+- `db/mod.rs`: new `task_moods` link table (task id, mood id, FKs
   cascade) + index.
 - `types::Entry.task_links: Vec<i64>` (task short ids); parser accepts
   `-<numeric>` in entry commands as a link; `commands/entry.rs` resolves
-  short ids to row ids and inserts link rows with the feeling entry
-  (errors when the entry creates no feeling row).
+  short ids to row ids and inserts link rows with the mood entry
+  (errors when the entry creates no mood row).
 - `color/mod.rs`: `mood_color_cached` becomes **sync** and backfill-free
   (embedding from blob or embed-on-the-fly, score from row or predict —
   no DB writes); add a process-wide `Mutex<HashMap<String, Oklab>>`
   global cache for preview use; update `today.rs` caller.
-- `db/entries.rs`: `fetch_linked_moods(task_id)` → `Vec<FeelingRow>`.
+- `db/entries.rs`: `fetch_linked_moods(task_id)` → `Vec<MoodRow>`.
 - `ui/tasks.rs` + `ui/today.rs`: on selection change fetch the selected
   task's linked moods; `ui/preview.rs::build_preview` gains a
   `linked_moods` parameter and renders `moods:` + `- ● {mood}` lines
@@ -111,7 +111,7 @@ checkpoint commit (`cargo fmt -- --check`, `cargo check`, `cargo test`,
   (`Prune` | `Backfill`); `cli/parse/special.rs` parses `:db prune` /
   `:db backfill` (bare `:db` → usage error).
 - `commands/maintenance.rs`: `:db prune` = current prune behavior;
-  `:db backfill` = compute + persist missing feeling embeddings/scores
+  `:db backfill` = compute + persist missing mood embeddings/scores
   (the behavior `mood_color_cached` used to do inline).
 - Update `assets/help.txt`, parser tests, integration tests
   (`:prune` → `:db prune`), README, docs/ARCHITECTURE.md.

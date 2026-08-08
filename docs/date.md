@@ -189,7 +189,7 @@ the rules in the interval table above.
 
 `start` resolves to **00:00:00.000000000** of the computed date; `eod` and
 `end` to the **last moment of the day, 23:59:59.999999999** (the `Epoch`
-boundary in feeling truncates to whole seconds, i.e. 23:59:59 — same as
+boundary in im truncates to whole seconds, i.e. 23:59:59 — same as
 `date::day_end`). All three are case-insensitive and usable as the time part
 of any date form, or bare (today).
 
@@ -210,13 +210,13 @@ of any date form, or bare (today).
 | `18:03 eod` | error `expected am or pm` | a formal time rejects a trailing specifier; use one or the other |
 
 (The `8pm eod` row describes the lenient `parse_date_string`; through
-feeling's strict entry point it errors like every other trailing word.)
+im's strict entry point it errors like every other trailing word.)
 
 ## Dialect: `Uk` vs `Us`
 
 The dialect changes exactly two things; everything else parses identically:
 
-| form | `Dialect::Uk` (used by feeling) | `Dialect::Us` |
+| form | `Dialect::Uk` (used by im) | `Dialect::Us` |
 | --- | --- | --- |
 | `3/5/2024` (slash dates) | 2024-**05-03** (day/month) | 2024-03-**05** (month/day) |
 | `explicit next <weekday>` | weekday of **next week** (+7d): `next mon` from Thu Mar 14 → Mar 25 | just the next occurrence: → Mar 18 |
@@ -237,7 +237,7 @@ The dialect changes exactly two things; everything else parses identically:
 
 ## Strict vs lenient entry points
 
-`jiff-english` exposes three entry points; feeling uses **`parse_strict`**:
+`jiff-english` exposes three entry points; im uses **`parse_strict`**:
 
 | entry point | trailing input after a valid expression |
 | --- | --- |
@@ -246,11 +246,11 @@ The dialect changes exactly two things; everything else parses identically:
 | `parse_and_remainder` | ignored, and returns the leftover input as `(Zoned, &str)` — chrono-style, the core both above delegate to |
 
 Consequence for the CLI: a `@<time>` field must be **one complete date
-expression** — `feeling @10pm meeting` and `! @10pm meeting` are errors
+expression** — `im @10pm meeting` and `! @10pm meeting` are errors
 (use `:name` markers: `! @10pm :meeting`), while `@10pm` (with or without
 trailing whitespace) and multi-word forms like `@tomorrow eod` all work.
 
-## Wiring in feeling
+## Wiring in im
 
 - `crates/jiff-english` is a workspace member (path dependency of the root
   crate). Its tests pin the exact behavior of every row above, including
@@ -265,5 +265,5 @@ trailing whitespace) and multi-word forms like `@tomorrow eod` all work.
   (`timestamp().as_second()`), no chrono bridge. `chrono` remains only as a
   dev-dependency for the integration tests.
 - Every `@<time>` / `@<date>` CLI/TUI argument accepts these same expressions,
-  so `feeling @eod`-style arguments work everywhere a time is accepted.
+  so `im @eod`-style arguments work everywhere a time is accepted.
 - Interactive dates (e.g. due-date prompts) parse through the same entry point.

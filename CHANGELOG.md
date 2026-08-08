@@ -16,7 +16,13 @@
 
 ### 🚀 Features
 
-- Task↔mood links: `feeling <mood> -<short id>` records a link; the task
+- Renamed: the binary is now `im` (previously `feeling`), and the logged
+  mood entries are consistently called moods — DB schema (`mood` table,
+  `tracker.mood`, `task_moods.mood_id`), code identifiers, CLI usage
+  strings, and docs. Data paths moved to `~/.config/im` / `im.db`;
+  existing `feeling` databases and config dirs are not migrated and must
+  be moved/deleted by hand.
+- Task↔mood links: `im <mood> -<short id>` records a link; the task
   preview shows a `moods:` field with colored badges
 - `:db` command replaces `:prune` — `:db prune` (old behavior) and
   `:db backfill` (persist missing mood embeddings/scores)

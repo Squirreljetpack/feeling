@@ -94,6 +94,6 @@ min = 10
 max = 30
 [editor]
 # Write the "# additional notes below" hint line as the first line of the
-# body editor (feeling .. / feeling ! name ..). When disabled the temp file
+# body editor (im .. / im ! name ..). When disabled the temp file
 # starts empty and your first line is kept verbatim.
 hint = true

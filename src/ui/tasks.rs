@@ -44,7 +44,7 @@ pub struct TasksApp {
     pub(crate) modal: Option<Modal>,
     /// The selected task's linked mood entries (for the preview `moods:`
     /// field), refreshed on selection change.
-    linked_moods: Vec<crate::db::FeelingRow>,
+    linked_moods: Vec<crate::db::MoodRow>,
 }
 
 /// Modal state for the task view. Common payloads live in `ui::modal`; the

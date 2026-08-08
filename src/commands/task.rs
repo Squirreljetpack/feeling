@@ -173,7 +173,7 @@ pub(super) async fn create_task_command(
         }
         TaskKind::Recurring => {
             // Create new recurring task via interactive flow, with an
-            // optional pre-filled name from `feeling ! @ <name>` and
+            // optional pre-filled name from `im ! @ <name>` and
             // an optional body from `.. body` (editor only when `..` is
             // bare — no `..` means no body).
             create_recurring_task(pool, config, opts, prefill, body).await?;
@@ -250,7 +250,7 @@ async fn create_recurring_task(
     crate::output::task_intro("Create recurring task")?;
 
     // 1. Task name (required, unique, no tabs) — re-prompt on duplicates
-    // instead of aborting the whole flow. A pre-fill from `feeling ! @
+    // instead of aborting the whole flow. A pre-fill from `im ! @
     // <name>` skips the prompt entirely; on a duplicate the prompt
     // re-opens with the pre-fill as the default input so the user can
     // change it. The name is trimmed before use. The pre-filled value is

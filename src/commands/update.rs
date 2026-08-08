@@ -12,7 +12,7 @@ pub(super) async fn update_task_command(
 ) -> Result<()> {
     match target {
         UpdateTarget::OneShot(short_id) => {
-            // `feeling - <id> [count]`: the id is the user-facing short id
+            // `im - <id> [count]`: the id is the user-facing short id
             // (see sql.rs). Completed tasks have no short id and are not
             // addressable here — use the word query form instead.
             let info = crate::db::fetch_oneshot_task_for_update(pool, short_id)
@@ -21,7 +21,7 @@ pub(super) async fn update_task_command(
             update_oneshot(pool, opts, &info, count).await?
         }
         UpdateTarget::Query { words } => {
-            // `feeling - <words…> [count]`: update the *unique* oneshot task
+            // `im - <words…> [count]`: update the *unique* oneshot task
             // whose name contains the words in their order. Zero matches and
             // multiple matches both fail — the caller must disambiguate.
             let matches = crate::db::fetch_oneshot_matching_words(pool, &words).await?;

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
 
 use super::models::{
-    CompletionRow, EntryObject, FeelingRow, RecurringTaskMeta, TaskRow, TrackerEntryRow,
+    CompletionRow, EntryObject, MoodRow, RecurringTaskMeta, TaskRow, TrackerEntryRow,
     TrackerScoreKindRow, TrackerValue,
 };
 use super::views::attach_full_completions;
@@ -10,16 +10,16 @@ use crate::config::TrackerKind;
 
 /// Insert a mood entry and its linked tracker values in one transaction.
 /// For Text/Float interval trackers, `replace_slot` deletes the previous
-/// entry in the same interval slot before inserting. Returns the feeling
-/// row id, or `None` when no feeling row was inserted (tracker-only entry).
+/// entry in the same interval slot before inserting. Returns the mood
+/// row id, or `None` when no mood row was inserted (tracker-only entry).
 pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Option<i64>> {
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
 
-    let insert_feeling = !entry.mood.is_empty() || !entry.body.is_empty();
-    let feeling_id: Option<i64> = if insert_feeling {
+    let insert_mood = !entry.mood.is_empty() || !entry.body.is_empty();
+    let mood_id: Option<i64> = if insert_mood {
         let id: i64 = if let Some(blob) = &entry.embedding {
             sqlx::query(
-                "INSERT INTO feeling (mood, body, time, embedding, score) VALUES (?, ?, ?, ?, ?) RETURNING id",
+                "INSERT INTO mood (mood, body, time, embedding, score) VALUES (?, ?, ?, ?, ?) RETURNING id",
             )
             .bind(&entry.mood)
             .bind(&entry.body)
@@ -28,11 +28,11 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
             .bind(entry.score)
             .fetch_one(&mut *tx)
             .await
-            .context("Failed to insert feeling")?
+            .context("Failed to insert mood")?
             .get("id")
         } else {
             sqlx::query(
-                "INSERT INTO feeling (mood, body, time, score) VALUES (?, ?, ?, ?) RETURNING id",
+                "INSERT INTO mood (mood, body, time, score) VALUES (?, ?, ?, ?) RETURNING id",
             )
             .bind(&entry.mood)
             .bind(&entry.body)
@@ -40,7 +40,7 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
             .bind(entry.score)
             .fetch_one(&mut *tx)
             .await
-            .context("Failed to insert feeling")?
+            .context("Failed to insert mood")?
             .get("id")
         };
         Some(id)
@@ -103,7 +103,7 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
                 }
                 None => {
                     let mut q = sqlx::query(
-                        "INSERT INTO tracker (type, score, time, feeling) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO tracker (type, score, time, mood) VALUES (?, ?, ?, ?)",
                     )
                     .bind(&tracker.tracker_type);
                     q = match &tracker.value {
@@ -112,7 +112,7 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
                         TrackerValue::Float(f) => q.bind(f),
                     };
                     q.bind(entry.time)
-                        .bind(feeling_id)
+                        .bind(mood_id)
                         .execute(&mut *tx)
                         .await
                         .with_context(|| {
@@ -139,7 +139,7 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
         }
 
         let mut q =
-            sqlx::query("INSERT INTO tracker (type, score, time, feeling) VALUES (?, ?, ?, ?)")
+            sqlx::query("INSERT INTO tracker (type, score, time, mood) VALUES (?, ?, ?, ?)")
                 .bind(&tracker.tracker_type);
         q = match &tracker.value {
             TrackerValue::Text(s) => q.bind(s),
@@ -147,14 +147,14 @@ pub async fn create_entry(pool: &SqlitePool, entry: &EntryObject) -> Result<Opti
             TrackerValue::Float(f) => q.bind(f),
         };
         q.bind(entry.time)
-            .bind(feeling_id)
+            .bind(mood_id)
             .execute(&mut *tx)
             .await
             .with_context(|| format!("Failed to insert tracker '{}'", tracker.tracker_type))?;
     }
 
     tx.commit().await.context("Failed to commit transaction")?;
-    Ok(feeling_id)
+    Ok(mood_id)
 }
 
 /// Count mood entries in `[start_time, end_time]`; when `delete` is true,
@@ -167,7 +167,7 @@ pub async fn clear_moods(
     delete: bool,
 ) -> Result<usize> {
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM feeling WHERE time >= ? AND time <= ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM mood WHERE time >= ? AND time <= ?")
             .bind(start_time)
             .bind(end_time)
             .fetch_one(pool)
@@ -181,7 +181,7 @@ pub async fn clear_moods(
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
 
     sqlx::query(
-        "DELETE FROM tracker WHERE feeling IN (SELECT id FROM feeling WHERE time >= ? AND time <= ?)",
+        "DELETE FROM tracker WHERE mood IN (SELECT id FROM mood WHERE time >= ? AND time <= ?)",
     )
     .bind(start_time)
     .bind(end_time)
@@ -189,7 +189,7 @@ pub async fn clear_moods(
     .await
     .context("Failed to delete linked tracker entries")?;
 
-    let res = sqlx::query("DELETE FROM feeling WHERE time >= ? AND time <= ?")
+    let res = sqlx::query("DELETE FROM mood WHERE time >= ? AND time <= ?")
         .bind(start_time)
         .bind(end_time)
         .execute(&mut *tx)
@@ -204,24 +204,24 @@ pub async fn clear_moods(
 // Fetch helpers
 // ---------------------------------------------------------------------------
 
-/// Feelings in `[start, end]`, oldest first.
-pub async fn fetch_feelings_between(
+/// Moods in `[start, end]`, oldest first.
+pub async fn fetch_moods_between(
     pool: &SqlitePool,
     start: i64,
     end: i64,
-) -> Result<Vec<FeelingRow>> {
+) -> Result<Vec<MoodRow>> {
     let rows = sqlx::query(
-        "SELECT id, mood, body, time, embedding, score FROM feeling WHERE time >= ? AND time <= ? ORDER BY time ASC",
+        "SELECT id, mood, body, time, embedding, score FROM mood WHERE time >= ? AND time <= ? ORDER BY time ASC",
     )
     .bind(start)
     .bind(end)
     .fetch_all(pool)
     .await
-    .context("Failed to fetch feeling entries")?;
+    .context("Failed to fetch mood entries")?;
 
     Ok(rows
         .iter()
-        .map(|row| FeelingRow {
+        .map(|row| MoodRow {
             id: row.get("id"),
             mood: row.get("mood"),
             body: row.get("body"),
@@ -372,18 +372,18 @@ pub async fn fetch_completions_between(
         .collect())
 }
 
-/// Link a feeling entry to tasks (by stable row id) in one transaction.
+/// Link a mood entry to tasks (by stable row id) in one transaction.
 /// Duplicate links are ignored (`INSERT OR IGNORE`).
-pub async fn link_feeling_to_tasks(
+pub async fn link_mood_to_tasks(
     pool: &SqlitePool,
-    feeling_id: i64,
+    mood_id: i64,
     task_ids: &[i64],
 ) -> Result<()> {
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
     for task_id in task_ids {
-        sqlx::query("INSERT OR IGNORE INTO task_moods (todo_id, feeling_id) VALUES (?, ?)")
+        sqlx::query("INSERT OR IGNORE INTO task_moods (todo_id, mood_id) VALUES (?, ?)")
             .bind(task_id)
-            .bind(feeling_id)
+            .bind(mood_id)
             .execute(&mut *tx)
             .await
             .context("Failed to insert task-mood link")?;
@@ -392,12 +392,12 @@ pub async fn link_feeling_to_tasks(
     Ok(())
 }
 
-/// The feeling entries linked to a task, oldest first (the task preview's
+/// The mood entries linked to a task, oldest first (the task preview's
 /// `moods:` field).
-pub async fn fetch_linked_moods(pool: &SqlitePool, task_id: i64) -> Result<Vec<FeelingRow>> {
+pub async fn fetch_linked_moods(pool: &SqlitePool, task_id: i64) -> Result<Vec<MoodRow>> {
     let rows = sqlx::query(
-        "SELECT f.id, f.mood, f.body, f.time, f.embedding, f.score FROM feeling f \
-         JOIN task_moods tm ON tm.feeling_id = f.id \
+        "SELECT f.id, f.mood, f.body, f.time, f.embedding, f.score FROM mood f \
+         JOIN task_moods tm ON tm.mood_id = f.id \
          WHERE tm.todo_id = ? ORDER BY f.time ASC",
     )
     .bind(task_id)
@@ -407,7 +407,7 @@ pub async fn fetch_linked_moods(pool: &SqlitePool, task_id: i64) -> Result<Vec<F
 
     Ok(rows
         .iter()
-        .map(|r| FeelingRow {
+        .map(|r| MoodRow {
             id: r.get("id"),
             mood: r.get("mood"),
             body: r.get("body"),
@@ -418,31 +418,31 @@ pub async fn fetch_linked_moods(pool: &SqlitePool, task_id: i64) -> Result<Vec<F
         .collect())
 }
 
-/// Tracker entries attached to feelings (the `tracker.feeling` column),
-/// grouped by feeling id, oldest first within each group. Feelings without
+/// Tracker entries attached to moods (the `tracker.mood` column),
+/// grouped by mood id, oldest first within each group. Moods without
 /// attached tracker rows are absent from the map; an empty input returns an
 /// empty map.
-pub async fn fetch_feeling_trackers(
+pub async fn fetch_mood_trackers(
     pool: &SqlitePool,
-    feeling_ids: &[i64],
+    mood_ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, Vec<TrackerEntryRow>>> {
     let mut map = std::collections::HashMap::new();
-    if feeling_ids.is_empty() {
+    if mood_ids.is_empty() {
         return Ok(map);
     }
     let sql = format!(
-        "SELECT id, type, CAST(score AS TEXT) AS score, time, feeling FROM tracker \
-         WHERE feeling IN ({}) ORDER BY time ASC",
-        feeling_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+        "SELECT id, type, CAST(score AS TEXT) AS score, time, mood FROM tracker \
+         WHERE mood IN ({}) ORDER BY time ASC",
+        mood_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
     );
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-    for id in feeling_ids {
+    for id in mood_ids {
         q = q.bind(id);
     }
     let rows = q
         .fetch_all(pool)
         .await
-        .context("Failed to fetch tracker rows linked to feelings")?;
+        .context("Failed to fetch tracker rows linked to moods")?;
     for row in rows {
         let entry = TrackerEntryRow {
             id: row.get("id"),
@@ -450,46 +450,46 @@ pub async fn fetch_feeling_trackers(
             score: row.get("score"),
             time: row.get("time"),
         };
-        map.entry(row.get::<i64, _>("feeling"))
+        map.entry(row.get::<i64, _>("mood"))
             .or_insert_with(Vec::new)
             .push(entry);
     }
     Ok(map)
 }
 
-/// Tasks linked to feelings via `task_moods`, grouped by feeling id,
+/// Tasks linked to moods via `task_moods`, grouped by mood id,
 /// ordered by name. Completions/last_time follow the today-view convention
 /// (full completion scoping via [`attach_full_completions`]). An empty
 /// input returns an empty map.
-pub async fn fetch_feeling_tasks(
+pub async fn fetch_mood_tasks(
     pool: &SqlitePool,
-    feeling_ids: &[i64],
+    mood_ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, Vec<TaskRow>>> {
     let mut map = std::collections::HashMap::new();
-    if feeling_ids.is_empty() {
+    if mood_ids.is_empty() {
         return Ok(map);
     }
     let sql = format!(
-        "SELECT t.*, tm.feeling_id, NULL AS completions, NULL AS last_time \
+        "SELECT t.*, tm.mood_id, NULL AS completions, NULL AS last_time \
          FROM todos t JOIN task_moods tm ON tm.todo_id = t.id \
-         WHERE tm.feeling_id IN ({}) ORDER BY t.name ASC",
-        feeling_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+         WHERE tm.mood_id IN ({}) ORDER BY t.name ASC",
+        mood_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
     );
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-    for id in feeling_ids {
+    for id in mood_ids {
         q = q.bind(id);
     }
     let rows = q
         .fetch_all(pool)
         .await
-        .context("Failed to fetch tasks linked to feelings")?;
+        .context("Failed to fetch tasks linked to moods")?;
     // Reconstruct a TaskRow per link row (the query carries the extra
-    // `feeling_id` column, which query_as::<TaskRow> would drop), then
+    // `mood_id` column, which query_as::<TaskRow> would drop), then
     // attach the completion aggregates to the unique tasks.
     let mut links: Vec<(i64, i64)> = Vec::new();
     let mut tasks: Vec<TaskRow> = Vec::new();
     for row in rows {
-        links.push((row.get("feeling_id"), row.get("id")));
+        links.push((row.get("mood_id"), row.get("id")));
         tasks.push(TaskRow {
             id: row.get("id"),
             short_id: row.get("short_id"),
@@ -513,9 +513,9 @@ pub async fn fetch_feeling_tasks(
             .into_iter()
             .map(|t| (t.id, t))
             .collect();
-    for (feeling_id, task_id) in links {
+    for (mood_id, task_id) in links {
         if let Some(task) = by_id.get(&task_id) {
-            map.entry(feeling_id).or_insert_with(Vec::new).push(task.clone());
+            map.entry(mood_id).or_insert_with(Vec::new).push(task.clone());
         }
     }
     Ok(map)
@@ -621,14 +621,14 @@ pub async fn prune_tracker_rules(pool: &SqlitePool, rules: &[TrackerPruneRule]) 
     Ok(deleted)
 }
 
-/// Update a feeling's body. Returns the number of affected rows.
-pub async fn update_feeling_body(pool: &SqlitePool, id: i64, body: &str) -> Result<u64> {
-    let res = sqlx::query("UPDATE feeling SET body = ? WHERE id = ?")
+/// Update a mood's body. Returns the number of affected rows.
+pub async fn update_mood_body(pool: &SqlitePool, id: i64, body: &str) -> Result<u64> {
+    let res = sqlx::query("UPDATE mood SET body = ? WHERE id = ?")
         .bind(body)
         .bind(id)
         .execute(pool)
         .await
-        .context("Failed to update feeling body")?;
+        .context("Failed to update mood body")?;
     Ok(res.rows_affected())
 }
 
@@ -679,22 +679,22 @@ pub async fn relog_null_tracker(
     Ok(res.rows_affected())
 }
 
-/// Delete a feeling row and any linked tracker rows in a transaction
-/// (`tracker.feeling` has a FK with no `ON DELETE CASCADE`).
-pub async fn delete_feeling(pool: &SqlitePool, id: i64) -> Result<()> {
+/// Delete a mood row and any linked tracker rows in a transaction
+/// (`tracker.mood` has a FK with no `ON DELETE CASCADE`).
+pub async fn delete_mood(pool: &SqlitePool, id: i64) -> Result<()> {
     let mut tx = pool.begin().await.context("Failed to begin transaction")?;
 
-    sqlx::query("DELETE FROM tracker WHERE feeling = ?")
+    sqlx::query("DELETE FROM tracker WHERE mood = ?")
         .bind(id)
         .execute(&mut *tx)
         .await
         .context("Failed to delete linked tracker rows")?;
 
-    sqlx::query("DELETE FROM feeling WHERE id = ?")
+    sqlx::query("DELETE FROM mood WHERE id = ?")
         .bind(id)
         .execute(&mut *tx)
         .await
-        .context("Failed to delete feeling row")?;
+        .context("Failed to delete mood row")?;
 
     tx.commit().await.context("Failed to commit transaction")?;
     Ok(())

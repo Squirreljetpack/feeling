@@ -95,8 +95,8 @@ impl Default for EditorConfig {
     }
 }
 
-/// `[today_view]` section — options for the today view (bare `feeling`,
-/// `feeling @<date>`, and the today TUI).
+/// `[today_view]` section — options for the today view (bare `im`,
+/// `im @<date>`, and the today TUI).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TodayViewConfig {
@@ -104,7 +104,7 @@ pub struct TodayViewConfig {
     /// when false, only tasks due within the horizon are shown.
     #[serde(default)]
     pub include_overdue: bool,
-    /// Glyph shown next to journal-only entries (a feeling with no mood
+    /// Glyph shown next to journal-only entries (a mood entry with no mood
     /// word). Omit the key to show no badge.
     #[serde(default)]
     pub journal_badge: Option<char>,

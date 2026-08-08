@@ -36,7 +36,7 @@ pub fn parse_datetime(s: &str, dialect: Dialect) -> Result<Epoch> {
 }
 
 /// Parse a date string and align to the start of that day (for the
-/// `feeling @<date>` today view).
+/// `im @<date>` today view).
 pub fn parse_date(s: &str, dialect: Dialect) -> Result<Epoch> {
     Ok(crate::date::day_start(parse_datetime(s, dialect)?))
 }

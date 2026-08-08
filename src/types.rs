@@ -99,7 +99,7 @@ impl TodayHorizon {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
-    pub feeling: String,
+    pub mood: String,
     // Raw tracker values ("-type value"): interpreted per the tracker's
     // declared kind (text/number/float/null) at write time in handle_entry.
     pub trackers: Vec<(String, String)>,
@@ -128,7 +128,7 @@ pub struct Task {
     /// the handler from whether the creation flow is interactive.
     pub body: Option<String>,
     /// Pre-filled name for interactive recurring creation
-    /// (`feeling ! @ <name>`), like oneshot creation where the
+    /// (`im ! @ <name>`), like oneshot creation where the
     /// name comes from the command line. `Some` always implies creation.
     pub prefill: Option<String>,
     /// Parent task's short id from `! -<parent_id>`; `None` for a

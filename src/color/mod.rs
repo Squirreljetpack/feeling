@@ -26,7 +26,7 @@ use oklab::Oklab;
 
 use crate::color::conversion::rgb_to_oklab;
 use crate::config::{ColorAxesSettings, MoodEndpoint};
-use crate::db::FeelingRow;
+use crate::db::MoodRow;
 use crate::embedding::Embedder;
 use crate::utils::Percentage;
 
@@ -318,7 +318,7 @@ impl ColorAxes {
         gated_saliency(saliency, self.emotional_saliency_gate.to_float())
     }
 
-    /// Resolve a feeling row to its final Oklab color, caching the color
+    /// Resolve a mood row to its final Oklab color, caching the color
     /// per mood so repeated moods run the pipeline once.
     ///
     /// Sync and backfill-free: rows without a stored embedding are embedded
@@ -330,17 +330,17 @@ impl ColorAxes {
     pub fn mood_color_cached(
         &self,
         embedder: &Embedder,
-        feeling: &FeelingRow,
+        row: &MoodRow,
         cache: &mut HashMap<String, Oklab>,
     ) -> Option<Oklab> {
-        let mood = &feeling.mood;
+        let mood = &row.mood;
         if let Some(oklab) = cache.get(mood) {
             return Some(*oklab);
         }
         if mood.is_empty() {
             return None;
         }
-        let embedding = match feeling
+        let embedding = match row
             .embedding
             .as_deref()
             .and_then(crate::embedding::blob_to_embedding)
@@ -352,7 +352,7 @@ impl ColorAxes {
             },
         };
         // The cached score (when present) skips the saliency ONNX pass.
-        let reg = self.regression_weights(&embedding, embedder, feeling.score.ok_or(mood.as_str()));
+        let reg = self.regression_weights(&embedding, embedder, row.score.ok_or(mood.as_str()));
         let oklab = self.weights_to_color(reg.as_ref());
         cache.insert(mood.to_string(), oklab);
         Some(oklab)

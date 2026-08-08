@@ -97,7 +97,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     // Create tables if they don't exist
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS feeling (
+        CREATE TABLE IF NOT EXISTS mood (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             mood TEXT NOT NULL,
             body TEXT NOT NULL DEFAULT '',
@@ -122,8 +122,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             -- exactly (integer/text/real) so sqlx can decode by value type.
             score BLOB NOT NULL CHECK (typeof(score) IN ('integer', 'text', 'real')),
             time INTEGER NOT NULL DEFAULT (unixepoch()),
-            feeling INTEGER,
-            FOREIGN KEY (feeling) REFERENCES feeling(id)
+            mood INTEGER,
+            FOREIGN KEY (mood) REFERENCES mood(id)
         )
         "#,
     )
@@ -188,10 +188,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         r#"
         CREATE TABLE IF NOT EXISTS task_moods (
             todo_id INTEGER NOT NULL,
-            feeling_id INTEGER NOT NULL,
-            PRIMARY KEY (todo_id, feeling_id),
+            mood_id INTEGER NOT NULL,
+            PRIMARY KEY (todo_id, mood_id),
             FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE,
-            FOREIGN KEY (feeling_id) REFERENCES feeling(id) ON DELETE CASCADE
+            FOREIGN KEY (mood_id) REFERENCES mood(id) ON DELETE CASCADE
         )
         "#,
     )
@@ -199,7 +199,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     .await?;
 
     // Add indexes for common queries
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_feeling_time ON feeling(time)")
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_mood_time ON mood(time)")
         .execute(pool)
         .await?;
 
@@ -207,7 +207,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracker_feeling ON tracker(feeling)")
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tracker_mood ON tracker(mood)")
         .execute(pool)
         .await?;
 
@@ -281,15 +281,15 @@ mod tests {
     #[test]
     fn delete_database_removes_sidecars() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("feeling.db");
+        let db_path = dir.path().join("im.db");
         std::fs::write(&db_path, b"x").unwrap();
-        std::fs::write(dir.path().join("feeling.db-wal"), b"x").unwrap();
-        std::fs::write(dir.path().join("feeling.db-shm"), b"x").unwrap();
+        std::fs::write(dir.path().join("im.db-wal"), b"x").unwrap();
+        std::fs::write(dir.path().join("im.db-shm"), b"x").unwrap();
 
         delete_database(&db_path).unwrap();
         assert!(!db_path.exists());
-        assert!(!dir.path().join("feeling.db-wal").exists());
-        assert!(!dir.path().join("feeling.db-shm").exists());
+        assert!(!dir.path().join("im.db-wal").exists());
+        assert!(!dir.path().join("im.db-shm").exists());
     }
 
     /// Missing files (e.g. a db without WAL sidecars) are not an error.

@@ -35,17 +35,17 @@ expiry is not used there). Availability-window checks must first exclude
 
 | Command | Effect |
 | --- | --- |
-| `feeling !` | Interactive oneshot creation (name prompted) |
-| `feeling @` | Pending view — `ViewVariant::All` |
-| `feeling @:o` | Pending view — `ViewVariant::A` (oneshots only) |
-| `feeling @:O` | Pending view — `ViewVariant::B` (recurring not availability-filtered + scheduled) |
-| `feeling @done` | Completed tasks — `ViewVariant::All` |
-| `feeling @done:o` | Completed oneshots only — `ViewVariant::A` |
-| `feeling @done:O` | Completed recurring history + completed scheduled — `ViewVariant::B` |
-| `feeling @due` | TodayView, `ViewVariant::B`, `TodayHorizon::Today` |
-| `feeling @due:t` | Tomorrow view, `ViewVariant::B`, `TodayHorizon::Tomorrow` |
-| `feeling @due:w` | Week view, `ViewVariant::B`, `TodayHorizon::Week` |
-| `feeling @<date>` | Anchored TodayView, `ViewVariant::All`, `TodayHorizon::Today` |
+| `im !` | Interactive oneshot creation (name prompted) |
+| `im @` | Pending view — `ViewVariant::All` |
+| `im @:o` | Pending view — `ViewVariant::A` (oneshots only) |
+| `im @:O` | Pending view — `ViewVariant::B` (recurring not availability-filtered + scheduled) |
+| `im @done` | Completed tasks — `ViewVariant::All` |
+| `im @done:o` | Completed oneshots only — `ViewVariant::A` |
+| `im @done:O` | Completed recurring history + completed scheduled — `ViewVariant::B` |
+| `im @due` | TodayView, `ViewVariant::B`, `TodayHorizon::Today` |
+| `im @due:t` | Tomorrow view, `ViewVariant::B`, `TodayHorizon::Tomorrow` |
+| `im @due:w` | Week view, `ViewVariant::B`, `TodayHorizon::Week` |
+| `im @<date>` | Anchored TodayView, `ViewVariant::All`, `TodayHorizon::Today` |
 
 The variant suffix is `o` (A) or `O` (B) — there is no `a` suffix, so
 `@:a` / `@done:a` are invalid. Starting in `ViewVariant::A` is only possible

@@ -21,9 +21,9 @@ pub(crate) const TEXT_ENTRY_BADGE: char = '◆';
 pub enum EntryKind {
     /// A task, carrying its [`TaskKind`].
     Task(TaskKind),
-    /// Feeling entry carrying a mood label.
+    /// Mood entry carrying a mood label.
     Mood,
-    /// Journal-only feeling entry (empty mood label; the body holds the text).
+    /// Journal-only mood entry (empty mood label; the body holds the text).
     Journal,
     /// Tracker entry, carrying the tracker's configured payload kind.
     Tracker(TrackerKind),
@@ -43,7 +43,7 @@ impl EntryKind {
     }
 }
 
-/// A tracker entry attached to a feeling row (the `tracker.feeling`
+/// A tracker entry attached to a mood row (the `tracker.mood`
 /// column), pre-rendered for the preview's `linked:` section: the tracker
 /// name (in the same color the tracker's badge would use for this value)
 /// plus the value payload.
@@ -54,7 +54,7 @@ pub struct LinkedTracker {
     pub color: RatColor,
 }
 
-/// A task linked to a feeling via `task_moods`, pre-rendered for the
+/// A task linked to a mood via `task_moods`, pre-rendered for the
 /// preview's `linked:` section: the badge glyph with its color plus the
 /// task name.
 #[derive(Debug, Clone)]
@@ -83,7 +83,7 @@ pub struct TodayEntry {
     /// Marker glyph rendered for this entry; `None` renders nothing (e.g.
     /// journal entries without a configured `journal_badge`).
     pub badge: Option<char>,
-    /// Dynamic dot color: Oklab mood projection for feeling entries,
+    /// Dynamic dot color: Oklab mood projection for mood entries,
     /// tracker_color for numeric tracker entries, completion_badge
     /// colors for tasks, or a neutral dark gray for journal-only and
     /// text-tracker entries.
@@ -101,8 +101,8 @@ pub struct TodayEntry {
     /// (strictly earlier; the preview's `prev:` field). `None` when no
     /// earlier entry exists.
     pub tracker_prev: Option<Epoch>,
-    /// Mood entries only: trackers attached to the feeling row
-    /// (`tracker.feeling`) and tasks linked via `task_moods`, rendered as
+    /// Mood entries only: trackers attached to the mood row
+    /// (`tracker.mood`) and tasks linked via `task_moods`, rendered as
     /// the preview's `linked:` section. Empty for every other entry kind.
     pub linked_trackers: Vec<LinkedTracker>,
     pub linked_tasks: Vec<LinkedTask>,
@@ -215,7 +215,7 @@ fn tracker_entry_color(
 /// recurring). `show` selects what rides on top: `All` also merges tasks
 /// with a completion today (time = last completion); `A` filters completed
 /// tasks out and shows no completions; `B` is the same as `All` but
-/// tasks-only (no feelings/trackers) and carries `coalesce_completions`
+/// tasks-only (no moods/trackers) and carries `coalesce_completions`
 /// (D11 — no behavior yet). See docs/VIEWS.md.
 pub async fn fetch_today_entries(
     pool: &SqlitePool,
@@ -225,7 +225,7 @@ pub async fn fetch_today_entries(
     show: ViewVariant,
     color_cache: &mut std::collections::HashMap<String, oklab::Oklab>,
 ) -> Result<Vec<TodayEntry>> {
-    // `feeling @<date>` anchors the day; bare `feeling` is today.
+    // `im @<date>` anchors the day; bare `im` is today.
     let day_start_epoch = day_epoch.unwrap_or_else(date::today_start);
     let day_end_epoch = date::day_end(day_start_epoch);
     let horizon_end = horizon.end_epoch(day_start_epoch);
@@ -233,23 +233,23 @@ pub async fn fetch_today_entries(
 
     let mut entries: Vec<TodayEntry> = Vec::new();
 
-    // B is tasks-only: no feelings, no tracker entries.
+    // B is tasks-only: no moods, no tracker entries.
     if show != ViewVariant::B {
         let embedder = crate::embedding::global_embedder();
         let axes = config.moods.color_axes.as_ref().unwrap();
 
-        // 1. Feelings within the horizon (day start through horizon end,
+        // 1. Moods within the horizon (day start through horizon end,
         // matching the task fetches below).
-        let feelings =
-            crate::db::fetch_feelings_between(pool, day_start_epoch, horizon_end).await?;
+        let moods =
+            crate::db::fetch_moods_between(pool, day_start_epoch, horizon_end).await?;
 
-        // Tracker entries and tasks attached to these feelings (the mood
+        // Tracker entries and tasks attached to these moods (the mood
         // preview's `linked:` section).
-        let feeling_ids: Vec<i64> = feelings.iter().map(|f| f.id).collect();
-        let linked_trackers = crate::db::fetch_feeling_trackers(pool, &feeling_ids).await?;
-        let linked_tasks = crate::db::fetch_feeling_tasks(pool, &feeling_ids).await?;
+        let mood_ids: Vec<i64> = moods.iter().map(|f| f.id).collect();
+        let linked_trackers = crate::db::fetch_mood_trackers(pool, &mood_ids).await?;
+        let linked_tasks = crate::db::fetch_mood_tasks(pool, &mood_ids).await?;
 
-        for f in feelings {
+        for f in moods {
             // Journal-only entries (empty mood) use the configured journal
             // badge, or none at all; mood entries always get the filled dot.
             let badge = if f.mood.is_empty() {
@@ -273,7 +273,7 @@ pub async fn fetch_today_entries(
                     RatColor::Rgb(rgb.r, rgb.g, rgb.b)
                 })
                 .unwrap_or(RatColor::DarkGray);
-            // Trackers attached to this feeling: name in the tracker's own
+            // Trackers attached to this mood: name in the tracker's own
             // color, payload per kind (text/number/float values; null
             // trackers carry none). Trackers no longer in the config can't
             // be resolved — skipped (unlike the main tracker rows, which
@@ -539,7 +539,7 @@ pub async fn fetch_today_entries(
     }
 
     // 5. Tasks with a completion entry today (All and B — B is the same as
-    // All minus the feelings/trackers sections): merged over the regular
+    // All minus the moods/trackers sections): merged over the regular
     // rows (dedup by task_id — the completed-today row wins, time = last
     // completion timestamp) so a task completed today shows its completion
     // time even when it is no longer active (or not in the regular lists
@@ -592,7 +592,7 @@ pub async fn fetch_today_entries(
     Ok(entries)
 }
 
-/// Handle today view (non-terminal output): displays today's feelings, tracker
+/// Handle today view (non-terminal output): displays today's moods, tracker
 /// entries, and task activity as tab-separated rows. TUI dispatch is handled by
 /// [`crate::commands::execute_command`].
 pub async fn write_today_view<W: Write>(

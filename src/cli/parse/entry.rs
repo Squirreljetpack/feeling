@@ -4,22 +4,22 @@ use crate::types::Entry;
 pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
     // Trackers are parsed only at the beginning and end of the line — the
     // mood words must be contiguous:
-    //   feeling <mood> [-tracker value] [.. [body]]  — tracker(s) after the mood
-    //   feeling -tracker value                       — tracker only (no mood)
-    //   feeling [-tracker value]… <mood>             — tracker(s) before the mood
+    //   im <mood> [-tracker value] [.. [body]]  — tracker(s) after the mood
+    //   im -tracker value                       — tracker only (no mood)
+    //   im [-tracker value]… <mood>             — tracker(s) before the mood
     // Once a `-tracker value` pair has been consumed *after* the mood
     // started, the rest of the line must stay tracker-shaped: another
     // `-tracker value` pair, `..`, or end of input. A bare word after that
-    // point is an error, e.g. `feeling pretty ok -sleep 8 but not great`
+    // point is an error, e.g. `im pretty ok -sleep 8 but not great`
     // (the word after `8` is not another valid tracker pattern, `..`, or
     // the end of the line).
     //
     // `..` may appear anywhere in args (not only at the end). Words before
-    // the first `..` are parsed as feeling / tracker values.
+    // the first `..` are parsed as mood / tracker values.
     // Words after `..` are joined (space-separated) into `body`. The editor
     // opens iff `..` was used AND `body` is empty.
     let mut has_dotdot = false;
-    let mut feeling_parts: Vec<String> = Vec::new();
+    let mut mood_parts: Vec<String> = Vec::new();
     let mut trackers: Vec<(String, String)> = Vec::new();
     let mut task_links: Vec<i64> = Vec::new();
     let mut body_parts: Vec<String> = Vec::new();
@@ -55,7 +55,7 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
                 if numeric {
                     // Task link; like a tracker pair, a link after the mood
                     // starts the end-of-line tracker/link run.
-                    if !feeling_parts.is_empty() {
+                    if !mood_parts.is_empty() {
                         after_mood_tracker = true;
                     }
                     task_links.push(tracker_type.parse().map_err(|_| {
@@ -63,13 +63,13 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
                     })?);
                     i += 1;
                 } else if i + 1 < args.len() && !args[i + 1].starts_with('-') {
-                    if !feeling_parts.is_empty() {
+                    if !mood_parts.is_empty() {
                         after_mood_tracker = true;
                     }
                     trackers.push((tracker_type, args[i + 1].clone()));
                     i += 2;
                 } else {
-                    if !feeling_parts.is_empty() {
+                    if !mood_parts.is_empty() {
                         after_mood_tracker = true;
                     }
                     trackers.push((tracker_type, String::new()));
@@ -92,27 +92,27 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
                 );
             }
             _ => {
-                feeling_parts.push(arg.clone());
+                mood_parts.push(arg.clone());
                 i += 1;
             }
         }
     }
 
-    let feeling = if feeling_parts.is_empty() {
+    let mood = if mood_parts.is_empty() {
         String::new()
     } else {
-        feeling_parts.join(" ")
+        mood_parts.join(" ")
     };
     let body = body_parts.join(" ");
     let open_editor = has_dotdot && body.is_empty();
 
     // Mood must not contain tabs: view output uses tab separators.
-    if feeling.contains('\t') {
+    if mood.contains('\t') {
         anyhow::bail!("Mood cannot contain tab characters");
     }
 
     Ok(Command::Entry(Entry {
-        feeling,
+        mood,
         trackers,
         task_links,
         body,

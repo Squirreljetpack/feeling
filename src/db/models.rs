@@ -196,9 +196,9 @@ impl TaskRow {
     }
 }
 
-/// A feeling row for the tracker/today views.
+/// A mood row for the tracker/today views.
 #[derive(Debug, Clone)]
-pub struct FeelingRow {
+pub struct MoodRow {
     pub id: i64,
     pub mood: String,
     pub body: String,

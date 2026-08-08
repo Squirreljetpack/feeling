@@ -61,7 +61,7 @@ the number of logs in the interval (0 would undercount by one).
 
 `mood_color_cached` used to backfill embeddings/scores inline; with the
 sync/no-backfill change, `:db backfill` persists missing scores (and
-missing embeddings) for feeling rows. Journal-only rows (empty mood) are
+missing embeddings) for mood rows. Journal-only rows (empty mood) are
 skipped, matching the old inline behavior.
 
 ## Progress log
@@ -146,7 +146,7 @@ checkpoint command for this session.
 
 - `task_moods` link table (cascades both ways); `-<short id>` tokens in
   entry commands record links — resolved to row ids at write time, require
-  a feeling entry ("Nothing to log" / explicit error otherwise).
+  a mood entry ("Nothing to log" / explicit error otherwise).
 - `ColorAxes::mood_color_cached` is now **sync and backfill-free**: rows
   without a stored embedding are embedded on the fly, rows without a score
   fall back to predicting inline, no DB writes. `:db backfill` (stage 4)
@@ -162,7 +162,7 @@ checkpoint command for this session.
 
 - `Command::Prune` → `Command::Db { sub: DbSubcommand }` (`Prune` |
   `Backfill`); `:db prune` = old `:prune`; `:db backfill` persists missing
-  feeling embeddings + saliency scores (journal rows skipped); bare `:db`
+  mood embeddings + saliency scores (journal rows skipped); bare `:db`
   and unknown subcommands error with usage.
 
 ### Stage 5 ✅ (docs + final validation)

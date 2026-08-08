@@ -49,7 +49,7 @@ pub fn build_preview(
     task: &crate::db::TaskRow,
     today: bool,
     preview: &crate::config::PreviewConfig,
-    linked_moods: &[crate::db::FeelingRow],
+    linked_moods: &[crate::db::MoodRow],
     axes: Option<&crate::color::ColorAxes>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -186,8 +186,8 @@ pub fn build_preview(
         }
     }
 
-    // Linked moods (`feeling good -5` recorded the link): a `moods:` field
-    // with one `  - {badge} {mood text}` line per linked feeling. The badge
+    // Linked moods (`im good -5` recorded the link): a `moods:` field
+    // with one `  - {badge} {mood text}` line per linked mood. The badge
     // color comes from the sync mood-color pipeline (process-wide cache;
     // see `color::global_mood_color_cache`).
     if !linked_moods.is_empty() {
@@ -196,13 +196,13 @@ pub fn build_preview(
         let mut cache = crate::color::global_mood_color_cache()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for feeling in linked_moods {
+        for mood in linked_moods {
             // Journal-only rows (empty mood) have no badge to show.
-            if feeling.mood.is_empty() {
+            if mood.mood.is_empty() {
                 continue;
             }
             let color = axes
-                .and_then(|axes| axes.mood_color_cached(embedder, feeling, &mut cache))
+                .and_then(|axes| axes.mood_color_cached(embedder, mood, &mut cache))
                 .map(|oklab| {
                     let rgb = oklab.to_srgb();
                     Color::Rgb(rgb.r, rgb.g, rgb.b)
@@ -211,7 +211,7 @@ pub fn build_preview(
             lines.push(Line::from(vec![
                 Span::raw("  - "),
                 Span::styled("●", Style::default().fg(color)),
-                Span::raw(format!(" {}", feeling.mood)),
+                Span::raw(format!(" {}", mood.mood)),
             ]));
         }
     }
@@ -256,7 +256,7 @@ pub fn build_preview(
 
 /// Build the preview pane for a today-view entry. Same heading shape as
 /// [`build_preview`], titled after the entry type in full caps and bold:
-/// "FEELING" (cyan, italic) when the entry carries a mood, "JOURNAL"
+/// "MOOD" (cyan, italic) when the entry carries a mood, "JOURNAL"
 /// (gray) for moodless journal-only entries, "TRACKER" (dark gray) for
 /// tracker entries. Journal-only entries skip the mood segment, showing
 /// the body directly after the date.
@@ -268,7 +268,7 @@ pub(crate) fn build_today_preview(entry: &TodayEntry) -> Vec<Line<'static>> {
 
     let (title, title_style): (String, Style) = match entry.kind {
         EntryKind::Mood => (
-            "FEELING".to_string(),
+            "MOOD".to_string(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD | Modifier::ITALIC),
@@ -588,12 +588,12 @@ mod tests {
     }
 
     /// A task with linked moods shows a `moods:` field with one
-    /// `  - ● mood` line per linked feeling (empty-mood journal rows are
+    /// `  - ● mood` line per linked mood (empty-mood journal rows are
     /// skipped).
     #[test]
     fn test_build_preview_linked_moods() {
         let task = recurring_row();
-        let feeling = crate::db::FeelingRow {
+        let mood = crate::db::MoodRow {
             id: 1,
             mood: "good".to_string(),
             body: String::new(),
@@ -601,7 +601,7 @@ mod tests {
             embedding: None,
             score: None,
         };
-        let lines = build_preview(&task, true, &preview_config(true), &[feeling], None);
+        let lines = build_preview(&task, true, &preview_config(true), &[mood], None);
         let rendered: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())

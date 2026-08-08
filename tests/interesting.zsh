@@ -1,15 +1,15 @@
 #!/bin/zsh
 
-feeling=(cargo run --release --bin feeling -- :color)
+im=(cargo run --release --bin im -- :color)
 
-$feeling lost
-$feeling done
-$feeling defeated
-$feeling ate a sandwhich
-$feeling headache
-$feeling strong
-$feeling like a million bucks
-$feeling amazing
-$feeling terrible
-$feeling stuffed
-$feeling ambitious
+$im lost
+$im done
+$im defeated
+$im ate a sandwhich
+$im headache
+$im strong
+$im like a million bucks
+$im amazing
+$im terrible
+$im stuffed
+$im ambitious

@@ -18,7 +18,7 @@ pub fn init_logger([q, v]: [u8; 2], log_path: &Path) {
         {
             builder
                 .filter(None, log::LevelFilter::Info)
-                .filter(Some("feeling"), log::LevelFilter::Trace)
+                .filter(Some("im"), log::LevelFilter::Trace)
                 .filter(Some("cba"), log::LevelFilter::Trace)
                 .format(|buf, record| {
                     use std::io::Write;
@@ -49,9 +49,7 @@ pub fn init_logger([q, v]: [u8; 2], log_path: &Path) {
                 log::LevelFilter::Info
             };
 
-            builder
-                .filter(Some("feeling"), level)
-                .filter(Some("cba"), level);
+            builder.filter(Some("im"), level).filter(Some("cba"), level);
         }
     }
 

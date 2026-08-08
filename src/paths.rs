@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use cba::expr_as_path_fn;
 
-pub const BINARY_FULL: &str = "feeling";
-pub const BINARY_SHORT: &str = "feeling";
+pub const BINARY_FULL: &str = "im";
+pub const BINARY_SHORT: &str = "im";
 
 fn config_dir_impl() -> Option<PathBuf> {
-    if let Some(env_val) = std::env::var_os("FEELING_CONFIG_DIR") {
+    if let Some(env_val) = std::env::var_os("IM_CONFIG_DIR") {
         let env_path = PathBuf::from(env_val);
         if env_path.exists() {
             return Some(env_path);
@@ -46,9 +46,9 @@ expr_as_path_fn!(
 );
 
 #[cfg(debug_assertions)]
-expr_as_path_fn!(database_path, state_dir().join("feeling.dev.db"));
+expr_as_path_fn!(database_path, state_dir().join("im.dev.db"));
 
 #[cfg(not(debug_assertions))]
-expr_as_path_fn!(database_path, state_dir().join("feeling.db"));
+expr_as_path_fn!(database_path, state_dir().join("im.db"));
 
 expr_as_path_fn!(log_path, state_dir().join(format!("{BINARY_SHORT}.log")));

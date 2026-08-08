@@ -10,7 +10,7 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
 
     if first == ":score" {
         if args.len() < 3 {
-            anyhow::bail!("Usage: feeling :score \"start\" \"end\"");
+            anyhow::bail!("Usage: im :score \"start\" \"end\"");
         }
         return Ok(Command::Score {
             start: args[1].trim_matches('"').to_string(),
@@ -20,14 +20,14 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
 
     if first == ":config" || first == ":c" {
         if args.len() != 1 {
-            anyhow::bail!("Usage: feeling :config");
+            anyhow::bail!("Usage: im :config");
         }
         return Ok(Command::Config);
     }
 
     if first == ":moods" {
         if args.len() != 1 {
-            anyhow::bail!("Usage: feeling :moods");
+            anyhow::bail!("Usage: im :moods");
         }
         return Ok(Command::Moods);
     }
@@ -36,7 +36,7 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
         return match args.get(1).map(String::as_str) {
             Some("prune") => {
                 if args.len() != 2 {
-                    anyhow::bail!("Usage: feeling :db prune");
+                    anyhow::bail!("Usage: im :db prune");
                 }
                 Ok(Command::Db {
                     sub: crate::cli::DbSubcommand::Prune,
@@ -44,7 +44,7 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
             }
             Some("backfill") => {
                 if args.len() != 2 {
-                    anyhow::bail!("Usage: feeling :db backfill");
+                    anyhow::bail!("Usage: im :db backfill");
                 }
                 Ok(Command::Db {
                     sub: crate::cli::DbSubcommand::Backfill,
@@ -52,7 +52,7 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
             }
             Some("doctor") => {
                 if args.len() != 2 {
-                    anyhow::bail!("Usage: feeling :db doctor");
+                    anyhow::bail!("Usage: im :db doctor");
                 }
                 Ok(Command::Db {
                     sub: crate::cli::DbSubcommand::Doctor,
@@ -62,13 +62,13 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
                 "Unknown :db subcommand '{}' (expected prune, backfill, or doctor)",
                 other
             ),
-            None => anyhow::bail!("Usage: feeling :db prune | :db backfill | :db doctor"),
+            None => anyhow::bail!("Usage: im :db prune | :db backfill | :db doctor"),
         };
     }
 
     if first == ":color" {
         if args.len() < 2 {
-            anyhow::bail!("Usage: feeling :color \"<feeling>\"");
+            anyhow::bail!("Usage: im :color \"<mood>\"");
         }
         return Ok(Command::Color {
             mood: args[1..].join(" ").trim_matches('"').to_string(),
@@ -96,7 +96,7 @@ pub(crate) fn parse_special_command(args: &[String]) -> anyhow::Result<Command> 
     //                        list of trackers and `:` mood-grid markers
     //   `:week|month|year` — period as a bare suffix on the first token
     // A stray `:<unknown>` token (e.g. `:foo`) is rejected: if the user
-    // meant an id filter, they need to type `feeling : foo` with a space.
+    // meant an id filter, they need to type `im : foo` with a space.
     if first == ":" || matches!(first.as_str(), ":week" | ":month" | ":year") {
         return parse_tracker_command(args);
     }

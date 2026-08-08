@@ -10,26 +10,26 @@ pub async fn prune_embedding_cache(pool: &SqlitePool) -> Result<u64> {
     Ok(rows_affected)
 }
 
-/// Backfill a feeling row's stored embedding.
-pub async fn update_feeling_embedding(pool: &SqlitePool, id: i64, blob: &[u8]) -> Result<u64> {
-    let res = sqlx::query("UPDATE feeling SET embedding = ? WHERE id = ?")
+/// Backfill a mood row's stored embedding.
+pub async fn update_mood_embedding(pool: &SqlitePool, id: i64, blob: &[u8]) -> Result<u64> {
+    let res = sqlx::query("UPDATE mood SET embedding = ? WHERE id = ?")
         .bind(blob)
         .bind(id)
         .execute(pool)
         .await
-        .context("Failed to update feeling embedding")?;
+        .context("Failed to update mood embedding")?;
     Ok(res.rows_affected())
 }
 
 /// Persist a mood's cached saliency score (backfilled by
 /// `ColorAxes::mood_color_cached` on the first render pass).
-pub async fn update_feeling_score(pool: &SqlitePool, id: i64, score: f32) -> Result<u64> {
-    let res = sqlx::query("UPDATE feeling SET score = ? WHERE id = ?")
+pub async fn update_mood_score(pool: &SqlitePool, id: i64, score: f32) -> Result<u64> {
+    let res = sqlx::query("UPDATE mood SET score = ? WHERE id = ?")
         .bind(score)
         .bind(id)
         .execute(pool)
         .await
-        .context("Failed to update feeling score")?;
+        .context("Failed to update mood score")?;
     Ok(res.rows_affected())
 }
 

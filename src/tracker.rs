@@ -109,7 +109,7 @@ pub async fn write_tracker_grid<W: Write>(
     // Grid ranges follow config.grid. Non-rolling grids anchor the start
     // to the calendar period (week_start / month start) and end at today;
     // rolling grids use a fixed-size window — the full week (always 7 dots) or
-    // the "last 4 weeks" window from the feeling/ subrepo.
+    // the "last 4 weeks" window from the mood/ subrepo.
     let gv = &config.grid;
     let (start_epoch, end_epoch) = match period {
         TrackerPeriod::Week => {
@@ -233,14 +233,14 @@ async fn display_mood_tracker<W: Write>(
 ) -> Result<()> {
     // Fetch mood entries in the period, grouped by day. Journal-only entries
     // (empty mood → no embedding) are excluded from the grid.
-    let feelings: Vec<crate::db::FeelingRow> =
-        crate::db::fetch_feelings_between(pool, start_epoch, end_epoch)
+    let moods: Vec<crate::db::MoodRow> =
+        crate::db::fetch_moods_between(pool, start_epoch, end_epoch)
             .await?
             .into_iter()
             .filter(|f| !f.mood.is_empty())
             .collect();
 
-    if feelings.is_empty() {
+    if moods.is_empty() {
         writeln!(out, "No mood entries in this period.")?;
         return Ok(());
     }
@@ -250,30 +250,30 @@ async fn display_mood_tracker<W: Write>(
 
     let day_secs: i64 = 86400;
     let num_days = ((end_epoch - start_epoch) / day_secs + 1) as usize;
-    let mut day_feelings: Vec<Vec<&crate::db::FeelingRow>> = vec![Vec::new(); num_days];
+    let mut day_moods: Vec<Vec<&crate::db::MoodRow>> = vec![Vec::new(); num_days];
     let mut day_has_entry: Vec<bool> = vec![false; num_days];
 
-    for f in &feelings {
+    for f in &moods {
         let time = f.time;
         let day_idx = ((time - start_epoch) / day_secs) as usize;
         if day_idx >= num_days {
             continue;
         }
         day_has_entry[day_idx] = true;
-        day_feelings[day_idx].push(f);
+        day_moods[day_idx].push(f);
     }
 
     let mut day_colors: Vec<Option<oklab::Oklab>> = vec![None; num_days];
 
-    for (i, feelings_in_day) in day_feelings.iter().enumerate() {
-        if feelings_in_day.is_empty() {
+    for (i, moods_in_day) in day_moods.iter().enumerate() {
+        if moods_in_day.is_empty() {
             continue;
         }
         let mut emb_sum: Vec<f32> = Vec::new();
         let mut score_sum: f32 = 0.0;
         let mut count: usize = 0;
 
-        for f in feelings_in_day {
+        for f in moods_in_day {
             let emb = match f
                 .embedding
                 .as_deref()
