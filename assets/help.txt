@@ -1,4 +1,4 @@
-im — mood, journal, and task tracker
+im — immediate mood, journal, and task tracker
 
 Usage:
   im <mood> [.. [body]]                          log a mood (with an optional body)
@@ -18,25 +18,24 @@ Usage:
   by writing the parent's id prefixed with `-` in the first argument.
     A bare - allows you to pick the parent interactively.
 
-  im - <query words> [count]                     update completion of the unique task
-                                                        whose name contains <query words>
-                                                        in their order
-  im - <id> [count]                              update task completion by id
-
-
 Views:
-  im [@date]                                     today view
+  im @[date]                                     today view
   im @due[:t|:w]                                 due view
                                                         (today / tomorrow / this week)
   im @[:o|:O]                                    pending tasks
                                                         (all / oneshot / recurring+scheduled)
   im @done[:o|:O]                                completed tasks
 
-
 Trackers and grids:
   im :[week|month|year] [ids]                    dot-sequence tracker grid
                                                         ids: <tracker> or @<recurring-name>
                                                         period defaults to "week"
+
+Cli actions:
+  im - <query words> [count]                     update completion of the unique task
+                                                        whose name contains <query words>
+                                                        in their order
+  im - <id> [count]                              update task completion by id
 
 Other:
   im :config | :c                                open the config in $VISUAL / $EDITOR

@@ -32,6 +32,14 @@ pub struct ColorAxesSettings {
     /// color, strongest first.
     pub top_k: usize,
 
+    /// How strongly emotional saliency biases the day-average embedding
+    /// behind a tracker-grid dot: the per-mood weights are `s^k` where `s`
+    /// is the mood's saliency, so `1` (the default) is a plain saliency
+    /// weighting and higher values let the most salient moods of the day
+    /// dominate its color. Degrades to a plain average when every
+    /// saliency is zero.
+    pub grid_blend_steepness: f32,
+
     /// An anchor mood must make up at least this percentage of the color
     /// mix to be included at all.
     pub min_contribution: Percentage,
@@ -51,6 +59,7 @@ impl Default for ColorAxesSettings {
             prefix_string: "person says: ".to_string(),
             base_string: "this person feels:".to_string(),
             blend_steepness: 2.0,
+            grid_blend_steepness: 1.0,
             top_k: 5,
             min_contribution: Percentage::new(7),
             effective_saliency_gate: Percentage::new(50),

@@ -1,9 +1,7 @@
 use anyhow::Context;
 
-use super::super::Command;
+use super::super::{Command, BODY_DELIMITER};
 use crate::types::{Task, TaskKind};
-
-const BODY_DELIMITER: &str = ".."; // by idiom this should be --, but . or .. feels more linguistic, decision deferred
 
 pub(crate) fn parse_task_command(mut args: &[String]) -> anyhow::Result<Command> {
     // The leading "!" has already been stripped by the caller — `args` holds

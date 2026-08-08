@@ -1206,6 +1206,47 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_tracker_then_dotdot_body_split_first() {
+        // Body split comes first (like tasks): `..` never becomes a
+        // tracker's value, and free text after it is body verbatim.
+
+        // im -awake .. brush my teeth — valueless tracker + body.
+        let cmd = parse_from(args(&["-awake", "..", "brush", "my", "teeth"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.mood, "");
+                assert_eq!(entry.trackers, vec![("awake".to_string(), String::new())]);
+                assert_eq!(entry.body, "brush my teeth");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // im <mood> -awake .. brush my teeth — tracker after the mood.
+        let cmd = parse_from(args(&["good", "-awake", "..", "brush", "my", "teeth"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.mood, "good");
+                assert_eq!(entry.trackers, vec![("awake".to_string(), String::new())]);
+                assert_eq!(entry.body, "brush my teeth");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+
+        // A second `..` inside the body is literal text (task parity).
+        let cmd = parse_from(args(&["ok", "..", "see", "..", "note"])).unwrap();
+        match cmd {
+            Command::Entry(entry) => {
+                assert_eq!(entry.mood, "ok");
+                assert_eq!(entry.body, "see .. note");
+                assert!(!entry.open_editor);
+            }
+            _ => panic!("Expected Entry command"),
+        }
+    }
+
+    #[test]
     fn test_parse_cli_strips_initial_flags() {
         // -q before the command
         let cli = parse_cli(args(&["-q", "ok"])).unwrap();

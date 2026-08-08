@@ -1,20 +1,51 @@
-# im
+# [Im](https://www.youtube.com/watch?v=Ts0XSyWpMnU)
 
-`im` is a CLI tool for tracking moods, journaling, custom metrics, and managing oneshot and recurring tasks.
+`im` is a CLI tool for recording all the small moments, feelings, thoughts and setbacks and accomplishments that make up your day.[^1]
+
+```shell
+# record moods and notes
+im playing chess against stockfish and im winning
+im confused .. why it says i lost?
+im .. turns out i was playing antichess
+
+im worried about my homework
+im sad that my dog ate my bones
+im sorry that my cat ate my dog
+
+im abe on the next level
+im abe rockin over that base treble
+im aswing it this way
+im aswing it that-a-way
+
+# open your editor to attach a long note to your mood
+im terrified that someone will see me writing down that im terrified someone will see me writing down ..
+
+# log custom trackers
+im full -food 7
+im going to bed -sleep -acc finished blog post
+im still up -sleep
+im still up -sleep
+
+im still alive .. i think
+```
 
 ## Features
 
-- Mood & Journal Logging: Log moods and journal entries, browse them together with due tasks like an interactive daily note.
-- Grid view: Display your mood history as dots colored by mapping your recorded moods along configurable semantic axes throughout various timespans and watch as interesting patterns emerge.
-- Task Management: Support for oneshot and recurring tasks with flexible priority, interval, availability duration, and target completions.
+- Log moods and journal entries in simple, natural syntax.
+  - Today view: show a ordered summary of all that you have logged and planned today -- an interactive, auto-generated daily note. 
+- Grid view: Display your mood, task and tracker histories as dots.
+  - Moods are colored by how much they match to various emotions or topics you have configured.
+  - Change the topics, timespans, and filters, and watch as interesting patterns emerge.
+- Task Management: Support for oneshot, recurring tasks and scheduled tasks.
+  - Interactive views over upcoming / completed / due tasks.
+  - Full featured data model supporting priorities, subtasks, optional tasks, overdue tasks and multiple completions.
 - Custom Trackers: Track custom metrics with configurable intervals, ranges and colors.
-- Interactive TUI & Views: View today's summary
 
 ## Usage
 
 <!-- HELP_START -->
 ```
-im — mood, journal, and task tracker
+im — immediate mood, journal, and task tracker
 
 Usage:
   im <mood> [.. [body]]                          log a mood (with an optional body)
@@ -34,25 +65,24 @@ Usage:
   by writing the parent's id prefixed with `-` in the first argument.
     A bare - allows you to pick the parent interactively.
 
-  im - <query words> [count]                     update completion of the unique task
-                                                        whose name contains <query words>
-                                                        in their order
-  im - <id> [count]                              update task completion by id
-
-
 Views:
-  im [@date]                                     today view
+  im @[date]                                     today view
   im @due[:t|:w]                                 due view
                                                         (today / tomorrow / this week)
   im @[:o|:O]                                    pending tasks
                                                         (all / oneshot / recurring+scheduled)
   im @done[:o|:O]                                completed tasks
 
-
 Trackers and grids:
   im :[week|month|year] [ids]                    dot-sequence tracker grid
                                                         ids: <tracker> or @<recurring-name>
                                                         period defaults to "week"
+
+Cli actions:
+  im - <query words> [count]                     update completion of the unique task
+                                                        whose name contains <query words>
+                                                        in their order
+  im - <id> [count]                              update task completion by id
 
 Other:
   im :config | :c                                open the config in $VISUAL / $EDITOR
@@ -97,6 +127,13 @@ The default locations are in order:
 - `~/.config/matchmaker/config.toml` (If the folder exists already).
 - `{PLATFORM_SPECIFIC_CONFIG_DIRECTORY}/matchmaker` (Generally the same as above when on linux)
 
+## Advanced
+
+`Im` stores three types of objects:
+  - moods entries: which compute an embedding that captures their semantic meaning.
+  - tasks: oneshot, recurring, or scheduled.
+  - trackers: defined in your configuration.
+
 ## FAQ
 
 ### What is the difference between `im` and `im-dynamic`?
@@ -119,7 +156,22 @@ export ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 $env:ORT_DYLIB_PATH = "C:\path\to\onnxruntime.dll"
 ```
 
+### What does im stand for?
+
+Immediate, Immaterial, in medias-res, Important, Immaculate, Imagine all the people .. Immolated -- take your pick.
+
+### How can I contribute?
+Open to suggestions. Helping implement more filters, or a sensible configurable spec for exporting to markdown would be helpful. Documentation, always.
+
 ## See also
 
 - https://github.com/qiz-li/im
 - https://docs.rs/jiff/latest/jiff/
+
+
+[^1]: `im` can also help you:
+    - catalogue all the goals and hopes you never got around to
+    - all the tasks you missed the deadline for
+    - reinforce negative thoughts
+    - rationalize bad decisions
+    - realize that you don't actually have any thoughts interesting enough to write down.

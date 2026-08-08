@@ -269,8 +269,17 @@ async fn display_mood_tracker<W: Write>(
         if moods_in_day.is_empty() {
             continue;
         }
+        // Saliency-weighted day average, v̄ = Σ vᵢ·sᵢᵏ / Σ sᵢᵏ, with k =
+        // `grid_blend_steepness` and s the mood's saliency. When every
+        // saliency is zero this degrades to a plain average of the
+        // embeddings. The day's saliency score passed to the regression
+        // below stays a plain unweighted mean.
+        let steepness = config.moods.axes.grid_blend_steepness;
         let mut emb_sum: Vec<f32> = Vec::new();
+        let mut emb_plain: Vec<f32> = Vec::new();
         let mut score_sum: f32 = 0.0;
+        // let mut score_wsum: f32 = 0.0; // s^k-weighted saliency sum (alternative)
+        let mut weight_sum: f32 = 0.0;
         let mut count: usize = 0;
 
         for f in moods_in_day {
@@ -289,23 +298,39 @@ async fn display_mood_tracker<W: Write>(
                 None => crate::color::predict_saliency(embedder, &f.mood),
             };
 
+            let weight = score.powf(steepness);
             if emb_sum.is_empty() {
-                emb_sum = emb;
+                emb_sum = emb.iter().map(|&e| e * weight).collect();
+                emb_plain = emb;
             } else {
-                for (s_elem, e_elem) in emb_sum.iter_mut().zip(&emb) {
-                    *s_elem += e_elem;
+                for ((acc, plain), e) in emb_sum.iter_mut().zip(emb_plain.iter_mut()).zip(&emb) {
+                    *acc += e * weight;
+                    *plain += e;
                 }
             }
-            score_sum += score;
+            score_sum += score; // plain unweighted day-saliency sum (active)
+            // score_wsum += score * weight; // s^k-weighted variant (alternative)
+            weight_sum += weight;
             count += 1;
         }
 
         if count > 0 {
-            let inv_n = 1.0 / count as f32;
+            let inv_total = if weight_sum > 0.0 {
+                1.0 / weight_sum
+            } else {
+                // Every saliency was zero → plain average of the
+                // embeddings (the day's saliency is zero as well).
+                emb_sum = emb_plain;
+                1.0 / count as f32
+            };
             for e_elem in &mut emb_sum {
-                *e_elem *= inv_n;
+                *e_elem *= inv_total;
             }
-            let avg_score = score_sum * inv_n;
+            // Day saliency for the NNLS regression: plain unweighted mean.
+            let avg_score = score_sum / count as f32;
+            // Saliency-weighted alternative (Σ sᵢ·sᵢᵏ / Σ sᵢᵏ), matching
+            // the embedding blend above; re-enable together with score_wsum:
+            // let avg_score = score_wsum * inv_total;
 
             let reg = axes.regression_weights(&emb_sum, embedder, Ok(avg_score));
             let oklab = axes.weights_to_color(reg.as_ref());
@@ -505,14 +530,7 @@ async fn display_tracker<W: Write>(
         let mut slot_sums: Vec<f64> = vec![0.0; num_slots];
         let mut slot_has_entry: Vec<bool> = vec![false; num_slots];
         // Null time-marker entries: remember the entry time per slot so the
-        // color can be computed from the time-of-day position. Semantics
-        // (see badge::null_tracker_color): the circular range [min, max] is
-        // traversed forward from min, wrapping when max < min. Inside the
-        // range the color is binned (min → last palette color, max → first;
-        // later = redder); outside, by circular proximity to the nearer
-        // endpoint (closer to min → last, closer to max → first). For
-        // wraparound time trackers like sleep, earlier is the good (last
-        // color) end — a pre-bedtime log colors like bedtime itself.
+        // color can be computed from the time-of-day position.
         let mut slot_time: Vec<Option<i64>> = vec![None; num_slots];
 
         for entry in &entries {

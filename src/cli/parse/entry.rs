@@ -1,45 +1,39 @@
-use super::super::Command;
+use super::super::{Command, BODY_DELIMITER};
 use crate::types::Entry;
 
 pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
-    // Trackers are parsed only at the beginning and end of the line — the
+    // Body split comes first (like tasks): everything before the first
+    // `..` is parsed as mood / tracker args; everything after is joined
+    // verbatim into `body` (a later `..` inside the body is literal text).
+    // The editor opens iff `..` was used AND `body` is empty.
+    //
+    // Trackers are parsed only at the beginning and end of the head — the
     // mood words must be contiguous:
     //   im <mood> [-tracker value] [.. [body]]  — tracker(s) after the mood
     //   im -tracker value                       — tracker only (no mood)
     //   im [-tracker value]… <mood>             — tracker(s) before the mood
     // Once a `-tracker value` pair has been consumed *after* the mood
-    // started, the rest of the line must stay tracker-shaped: another
-    // `-tracker value` pair, `..`, or end of input. A bare word after that
+    // started, the rest of the head must stay tracker-shaped: another
+    // `-tracker value` pair or the end of the head. A bare word after that
     // point is an error, e.g. `im pretty ok -sleep 8 but not great`
-    // (the word after `8` is not another valid tracker pattern, `..`, or
-    // the end of the line).
-    //
-    // `..` may appear anywhere in args (not only at the end). Words before
-    // the first `..` are parsed as mood / tracker values.
-    // Words after `..` are joined (space-separated) into `body`. The editor
-    // opens iff `..` was used AND `body` is empty.
-    let mut has_dotdot = false;
+    // (the word after `8` is not another valid tracker pattern or the end
+    // of the head). `..` moves free text into the body instead:
+    // `im pretty ok -sleep 8 .. but not great` is valid.
+    let (head, body_parts, has_dotdot) = match args.iter().position(|a| a == BODY_DELIMITER) {
+        Some(d) => (&args[..d], &args[d + 1..], true),
+        None => (args, &[][..], false),
+    };
+
     let mut mood_parts: Vec<String> = Vec::new();
     let mut trackers: Vec<(String, String)> = Vec::new();
     let mut task_links: Vec<i64> = Vec::new();
-    let mut body_parts: Vec<String> = Vec::new();
     // Set once a `-tracker value` pair is seen after the mood started; from
-    // then on a bare word is rejected (only tracker pairs / `..` / EOL).
+    // then on a bare word is rejected (only tracker pairs / end of head).
     let mut after_mood_tracker = false;
 
     let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == ".." {
-            has_dotdot = true;
-            i += 1;
-            continue;
-        }
-        if has_dotdot {
-            body_parts.push(arg.clone());
-            i += 1;
-            continue;
-        }
+    while i < head.len() {
+        let arg = &head[i];
         match arg.as_str() {
             s if s.starts_with('-') && s != "-" => {
                 // Tracker entry: -type value (e.g., -sleep 8, -accomplishment "fixed 2 bugs").
@@ -62,11 +56,11 @@ pub(crate) fn parse_entry_command(args: &[String]) -> anyhow::Result<Command> {
                         anyhow::anyhow!("Invalid task short id '{}'", tracker_type)
                     })?);
                     i += 1;
-                } else if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                } else if i + 1 < head.len() && !head[i + 1].starts_with('-') {
                     if !mood_parts.is_empty() {
                         after_mood_tracker = true;
                     }
-                    trackers.push((tracker_type, args[i + 1].clone()));
+                    trackers.push((tracker_type, head[i + 1].clone()));
                     i += 2;
                 } else {
                     if !mood_parts.is_empty() {

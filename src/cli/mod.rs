@@ -2,6 +2,12 @@ use crate::types::{Entry, Task, TodayHorizon, ViewMode, ViewVariant};
 
 pub const FLAG_CHARACTERS: &str = "qv";
 
+/// The token that splits a command line into its argument part and its
+/// body-text part (tasks and entries alike): everything before the first
+/// `..` is parsed as command arguments, everything after is joined into
+/// `body` verbatim. An empty body after `..` opens the editor.
+pub const BODY_DELIMITER: &str = ".."; // by idiom this should be --, but . or .. feels more linguistic, decision deferred
+
 /// Counts of the leading `-q` / `-v` flag characters. `qv[0]` = number of
 /// `q` chars, `qv[1]` = number of `v` chars (combined tokens like `-qv`
 /// count once each). Order is not tracked — the logger and handlers only

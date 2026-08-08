@@ -113,21 +113,22 @@ pub(crate) fn tracker_color(
 /// With an interval and **both** min/max set, the entry is a time marker:
 /// min/max are seconds-from-interval-start offsets (times of day within the
 /// interval) that define a circular color range traversed **forward** from
-/// `min`, wrapping the interval boundary when `max < min`:
+/// `min`, wrapping the interval boundary when `max < min`. Earlier times
+/// always map to the start of the palette, later to the end — the range is
+/// never reversed, regardless of the min/max order:
 ///
 /// - inside the range `[min, max)` circular — e.g. 23:00→02:00 for a
 ///   sleep tracker — the color is **binned** by position: `min` maps to the
-///   last palette color (blue), `max` to the first (red), so the later the
-///   entry the redder;
+///   first palette color, `max` to the last;
 /// - outside the range, the first/last palette color is picked by which
 ///   range endpoint the entry is **circularly closer** to — closer to `min`
-///   → last color ("before 23:00 is blue"), closer to `max` → first color.
-///   This is the same split as the TODO's cycle-back midpoint of the
-///   outside zone.
+///   → first color, closer to `max` → last color. This is the same split as
+///   the TODO's cycle-back midpoint of the outside zone.
 ///
 /// So a sleep tracker with `min = 23:00`, `max = 02:00` on a
-/// midnight-anchored day colors 23:00→02:00 (e.g. 1am) red-ish, 22:45 blue,
-/// and 03:00 red (closer to 02:00).
+/// midnight-anchored day bins 23:00→02:00 from the first color toward the
+/// last (1am is mid-palette), 22:45 first (closer to 23:00), and 03:00 last
+/// (closer to 02:00).
 ///
 /// With a single bound (or none — count mode), the score is binned like any
 /// numeric tracker. Without an interval the tracker is unsupported → Reset.
@@ -153,22 +154,23 @@ pub(crate) fn null_tracker_color(
         return tracker_color(colors, score, tracker.min, tracker.max);
     }
     // Both bounds are seconds from the interval start; the range is
-    // traversed forward from min, wrapping when max < min.
+    // traversed forward from min, wrapping when max < min. Earlier times
+    // always bin to the palette start, later to the end — never reversed.
     let pos = (time - interval_start) as f64;
     let zone_len = (max - min).rem_euclid(len);
     let in_zone = ((pos - min).rem_euclid(len)) < zone_len;
     if in_zone {
-        // Binning: min → last color, max → first color (continuous with the
+        // Binning: min → first color, max → last color (continuous with the
         // outside proximity rule).
         let p = ((pos - min).rem_euclid(len)) / zone_len;
-        let idx = ((1.0 - p) * (colors.len() as f64 - 1.0)).round() as usize;
+        let idx = (p * (colors.len() as f64 - 1.0)).round() as usize;
         colors[idx.min(colors.len() - 1)]
     } else if ((pos - max).rem_euclid(len)) < ((min - pos).rem_euclid(len)) {
-        // Outside, circularly closer to max (the range's red end).
-        *colors.first().unwrap_or(&CtColor::Reset)
-    } else {
-        // Outside, circularly closer to min (the range's blue end).
+        // Outside, circularly closer to max (the range's late end).
         *colors.last().unwrap_or(&CtColor::Reset)
+    } else {
+        // Outside, circularly closer to min (the range's early end).
+        *colors.first().unwrap_or(&CtColor::Reset)
     }
 }
 
@@ -548,37 +550,37 @@ mod tests {
             }),
             kind: crate::config::TrackerKind::Null,
             min: Some(23.0 * 3600.0), // 23:00, seconds from interval start
-            max: Some(2.0 * 3600.0),  // 02:00, seconds from the span end
+            max: Some(2.0 * 3600.0),  // 02:00, seconds from interval start
             colors: None,
         }
     }
 
-    /// Null time-marker coloring, corrected spec (user clarification):
-    /// the range is `[min, max]` circular — both offsets from the interval
-    /// start — traversed forward (23:00→02:00 for the fixture). Inside the
-    /// range: binning (min → last color, max → first). Outside: first/last
-    /// by circular proximity to the nearer range endpoint (closer to min →
-    /// last/blue — "before 23:00 is blue"; closer to max → first/red).
+    /// Null time-marker coloring: the range is `[min, max]` circular — both
+    /// offsets from the interval start — traversed forward (23:00→02:00 for
+    /// the fixture), never reversed. Inside the range: binning (min → first
+    /// color, max → last). Outside: first/last by circular proximity to the
+    /// nearer range endpoint (closer to min → first color; closer to max →
+    /// last color).
     #[test]
     fn test_null_tracker_color_time_of_day() {
         let colors = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
         let tracker = day_interval_tracker();
         // Midnight-anchored interval: t is seconds from the interval start.
         let color_at = |secs: i64| null_tracker_color(&colors, &tracker, secs, 0.0);
-        // Inside the range, binned: 23:30 is 0.167 in → last color; 01:00 is
-        // 2/3 in → middle; 02:00 (range end) → first (red).
-        assert_eq!(color_at(23 * 3600 + 30 * 60), CtColor::DarkGreen);
+        // Inside the range, binned: 23:30 is 0.125 in → first color; 01:00
+        // is 2/3 in → middle; 02:00 (range end) → last color.
+        assert_eq!(color_at(23 * 3600 + 30 * 60), CtColor::DarkRed);
         assert_eq!(color_at(3600), CtColor::DarkYellow); // 01:00
-        assert_eq!(color_at(2 * 3600), CtColor::DarkRed); // 02:00
-                                                          // Outside, closer to min (23:00) → last color ("before 23:00 is
-                                                          // blue"): 22:45, 22:15, and 13:00 are all closer to 23:00 than 02:00.
-        assert_eq!(color_at(22 * 3600 + 45 * 60), CtColor::DarkGreen);
-        assert_eq!(color_at(22 * 3600 + 15 * 60), CtColor::DarkGreen);
-        assert_eq!(color_at(13 * 3600), CtColor::DarkGreen);
-        // Outside, closer to max (02:00) → first color (red): 03:00 and
-        // 12:00 (12:00 is 10h from 02:00 vs 11h from 23:00).
-        assert_eq!(color_at(3 * 3600), CtColor::DarkRed);
-        assert_eq!(color_at(12 * 3600), CtColor::DarkRed);
+        assert_eq!(color_at(2 * 3600), CtColor::DarkGreen); // 02:00
+                                                            // Outside, closer to min (23:00) → first color ("before 23:00 is
+                                                            // first"): 22:45, 22:15, and 13:00 are all closer to 23:00 than 02:00.
+        assert_eq!(color_at(22 * 3600 + 45 * 60), CtColor::DarkRed);
+        assert_eq!(color_at(22 * 3600 + 15 * 60), CtColor::DarkRed);
+        assert_eq!(color_at(13 * 3600), CtColor::DarkRed);
+        // Outside, closer to max (02:00) → last color: 03:00 and 12:00
+        // (12:00 is 10h from 02:00 vs 11h from 23:00).
+        assert_eq!(color_at(3 * 3600), CtColor::DarkGreen);
+        assert_eq!(color_at(12 * 3600), CtColor::DarkGreen);
     }
 
     /// Null trackers without an interval (or with a single bound) fall back
@@ -610,6 +612,31 @@ mod tests {
             null_tracker_color(&colors, &tracker, 0, 1.0),
             CtColor::DarkRed
         );
+    }
+
+    /// The awake-tracker shape from assets/config.toml: min = 4h, max =
+    /// 12h on a midnight-anchored day. The palette runs dark → pale, so an
+    /// 11:19 AM log (91.6% through the zone) must bin toward the pale end,
+    /// not the dark end — regression for the reversed-direction bug. With
+    /// the 9-color palette 0.916 * 8 = 7.33 → round → 7 (second-to-last);
+    /// with the 3-color fixture below it lands on the last color.
+    #[test]
+    fn test_null_tracker_color_awake_range() {
+        let colors = vec![CtColor::DarkRed, CtColor::DarkYellow, CtColor::DarkGreen];
+        let mut tracker = day_interval_tracker();
+        tracker.min = Some(4.0 * 3600.0);
+        tracker.max = Some(12.0 * 3600.0);
+        let color_at = |secs: i64| null_tracker_color(&colors, &tracker, secs, 0.0);
+        // 04:00 (min) → first color; 12:00 (max) → last color.
+        assert_eq!(color_at(4 * 3600), CtColor::DarkRed);
+        assert_eq!(color_at(12 * 3600), CtColor::DarkGreen);
+        // 08:00 → 0.5 in → middle; 11:19:41 → 0.916 in → last.
+        assert_eq!(color_at(8 * 3600), CtColor::DarkYellow);
+        assert_eq!(color_at(11 * 3600 + 19 * 60 + 41), CtColor::DarkGreen);
+        // Outside: 23:19 is closer to min (4am, 4h41m) than max (12pm,
+        // 11h19m) → first color. 13:00 is closer to max → last color.
+        assert_eq!(color_at(23 * 3600 + 19 * 60), CtColor::DarkRed);
+        assert_eq!(color_at(13 * 3600), CtColor::DarkGreen);
     }
 
     #[test]

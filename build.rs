@@ -3,15 +3,6 @@ use std::fs::File;
 use std::io::copy;
 use std::path::{Path, PathBuf};
 
-/// The nomic-embed-text-v1.5 ONNX model bundled into the binary. The quantized
-/// model is vendored at `assets/model/embed.onnx` (tracked with git-lfs) so CI
-/// never needs Python: `model/quantize_qdq.py` downloads the FP32 model and
-/// rewrites it into an INT8 QDQ graph with dynamic input shapes (no onnxsim
-/// shape-folding — ONNX Runtime handles dynamic sequence lengths natively).
-/// The quantized model is ~131 MB of INT8. `src/embed.rs` embeds it directly
-/// via `include_bytes!`; anything below the floor is a truncated download,
-/// stale file, or corrupt artifact and is regenerated.
-///
 /// Which model is embedded is driven by the `EMBED_MODEL` environment variable
 /// (default `nomic`; see `model/quantize_qdq.py`'s `EMBED_ALIASES`). The choice is
 /// recorded in `assets/model/.embed_model_stamp`; a mismatch between the stamp and
@@ -37,6 +28,14 @@ fn raw_fp32_name(alias: &str) -> String {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/help.txt");
+    let profile = env::var("PROFILE").unwrap_or_default();
+    if profile == "release" {
+        println!("cargo:rerun-if-changed=assets/config.toml");
+        println!("cargo:rerun-if-changed=assets/moods.toml");
+    } else {
+        println!("cargo:rerun-if-changed=assets/dev.toml");
+        println!("cargo:rerun-if-changed=assets/moods.dev.toml");
+    }
     println!("cargo:rerun-if-env-changed=EMBED_MODEL");
 
     #[cfg(target_os = "linux")]
